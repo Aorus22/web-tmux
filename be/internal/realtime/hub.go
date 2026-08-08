@@ -102,7 +102,10 @@ func (h *Hub) relay(session string, c *Client) {
 		case tmux.EvOutput:
 			c.Send(Outgoing{Type: EvTerminalOutput, PaneID: ev.PaneID, Data: string(ev.Data)})
 		case tmux.EvState:
-			c.Send(Outgoing{Type: EvStateDelta, Seq: seqOf(ev.Snapshot), Snapshot: ev.Snapshot})
+			// Session is set so the frontend can drop state that arrives on a
+			// stale connection left over from a previous session (guards
+			// against the UI alternating between two sessions' snapshots).
+			c.Send(Outgoing{Type: EvStateDelta, Session: session, Seq: seqOf(ev.Snapshot), Snapshot: ev.Snapshot})
 		case tmux.EvCommandResult:
 			if ev.Err != nil {
 				c.Send(Outgoing{Type: EvCommandError, RequestID: ev.RequestID, Message: ev.Err.Error()})

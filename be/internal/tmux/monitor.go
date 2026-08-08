@@ -381,9 +381,14 @@ func (m *Monitor) handleLine(line string) {
 	case "": // %begin / %end / %error
 		m.handleCommandMarker(ev)
 	case "layout-change", "window-add", "window-close", "window-renamed",
-		"session-changed", "sessions-changed", "pane-mode-changed",
-		"client-session-changed":
-		// Topology changed → debounced resync (PRD §25).
+		"session-changed", "session-window-changed", "window-pane-changed",
+		"sessions-changed", "pane-mode-changed", "client-session-changed":
+		// Topology changed → debounced resync (PRD §25). %session-window-changed
+		// fires when the current window of a session changes (e.g. the user
+		// clicked a window tab): without it the frontend never learns the
+		// active window moved and window switching appears broken.
+		// %window-pane-changed fires when the active pane moves (pane click or
+		// select-pane crossing into another window) — same requirement.
 		m.Resync()
 	case "unknown":
 		m.log.Debug("unknown tmux control event", "raw", line)

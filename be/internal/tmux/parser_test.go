@@ -55,6 +55,33 @@ func TestParseMarkers(t *testing.T) {
 	}
 }
 
+func TestParseWindowPaneChanged(t *testing.T) {
+	p := NewParser()
+	// tmux emits %window-pane-changed when the active pane changes (pane
+	// click / select-pane), including when select-pane crosses into another
+	// window (which also moves the current window).
+	ev, ok := p.ParseLine("%window-pane-changed @1 %2")
+	if !ok || ev.Kind != "window-pane-changed" {
+		t.Fatalf("bad window-pane-changed: %+v ok=%v", ev, ok)
+	}
+	if ev.Data != "@1 %2" {
+		t.Fatalf("bad payload: %q", ev.Data)
+	}
+}
+
+func TestParseSessionWindowChanged(t *testing.T) {
+	p := NewParser()
+	// tmux emits %session-window-changed when the current window of a session
+	// changes — the frontend relies on it to resync after a tab click.
+	ev, ok := p.ParseLine("%session-window-changed $0 @1")
+	if !ok || ev.Kind != "session-window-changed" {
+		t.Fatalf("bad session-window-changed: %+v ok=%v", ev, ok)
+	}
+	if ev.Data != "$0 @1" {
+		t.Fatalf("bad payload: %q", ev.Data)
+	}
+}
+
 func TestParseLayoutChange(t *testing.T) {
 	p := NewParser()
 	ev, ok := p.ParseLine("%layout-change @3 8f06,80x24,0,0{...}")

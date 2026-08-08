@@ -22,7 +22,8 @@ type ControlEvent struct {
 //
 // Supported events (PRD §29): %begin, %end, %error, %output, %layout-change,
 // %window-add, %window-close, %window-renamed, %session-changed,
-// %sessions-changed, %pane-mode-changed, %client-session-changed.
+// %session-window-changed, %window-pane-changed, %sessions-changed,
+// %pane-mode-changed, %client-session-changed.
 // Unknown events are returned with Kind "unknown" — they must not crash the backend.
 type Parser struct{}
 
@@ -68,7 +69,8 @@ func (p *Parser) ParseLine(raw string) (ControlEvent, bool) {
 		}
 		return ControlEvent{Kind: "layout-change", Data: payload}, true
 	case "window-add", "window-close", "window-renamed", "session-changed",
-		"sessions-changed", "pane-mode-changed", "client-session-changed",
+		"session-window-changed", "window-pane-changed", "sessions-changed",
+		"pane-mode-changed", "client-session-changed",
 		"client-detached", "client-attached", "session-renamed":
 		return ControlEvent{Kind: kind, Data: payload}, true
 	default:

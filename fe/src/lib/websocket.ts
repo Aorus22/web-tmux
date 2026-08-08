@@ -33,6 +33,13 @@ export class TmuxSocket {
   private attempt = 0
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private sendQueue: string[] = []
+  // Monotonic connection generation. Every open() bumps it; a WebSocket whose
+  // generation no longer matches is superseded (a newer connection took its
+  // place) and must neither reconnect nor deliver messages. Without this, a
+  // stale socket whose onclose fires after a session switch can spawn a
+  // second live connection to the wrong session — the store then alternates
+  // between two sessions' snapshots and the UI blinks between their windows.
+  private generation = 0
 
   constructor(session: string, handlers: WsHandlers) {
     this.session = session
@@ -59,10 +66,26 @@ export class TmuxSocket {
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
     const url = `${proto}://${window.location.host}/api/ws?session=${encodeURIComponent(this.session)}`
     this.setTransportState('connecting')
+
+    // Bump the generation and retire any previous socket: a superseded
+    // connection must not reconnect later or keep delivering messages.
+    const gen = ++this.generation
+    if (this.ws) {
+      try {
+        this.ws.close()
+      } catch {
+        // already closing/closed
+      }
+    }
     const ws = new WebSocket(url)
     this.ws = ws
 
     ws.onopen = () => {
+      if (gen !== this.generation) {
+        // A newer connection replaced this one before it opened.
+        ws.close()
+        return
+      }
       this.attempt = 0
       // Flush anything queued while connecting.
       for (const raw of this.sendQueue) {
@@ -73,6 +96,7 @@ export class TmuxSocket {
     }
 
     ws.onmessage = (e) => {
+      if (gen !== this.generation) return // superseded: ignore
       let msg: WsOutgoing
       try {
         msg = JSON.parse(String(e.data)) as WsOutgoing
@@ -84,6 +108,7 @@ export class TmuxSocket {
 
     ws.onclose = () => {
       if (this.closedByUser) return
+      if (gen !== this.generation) return // superseded: never reconnect
       this.scheduleReconnect()
     }
 
@@ -106,9 +131,13 @@ export class TmuxSocket {
         this.handlers.onReady?.(msg.session ?? this.session)
         break
       case EV.stateSnapshot:
+        // Defensive: never apply a snapshot that belongs to another session
+        // (a stale connection could otherwise flip the UI between sessions).
+        if (msg.session && msg.session !== this.session) break
         this.handlers.onStateSnapshot?.(msg.snapshot)
         break
       case EV.stateDelta:
+        if (msg.session && msg.session !== this.session) break
         this.handlers.onStateDelta?.(msg.snapshot)
         break
       case EV.terminalOutput:

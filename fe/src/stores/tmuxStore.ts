@@ -40,7 +40,15 @@ export const useTmuxStore = create<TmuxState>()((set, get) => ({
   reconnecting: false,
   pending: {},
 
-  setSnapshot: (snap) => set({ snapshot: snap }),
+  setSnapshot: (snap) => {
+    // TEMP DEBUG — window-switching flicker investigation. Remove after fix.
+    // Logs the active window (as shown in the status bar) on every snapshot.
+    const active = snap?.windows?.find((w) => w.id === snap?.activeWindow)
+    console.log(
+      `[tmux-gui-debug] ${new Date().toISOString().slice(11, 23)} activeWindow=${snap?.activeWindow ?? 'null'} active=${active ? active.index + ':' + active.name : '?'} windows=[${(snap?.windows ?? []).map((w) => w.index + ':' + w.name).join(' ')}]`,
+    )
+    set({ snapshot: snap })
+  },
 
   setTransport: (transport) => {
     set({ transport, reconnecting: transport === 'reconnecting' })
