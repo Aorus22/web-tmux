@@ -1,0 +1,39 @@
+{
+  "name": "tmux-gui-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tmux GUI — Electron shell (spawns the Go backend, opens the window)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "NODE_ENV=development electron .",
+    "build:linux": "electron-builder --linux AppImage deb",
+    "build": "npm run build:linux"
+  },
+  "build": {
+    "appId": "dev.tmuxgui.desktop",
+    "productName": "Tmux GUI",
+    "files": [
+      "main.js",
+      "preload.js",
+      "resources/tmux-gui-server"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/tmux-gui-server",
+        "to": "tmux-gui-server"
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility"
+    }
+  },
+  "devDependencies": {
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3"
+  }
+}

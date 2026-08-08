@@ -1,0 +1,30 @@
+# Node
+node_modules/
+dist/
+
+# Go
+be/tmux-gui-server
+be/bin/
+
+# Frontend build output (embedded into backend)
+be/internal/web/dist/*
+!be/internal/web/dist/.gitkeep
+
+# Electron
+desktop/resources/tmux-gui-server
+desktop/out/
+desktop/dist/
+desktop/node_modules/
+
+# Env
+.env
+.env.local
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Logs
+*.log
