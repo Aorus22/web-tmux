@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Minus, Square, Copy, X, Settings, TerminalSquare } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { useSettingsDialog } from '@/features/settings/SettingsDialog'
+import { useAppStore } from '@/stores/appStore'
 import { desktop, isDesktop } from '@/lib/desktop-ipc'
 
 // WebkitAppRegion isn't in React's CSSProperties; intersect to type it cleanly.
@@ -45,7 +45,12 @@ export function AppTitleBar() {
           variant="ghost"
           size="icon-sm"
           aria-label="Settings"
-          onClick={() => useSettingsDialog.getState().setOpen(true)}
+          onClick={() => {
+            // Dedicated Settings page (not a modal): unfocus the current tab
+            // and show the page; tabs stay open underneath.
+            useAppStore.getState().setActiveSession(null)
+            useAppStore.getState().setSidebarPage('settings')
+          }}
         >
           <Settings className="size-4" />
         </Button>

@@ -8,6 +8,9 @@ import { PaneHeader } from './PaneHeader'
 import { PaneContextMenu } from './PaneContextMenu'
 import { tmuxSocket } from '@/lib/socket'
 import { useTmuxStore } from '@/stores/tmuxStore'
+import { useSettingsStore } from '@/stores/settingsStore'
+import { terminalBackground } from '@/features/settings/data/terminal-themes'
+import { resolvedTerminalTheme } from '@/features/settings/data/ui-themes'
 import { runCommand } from '@/lib/commands'
 import { toast } from 'sonner'
 
@@ -28,6 +31,14 @@ export function PaneView({ pane, isActive, style }: Props) {
     (p) => p.windowId === pane.windowId && p.id !== pane.id,
   )
 
+  // Terminal theme background. xterm has allowTransparency, so it doesn't
+  // paint theme.background — the pane container is the visible background.
+  // Inline style overrides the bg-[var(--term-bg)] class when a preset is
+  // selected; with no preset it resolves to the same CSS variable (unchanged).
+  const uiTheme = useSettingsStore((s) => s.uiTheme)
+  const terminalTheme = useSettingsStore((s) => s.terminalTheme)
+  const termBg = terminalBackground(resolvedTerminalTheme(uiTheme, terminalTheme))
+
   const zoom = async () => {
     try {
       await runCommand(() => tmuxSocket.paneZoom(pane.id))
@@ -43,7 +54,7 @@ export function PaneView({ pane, isActive, style }: Props) {
           'absolute flex flex-col overflow-hidden rounded-sm border bg-[var(--term-bg)]',
           isActive ? 'border-border/70' : 'border-border/30',
         )}
-        style={style}
+        style={{ ...style, background: termBg }}
         onMouseDown={() => {
           if (!pane.active) void tmuxSocket.paneSelect(pane.id)
         }}

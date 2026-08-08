@@ -1,5 +1,5 @@
-// tmuxStore tests (PRD §76): snapshot handling, command correlation, sequence
-// gap / reconnect behavior, active-pane removal.
+// tmuxStore tests (PRD §76): per-session snapshot handling, view switching,
+// command correlation, transport state, tab close / full clear.
 
 import { beforeEach, describe, expect, it } from 'vitest'
 import { useTmuxStore } from '@/stores/tmuxStore'
@@ -21,17 +21,21 @@ function makeSnapshot(overrides: Partial<TmuxSnapshot> = {}): TmuxSnapshot {
   }
 }
 
+const LOGS_SESSION = { name: 'logs', windows: 1, attached: 1, createdAt: 1, width: 80, height: 24 }
+
 describe('tmuxStore', () => {
   beforeEach(() => {
     useTmuxStore.getState().clear()
   })
 
-  it('stores a snapshot and exposes selectors', () => {
+  it('stores a snapshot per session and mirrors the view session', () => {
     const store = useTmuxStore.getState()
-    store.setSnapshot(makeSnapshot())
+    store.setViewSession('dev')
+    store.setSnapshot('dev', makeSnapshot())
 
     const s = useTmuxStore.getState()
-    expect(useTmuxStore.getState().snapshot?.session.name).toBe('dev')
+    expect(s.snapshots['dev']).toBeDefined()
+    expect(s.snapshot?.session.name).toBe('dev')
     expect(s.snapshot?.activePane).toBe('%0')
     expect(s.snapshot?.windows).toHaveLength(1)
     expect(s.snapshot?.panes).toHaveLength(2)
@@ -39,14 +43,29 @@ describe('tmuxStore', () => {
 
   it('replaces the snapshot on a fresh state.delta', () => {
     const store = useTmuxStore.getState()
-    store.setSnapshot(makeSnapshot())
+    store.setViewSession('dev')
+    store.setSnapshot('dev', makeSnapshot())
     const snap2 = makeSnapshot({
       panes: [
         { id: '%0', index: 0, windowId: '@0', active: true, zoomed: false, left: 0, top: 0, width: 80, height: 24, pid: 1, currentCommand: 'bash', currentPath: '/', title: 'x' },
       ],
     })
-    store.setSnapshot(snap2)
+    store.setSnapshot('dev', snap2)
     expect(useTmuxStore.getState().snapshot?.panes).toHaveLength(1)
+  })
+
+  it('keeps per-session snapshots isolated from the view', () => {
+    const store = useTmuxStore.getState()
+    store.setViewSession('dev')
+    store.setSnapshot('dev', makeSnapshot())
+    // A background tab's snapshot must not clobber the displayed one.
+    store.setSnapshot('logs', makeSnapshot({ session: LOGS_SESSION }))
+    expect(useTmuxStore.getState().snapshot?.session.name).toBe('dev')
+
+    // Switching the view (tab switch) shows the other session's snapshot.
+    store.setViewSession('logs')
+    expect(useTmuxStore.getState().snapshot?.session.name).toBe('logs')
+    expect(useTmuxStore.getState().viewSession).toBe('logs')
   })
 
   it('resolves commands with requestId correlation', async () => {
@@ -72,25 +91,47 @@ describe('tmuxStore', () => {
     expect(() => store.resolveCommand('nope', false, 'x')).not.toThrow()
   })
 
-  it('tracks transport state and reconnecting flag', () => {
+  it('tracks transport per session with the reconnecting flag', () => {
     const store = useTmuxStore.getState()
-    store.setTransport('reconnecting')
+    store.setViewSession('dev')
+    store.setTransport('dev', 'reconnecting')
     expect(useTmuxStore.getState().transport).toBe('reconnecting')
     expect(useTmuxStore.getState().reconnecting).toBe(true)
 
-    store.setTransport('connected')
+    // Background tab's transport does not affect the view.
+    store.setTransport('logs', 'connected')
+    expect(useTmuxStore.getState().transport).toBe('reconnecting')
+
+    store.setTransport('dev', 'connected')
     expect(useTmuxStore.getState().transport).toBe('connected')
     expect(useTmuxStore.getState().reconnecting).toBe(false)
   })
 
-  it('clears all state (used on session switch)', () => {
+  it('clears a closed tab session state (socket already disconnected)', () => {
     const store = useTmuxStore.getState()
-    store.setSnapshot(makeSnapshot())
-    store.setTransport('connected')
+    store.setViewSession('dev')
+    store.setSnapshot('dev', makeSnapshot())
+    store.setTransport('dev', 'connected')
+    store.clearSession('dev')
+
+    const s = useTmuxStore.getState()
+    expect(s.snapshots['dev']).toBeUndefined()
+    expect(s.transports['dev']).toBeUndefined()
+    expect(s.snapshot).toBeNull()
+    expect(s.transport).toBe('disconnected')
+  })
+
+  it('clears all state', () => {
+    const store = useTmuxStore.getState()
+    store.setViewSession('dev')
+    store.setSnapshot('dev', makeSnapshot())
+    store.setTransport('dev', 'connected')
     store.trackCommand('id', { ok: () => {}, error: () => {} })
     store.clear()
 
     const s = useTmuxStore.getState()
+    expect(s.snapshots).toEqual({})
+    expect(s.transports).toEqual({})
     expect(s.snapshot).toBeNull()
     expect(s.transport).toBe('disconnected')
     expect(s.pending).toEqual({})

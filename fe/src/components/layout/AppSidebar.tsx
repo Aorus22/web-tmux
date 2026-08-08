@@ -1,9 +1,9 @@
 // AppSidebar (PRD §33): collapsible session → window → pane tree.
 // Sessions come from the TanStack Query tree (polled 1.5s); clicking a session
-// switches the active connection.
+// opens it as a tab (multi-session). Settings is a dedicated sidebar page.
 
 import { useState } from 'react'
-import { ChevronRight, Plus, RefreshCw } from 'lucide-react'
+import { ChevronRight, Plus, RefreshCw, Settings } from 'lucide-react'
 import type { TmuxTree } from '@/lib/tmux-types'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -16,10 +16,17 @@ interface Props {
   tree: TmuxTree
   activeSession: string | null
   onSelectSession: (name: string) => void
+  onOpenSettings: () => void
   onRefetch: () => void
 }
 
-export function AppSidebar({ tree, activeSession, onSelectSession, onRefetch }: Props) {
+export function AppSidebar({
+  tree,
+  activeSession,
+  onSelectSession,
+  onOpenSettings,
+  onRefetch,
+}: Props) {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
@@ -131,6 +138,17 @@ export function AppSidebar({ tree, activeSession, onSelectSession, onRefetch }: 
             })}
           </div>
         </ScrollArea>
+        <div className="border-t p-1.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start gap-2 text-sm"
+            onClick={onOpenSettings}
+          >
+            <Settings className="size-3.5" />
+            Settings
+          </Button>
+        </div>
       </div>
     </aside>
   )

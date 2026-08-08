@@ -178,7 +178,13 @@ func (h *WSHandler) dispatch(ctx context.Context, c *Client, in Incoming) {
 	case MsgSessionRename:
 		failOr(fail, h.svc.RenameSession(ctx, session, in.NewName), ok)
 	case MsgSessionKill:
-		failOr(fail, h.svc.KillSession(ctx, session), ok)
+		// Multi-session: an explicit session name targets any session; the
+		// default is the client's own session.
+		target := session
+		if in.Session != "" {
+			target = in.Session
+		}
+		failOr(fail, h.svc.KillSession(ctx, target), ok)
 
 	case MsgStateResync:
 		snap, err := h.svc.Snapshot(ctx, session)

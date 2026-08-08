@@ -6,22 +6,45 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
+import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'
 import type { TmuxPane, TmuxSnapshot } from '@/lib/tmux-types'
 import { pixelRect, pxToColsRows } from '@/lib/geometry'
-import { tmuxSocket } from '@/lib/socket'
+import { closeSocket, ensureSocket, getSocket } from '@/lib/sockets'
+import { useTmuxStore, type TransportState } from '@/stores/tmuxStore'
+import { useSettingsStore } from '@/stores/settingsStore'
+import { terminalBackground } from '@/features/settings/data/terminal-themes'
+import { resolvedTerminalTheme } from '@/features/settings/data/ui-themes'
+import { Button } from '@/components/ui/button'
 import { PaneView } from './PaneView'
 import { PaneResizeHandle } from './PaneResizeHandle'
 
 interface Props {
+  session: string
   snapshot: TmuxSnapshot | null
-  transport: string
-  onSelectSession?: (name: string) => void
+  transport: TransportState
 }
 
-export function PaneWorkspace({ snapshot }: Props) {
+// Reconnect helper for the "disconnected" empty state: tears down the tab's
+// socket and opens a fresh one. No backend changes needed — the socket layer
+// already handles connect/reconnect.
+function reconnectSession(session: string) {
+  useTmuxStore.getState().setTransport(session, 'connecting')
+  closeSocket(session)
+  ensureSocket(session)
+}
+
+export function PaneWorkspace({ session, snapshot, transport }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 0, h: 0 })
   const resizeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Workspace background follows the selected terminal theme (xterm doesn't
+  // paint its own background with allowTransparency, so this container is the
+  // visible background). With no explicit terminal theme it follows the app
+  // UI theme's mapped terminal preset; resolves to the CSS variable otherwise.
+  const uiTheme = useSettingsStore((s) => s.uiTheme)
+  const terminalTheme = useSettingsStore((s) => s.terminalTheme)
+  const termBg = terminalBackground(resolvedTerminalTheme(uiTheme, terminalTheme))
 
   useEffect(() => {
     const el = containerRef.current
@@ -35,19 +58,19 @@ export function PaneWorkspace({ snapshot }: Props) {
   }, [])
 
   // Report the workspace viewport to tmux (debounced ~100ms so a window drag
-  // never spams resize commands). Sent on connect and on every browser resize.
-  const sessionName = snapshot?.session.name
+  // never spams resize commands) — to THIS session's own socket, so every
+  // open tab's control client tracks the window size.
   useEffect(() => {
-    if (!sessionName || size.w <= 0 || size.h <= 0) return
+    if (size.w <= 0 || size.h <= 0) return
     const { cols, rows } = pxToColsRows(size.w, size.h)
     if (resizeTimer.current) clearTimeout(resizeTimer.current)
     resizeTimer.current = setTimeout(() => {
-      tmuxSocket.terminalResize(cols, rows)
+      getSocket(session)?.terminalResize(cols, rows)
     }, 100)
     return () => {
       if (resizeTimer.current) clearTimeout(resizeTimer.current)
     }
-  }, [size.w, size.h, sessionName])
+  }, [size.w, size.h, session])
 
   const activeWindowId = snapshot?.activeWindow
   const windowObj = snapshot?.windows.find((w) => w.id === activeWindowId)
@@ -66,9 +89,46 @@ export function PaneWorkspace({ snapshot }: Props) {
 
   if (!snapshot || !windowObj || panes.length === 0) {
     return (
-      <div ref={containerRef} className="relative min-h-0 flex-1 overflow-hidden bg-black/50">
-        <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-          Connecting to tmux...
+      <div
+        ref={containerRef}
+        className="relative min-h-0 flex-1 overflow-hidden bg-[var(--term-bg)]"
+        style={{ background: termBg }}
+      >
+        <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+          {transport === 'disconnected' ? (
+            <>
+              <AlertTriangle className="size-6 text-destructive" />
+              <div>
+                <p className="text-sm font-medium text-foreground">Connection lost</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  The connection to {session} dropped. Reconnect to keep working.
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => reconnectSession(session)}
+              >
+                Reconnect
+              </Button>
+            </>
+          ) : transport === 'reconnecting' ? (
+            <>
+              <RefreshCw className="size-5 animate-pulse text-amber-500" />
+              <p className="text-xs text-muted-foreground">
+                Reconnecting to {session}...
+              </p>
+            </>
+          ) : (
+            <>
+              <Loader2 className="size-5 animate-spin text-muted-foreground" />
+              <p className="text-xs text-muted-foreground">
+                {transport === 'connected'
+                  ? `Waiting for ${session}...`
+                  : `Connecting to ${session}...`}
+              </p>
+            </>
+          )}
         </div>
       </div>
     )
@@ -138,6 +198,7 @@ export function PaneWorkspace({ snapshot }: Props) {
     <div
       ref={containerRef}
       className="relative min-h-0 flex-1 overflow-hidden bg-[var(--term-bg)]"
+      style={{ background: termBg }}
     >
       {positioned.map(({ pane, rect }) =>
         renderPane(pane, {

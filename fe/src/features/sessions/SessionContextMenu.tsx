@@ -31,6 +31,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { runCommand, shouldConfirm } from '@/lib/commands'
 import { tmuxSocket } from '@/lib/socket'
+import { useAppStore } from '@/stores/appStore'
 import { useCreateSessionDialog } from './CreateSessionDialog'
 
 interface Props {
@@ -63,9 +64,11 @@ export function SessionContextMenu({ sessionName, onCreated, children }: Props) 
   const doKill = async () => {
     setBusy(true)
     try {
-      await runCommand(() => tmuxSocket.sessionKill())
+      await runCommand(() => tmuxSocket.sessionKillByName(sessionName))
       toast.success(`Session "${sessionName}" killed`)
       setKillOpen(false)
+      // The session is gone — close its tab if it was open.
+      useAppStore.getState().closeSession(sessionName)
     } catch (e) {
       toast.error((e as Error).message)
       setKillOpen(false)

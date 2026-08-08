@@ -1,20 +1,28 @@
-// Singleton socket (PRD §46): exactly one active session connection at a time.
-// UI components call tmuxSocket.<action>(...) directly; useTmuxSocket
-// configures the handlers, then connects/disconnects.
+// Facade socket (multi-session): UI components call `tmuxSocket.<action>()`
+// and the call is delegated to the ACTIVE session's live socket. Each open
+// session tab owns a real TmuxSocket managed by lib/sockets.ts; this proxy
+// keeps existing components working unchanged while always targeting the
+// session currently displayed.
+//
+// getOrCreateSocket (not getSocket) so messages sent before the socket
+// manager connects — e.g. the initial terminalCapture when a workspace
+// mounts — are queued on the socket and flushed once it connects.
 
-import { TmuxSocket, type WsHandlers } from './websocket'
+import type { TmuxSocket } from './websocket'
+import { useAppStore } from '@/stores/appStore'
+import { getOrCreateSocket } from './sockets'
 
-export const tmuxSocket = new TmuxSocket('', {})
+const NOOP = (): string => ''
 
-export function configureSocket(handlers: WsHandlers) {
-  tmuxSocket.setHandlers(handlers)
-}
-
-export function connectSocket(session: string) {
-  tmuxSocket.setSession(session)
-  tmuxSocket.connect()
-}
-
-export function disconnectSocket() {
-  tmuxSocket.close()
-}
+export const tmuxSocket: TmuxSocket = new Proxy({} as TmuxSocket, {
+  get(_target, prop: string | symbol) {
+    if (typeof prop !== 'string') return undefined
+    const active = useAppStore.getState().activeSession
+    const socket = active ? getOrCreateSocket(active) : undefined
+    if (!socket) return NOOP
+    const value = (socket as unknown as Record<string, unknown>)[prop]
+    return typeof value === 'function'
+      ? (value as (...args: unknown[]) => unknown).bind(socket)
+      : value
+  },
+})

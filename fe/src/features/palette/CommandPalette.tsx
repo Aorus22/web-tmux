@@ -97,12 +97,12 @@ export function CommandPalette() {
         {tree && tree.sessions.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Switch Session">
+            <CommandGroup heading="Open Session">
               {tree.sessions.map((node) => (
                 <CommandItem
                   key={node.session.name}
                   onSelect={() => {
-                    useAppStore.getState().setActiveSession(node.session.name)
+                    useAppStore.getState().openSession(node.session.name)
                     setOpen(false)
                   }}
                 >

@@ -5,7 +5,12 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
 export interface Settings {
-  theme: 'dark' | 'light'
+  // Selected UI theme preset name (see features/settings/data/ui-themes.ts).
+  // Unknown/missing values fall back to the default dark theme.
+  uiTheme: string
+  // Selected terminal theme preset name (see features/settings/data/
+  // terminal-themes.ts). null = follow the app UI theme's terminal colors.
+  terminalTheme: string | null
   fontFamily: string
   fontSize: number
   lineHeight: number
@@ -21,7 +26,8 @@ interface SettingsState extends Settings {
 }
 
 const DEFAULTS: Settings = {
-  theme: 'dark',
+  uiTheme: 'default-dark',
+  terminalTheme: null,
   fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace',
   fontSize: 14,
   lineHeight: 1.35,

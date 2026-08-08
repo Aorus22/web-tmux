@@ -52,7 +52,8 @@ export class TmuxSocket {
     this.session = session
   }
 
-  // setHandlers replaces the event handlers (used by useTmuxSocket on connect).
+  // setHandlers replaces the event handlers (used by the per-session socket
+  // manager in lib/sockets.ts).
   setHandlers(handlers: WsHandlers) {
     this.handlers = handlers
   }
@@ -300,6 +301,14 @@ export class TmuxSocket {
   sessionKill(): string {
     const id = this.nextRequestId()
     this.send({ type: MSG.sessionKill, requestId: id })
+    return id
+  }
+
+  // sessionKillByName kills a specific session (multi-session: the context
+  // menu can target a session that is not the active tab).
+  sessionKillByName(name: string): string {
+    const id = this.nextRequestId()
+    this.send({ type: MSG.sessionKill, session: name, requestId: id })
     return id
   }
 

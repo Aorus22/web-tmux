@@ -1,6 +1,11 @@
-// Live tmux state (PRD §46: Zustand). Holds the snapshot for the active
-// session, command-result correlation, and transport state. Terminal output
-// bypasses React entirely — the terminal registry writes directly to xterm.
+// Live tmux state (PRD §46: Zustand). Holds per-session snapshots and
+// transport state for every open session tab, plus command-result
+// correlation. Terminal output bypasses React entirely — the terminal
+// registry writes directly to xterm.
+//
+// `viewSession` mirrors appStore.activeSession: `snapshot`/`transport` below
+// are kept in sync with it so existing components keep reading the same
+// single-session shape while multiple sessions stay connected underneath.
 
 import { create } from 'zustand'
 import type { TmuxSnapshot } from '@/lib/tmux-types'
@@ -13,6 +18,12 @@ interface CommandCallbacks {
 }
 
 interface TmuxState {
+  // Per-session live state (keyed by session name).
+  snapshots: Record<string, TmuxSnapshot>
+  transports: Record<string, TransportState>
+
+  // View state: the session currently displayed.
+  viewSession: string | null
   snapshot: TmuxSnapshot | null
   transport: TransportState
   tmuxVersion: string
@@ -21,8 +32,10 @@ interface TmuxState {
   // pending command correlations (requestId → callbacks)
   pending: Record<string, CommandCallbacks>
 
-  setSnapshot: (snap: TmuxSnapshot) => void
-  setTransport: (s: TransportState) => void
+  setSnapshot: (session: string, snap: TmuxSnapshot) => void
+  setTransport: (session: string, s: TransportState) => void
+  setViewSession: (session: string | null) => void
+  clearSession: (session: string) => void
   setReconnecting: (v: boolean) => void
   setTmuxVersion: (v: string) => void
 
@@ -34,25 +47,61 @@ interface TmuxState {
 }
 
 export const useTmuxStore = create<TmuxState>()((set, get) => ({
+  snapshots: {},
+  transports: {},
+  viewSession: null,
   snapshot: null,
   transport: 'disconnected',
   tmuxVersion: '',
   reconnecting: false,
   pending: {},
 
-  setSnapshot: (snap) => {
-    // TEMP DEBUG — window-switching flicker investigation. Remove after fix.
-    // Logs the active window (as shown in the status bar) on every snapshot.
-    const active = snap?.windows?.find((w) => w.id === snap?.activeWindow)
-    console.log(
-      `[tmux-gui-debug] ${new Date().toISOString().slice(11, 23)} activeWindow=${snap?.activeWindow ?? 'null'} active=${active ? active.index + ':' + active.name : '?'} windows=[${(snap?.windows ?? []).map((w) => w.index + ':' + w.name).join(' ')}]`,
-    )
-    set({ snapshot: snap })
-  },
+  setSnapshot: (session, snap) =>
+    set((s) => {
+      const snapshots = { ...s.snapshots, [session]: snap }
+      return { snapshots, snapshot: session === s.viewSession ? snap : s.snapshot }
+    }),
 
-  setTransport: (transport) => {
-    set({ transport, reconnecting: transport === 'reconnecting' })
-  },
+  setTransport: (session, transport) =>
+    set((s) => {
+      const transports = { ...s.transports, [session]: transport }
+      const isView = session === s.viewSession
+      return {
+        transports,
+        transport: isView ? transport : s.transport,
+        reconnecting: isView ? transport === 'reconnecting' : s.reconnecting,
+      }
+    }),
+
+  // setViewSession switches which session the UI displays (tab switch). The
+  // store keeps snapshots for all open sessions; only the view is mirrored.
+  setViewSession: (viewSession) =>
+    set((s) => ({
+      viewSession,
+      snapshot: viewSession ? (s.snapshots[viewSession] ?? null) : null,
+      transport: viewSession ? (s.transports[viewSession] ?? 'disconnected') : 'disconnected',
+      reconnecting: viewSession
+        ? (s.transports[viewSession] ?? 'disconnected') === 'reconnecting'
+        : false,
+    })),
+
+  // clearSession drops a closed tab's state (socket already disconnected).
+  clearSession: (session) =>
+    set((s) => {
+      const snapshots = { ...s.snapshots }
+      const transports = { ...s.transports }
+      delete snapshots[session]
+      delete transports[session]
+      const view = s.viewSession === session ? null : s.viewSession
+      return {
+        snapshots,
+        transports,
+        viewSession: view,
+        snapshot: view ? (snapshots[view] ?? null) : null,
+        transport: view ? (transports[view] ?? 'disconnected') : 'disconnected',
+        reconnecting: view ? (transports[view] ?? 'disconnected') === 'reconnecting' : false,
+      }
+    }),
 
   setReconnecting: (reconnecting) => set({ reconnecting }),
 
@@ -87,6 +136,9 @@ export const useTmuxStore = create<TmuxState>()((set, get) => ({
 
   clear: () =>
     set({
+      snapshots: {},
+      transports: {},
+      viewSession: null,
       snapshot: null,
       transport: 'disconnected',
       reconnecting: false,

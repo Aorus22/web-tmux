@@ -10,11 +10,65 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { terminalRegistry } from './terminalRegistry'
 import { tmuxSocket } from '@/lib/socket'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { getTerminalTheme, type TerminalThemePreset } from '@/features/settings/data/terminal-themes'
+import { resolvedTerminalTheme } from '@/features/settings/data/ui-themes'
 
 export interface UseTerminalOptions {
   paneId: string
   onResize?: (cols: number, rows: number) => void
   onOpen?: (term: Terminal) => void
+}
+
+// Fallback theme: CSS variables (the app's default terminal colors). Used when
+// no terminal theme preset is selected, and per-key when a preset lacks a
+// color. xterm accepts CSS var strings because the terminal is rendered in-DOM.
+const CSS_VAR_THEME = {
+  background: 'var(--term-bg)',
+  foreground: 'var(--term-fg)',
+  cursor: 'var(--term-cursor)',
+  black: 'var(--term-color-0)',
+  red: 'var(--term-color-1)',
+  green: 'var(--term-color-2)',
+  yellow: 'var(--term-color-3)',
+  blue: 'var(--term-color-4)',
+  magenta: 'var(--term-color-5)',
+  cyan: 'var(--term-color-6)',
+  white: 'var(--term-color-7)',
+  brightBlack: 'var(--term-color-8)',
+  brightRed: 'var(--term-color-9)',
+  brightGreen: 'var(--term-color-10)',
+  brightYellow: 'var(--term-color-11)',
+  brightBlue: 'var(--term-color-12)',
+  brightMagenta: 'var(--term-color-13)',
+  brightCyan: 'var(--term-color-14)',
+  brightWhite: 'var(--term-color-15)',
+} as const
+
+// Map a preset's 18 colors onto the xterm theme object, falling back to the
+// CSS variables for any key the preset doesn't provide.
+function presetToXtermTheme(preset: TerminalThemePreset) {
+  const c = preset.colors
+  return {
+    background: c.background ?? CSS_VAR_THEME.background,
+    foreground: c.foreground ?? CSS_VAR_THEME.foreground,
+    cursor: c.cursor ?? CSS_VAR_THEME.cursor,
+    black: c.black ?? CSS_VAR_THEME.black,
+    red: c.red ?? CSS_VAR_THEME.red,
+    green: c.green ?? CSS_VAR_THEME.green,
+    yellow: c.yellow ?? CSS_VAR_THEME.yellow,
+    blue: c.blue ?? CSS_VAR_THEME.blue,
+    magenta: c.magenta ?? CSS_VAR_THEME.magenta,
+    cyan: c.cyan ?? CSS_VAR_THEME.cyan,
+    white: c.white ?? CSS_VAR_THEME.white,
+    brightBlack: c.brightBlack ?? CSS_VAR_THEME.brightBlack,
+    brightRed: c.brightRed ?? CSS_VAR_THEME.brightRed,
+    brightGreen: c.brightGreen ?? CSS_VAR_THEME.brightGreen,
+    brightYellow: c.brightYellow ?? CSS_VAR_THEME.brightYellow,
+    brightBlue: c.brightBlue ?? CSS_VAR_THEME.brightBlue,
+    brightMagenta: c.brightMagenta ?? CSS_VAR_THEME.brightMagenta,
+    brightCyan: c.brightCyan ?? CSS_VAR_THEME.brightCyan,
+    brightWhite: c.brightWhite ?? CSS_VAR_THEME.brightWhite,
+  }
 }
 
 export function useTerminal({ paneId, onResize, onOpen }: UseTerminalOptions) {
@@ -29,11 +83,15 @@ export function useTerminal({ paneId, onResize, onOpen }: UseTerminalOptions) {
   const fontFamily = useSettingsStore((s) => s.fontFamily)
   const fontSize = useSettingsStore((s) => s.fontSize)
   const lineHeight = useSettingsStore((s) => s.lineHeight)
-  const theme = useSettingsStore((s) => s.theme)
+  const uiTheme = useSettingsStore((s) => s.uiTheme)
   const scrollbackLines = useSettingsStore((s) => s.scrollbackLines)
+  const terminalTheme = useSettingsStore((s) => s.terminalTheme)
 
   const createTerminal = useCallback(() => {
     if (!containerRef.current || termRef.current) return
+    // Explicit terminal theme wins; otherwise the UI theme's mapped terminal
+    // preset applies (so the terminal follows the app theme by default).
+    const preset = getTerminalTheme(resolvedTerminalTheme(uiTheme, terminalTheme))
     const term = new Terminal({
       fontFamily,
       fontSize,
@@ -41,27 +99,7 @@ export function useTerminal({ paneId, onResize, onOpen }: UseTerminalOptions) {
       scrollback: scrollbackLines,
       cursorBlink: true,
       allowTransparency: true,
-      theme: {
-        background: 'var(--term-bg)',
-        foreground: 'var(--term-fg)',
-        cursor: 'var(--term-cursor)',
-        black: 'var(--term-color-0)',
-        red: 'var(--term-color-1)',
-        green: 'var(--term-color-2)',
-        yellow: 'var(--term-color-3)',
-        blue: 'var(--term-color-4)',
-        magenta: 'var(--term-color-5)',
-        cyan: 'var(--term-color-6)',
-        white: 'var(--term-color-7)',
-        brightBlack: 'var(--term-color-8)',
-        brightRed: 'var(--term-color-9)',
-        brightGreen: 'var(--term-color-10)',
-        brightYellow: 'var(--term-color-11)',
-        brightBlue: 'var(--term-color-12)',
-        brightMagenta: 'var(--term-color-13)',
-        brightCyan: 'var(--term-color-14)',
-        brightWhite: 'var(--term-color-15)',
-      },
+      theme: preset ? presetToXtermTheme(preset) : CSS_VAR_THEME,
     })
 
     const fit = new FitAddon()
@@ -122,7 +160,7 @@ export function useTerminal({ paneId, onResize, onOpen }: UseTerminalOptions) {
     termRef.current = term
     fitRef.current = fit
     cbRef.current.onOpen?.(term)
-  }, [paneId, fontFamily, fontSize, lineHeight, scrollbackLines, theme])
+  }, [paneId, fontFamily, fontSize, lineHeight, scrollbackLines, uiTheme, terminalTheme])
 
   useEffect(() => {
     createTerminal()
