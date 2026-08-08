@@ -19,6 +19,7 @@ export interface WsIncoming {
   cwd?: string
   command?: string
   newName?: string
+  title?: string
   otherPaneId?: string
   layout?: string
 }
@@ -45,6 +46,7 @@ export const MSG = {
   paneSplit: 'pane.split',
   paneResize: 'pane.resize',
   paneKill: 'pane.kill',
+  paneRename: 'pane.rename',
   paneZoom: 'pane.zoom',
   paneBreak: 'pane.break',
   paneSwap: 'pane.swap',

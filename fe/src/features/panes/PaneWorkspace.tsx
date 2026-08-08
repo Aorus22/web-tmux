@@ -38,13 +38,11 @@ export function PaneWorkspace({ session, snapshot, transport }: Props) {
   const [size, setSize] = useState({ w: 0, h: 0 })
   const resizeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Workspace background follows the selected terminal theme (xterm doesn't
+  // Workspace background follows the app theme's terminal colors (xterm doesn't
   // paint its own background with allowTransparency, so this container is the
-  // visible background). With no explicit terminal theme it follows the app
-  // UI theme's mapped terminal preset; resolves to the CSS variable otherwise.
+  // visible background). Resolves to the CSS variable without a mapped preset.
   const uiTheme = useSettingsStore((s) => s.uiTheme)
-  const terminalTheme = useSettingsStore((s) => s.terminalTheme)
-  const termBg = terminalBackground(resolvedTerminalTheme(uiTheme, terminalTheme))
+  const termBg = terminalBackground(resolvedTerminalTheme(uiTheme))
 
   useEffect(() => {
     const el = containerRef.current

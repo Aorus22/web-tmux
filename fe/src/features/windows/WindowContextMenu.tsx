@@ -32,12 +32,12 @@ export function WindowContextMenu({
     <ContextMenu>
       <ContextMenuTrigger>{children}</ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onSelect={onRename}>Rename Window</ContextMenuItem>
-        <ContextMenuItem onSelect={onMoveLeft}>Move Left</ContextMenuItem>
-        <ContextMenuItem onSelect={onMoveRight}>Move Right</ContextMenuItem>
-        <ContextMenuItem onSelect={onBreakActive}>Break Active Pane</ContextMenuItem>
+        <ContextMenuItem onClick={onRename}>Rename Window</ContextMenuItem>
+        <ContextMenuItem onClick={onMoveLeft}>Move Left</ContextMenuItem>
+        <ContextMenuItem onClick={onMoveRight}>Move Right</ContextMenuItem>
+        <ContextMenuItem onClick={onBreakActive}>Break Active Pane</ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem variant="destructive" onSelect={onKill}>
+        <ContextMenuItem variant="destructive" onClick={onKill}>
           Kill Window
         </ContextMenuItem>
       </ContextMenuContent>

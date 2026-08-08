@@ -1,8 +1,7 @@
-// UiThemeSettings — pick the app-wide UI theme from the curated presets (see
-// data/ui-themes.ts). Cards show a swatch preview; the selected preset is
-// stored in settingsStore.uiTheme and applied as CSS variables on <html> in
-// App.tsx. The app's terminal colors follow the selected UI theme unless an
-// explicit terminal theme is chosen (see resolvedTerminalTheme).
+// UiThemeSettings — the app theme picker (web-term style). Cards show a swatch
+// preview; the selected preset is stored in settingsStore.uiTheme and applied
+// as CSS variables on <html> in App.tsx. One theme themes the whole app — the
+// terminal follows the selected theme automatically (see resolvedTerminalTheme).
 
 import { useState } from 'react'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -26,7 +25,7 @@ export function UiThemeSettings() {
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium">UI theme</span>
+        <span className="text-sm font-medium">Theme</span>
         <Tabs value={filter} onValueChange={(v) => setFilter(v as Filter)}>
           <TabsList className="h-7">
             <TabsTrigger value="all" className="h-full px-2 text-xs">

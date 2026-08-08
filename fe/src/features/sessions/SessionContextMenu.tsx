@@ -87,12 +87,12 @@ export function SessionContextMenu({ sessionName, onCreated, children }: Props) 
       <ContextMenuTrigger>{children}</ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem
-          onSelect={() => useCreateSessionDialog.getState().setOpen(true)}
+          onClick={() => useCreateSessionDialog.getState().setOpen(true)}
         >
           New Session
         </ContextMenuItem>
         <ContextMenuItem
-          onSelect={() => {
+          onClick={() => {
             setNewName(sessionName)
             setRenameOpen(true)
           }}
@@ -100,7 +100,7 @@ export function SessionContextMenu({ sessionName, onCreated, children }: Props) 
           Rename
         </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem variant="destructive" onSelect={confirmKill}>
+        <ContextMenuItem variant="destructive" onClick={confirmKill}>
           Kill Session
         </ContextMenuItem>
       </ContextMenuContent>

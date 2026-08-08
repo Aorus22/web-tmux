@@ -4,6 +4,11 @@
   "private": true,
   "description": "Tmux GUI — Electron shell (spawns the Go backend, opens the window)",
   "main": "main.js",
+  "author": {
+    "name": "Tmux GUI",
+    "email": "tmux-gui@localhost"
+  },
+  "homepage": "https://github.com/tmux-gui/tmux-gui",
   "scripts": {
     "start": "electron .",
     "dev": "NODE_ENV=development electron .",

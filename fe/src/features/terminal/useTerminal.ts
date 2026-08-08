@@ -85,13 +85,11 @@ export function useTerminal({ paneId, onResize, onOpen }: UseTerminalOptions) {
   const lineHeight = useSettingsStore((s) => s.lineHeight)
   const uiTheme = useSettingsStore((s) => s.uiTheme)
   const scrollbackLines = useSettingsStore((s) => s.scrollbackLines)
-  const terminalTheme = useSettingsStore((s) => s.terminalTheme)
 
   const createTerminal = useCallback(() => {
     if (!containerRef.current || termRef.current) return
-    // Explicit terminal theme wins; otherwise the UI theme's mapped terminal
-    // preset applies (so the terminal follows the app theme by default).
-    const preset = getTerminalTheme(resolvedTerminalTheme(uiTheme, terminalTheme))
+    // The terminal follows the app theme (see resolvedTerminalTheme).
+    const preset = getTerminalTheme(resolvedTerminalTheme(uiTheme))
     const term = new Terminal({
       fontFamily,
       fontSize,
@@ -160,7 +158,7 @@ export function useTerminal({ paneId, onResize, onOpen }: UseTerminalOptions) {
     termRef.current = term
     fitRef.current = fit
     cbRef.current.onOpen?.(term)
-  }, [paneId, fontFamily, fontSize, lineHeight, scrollbackLines, uiTheme, terminalTheme])
+  }, [paneId, fontFamily, fontSize, lineHeight, scrollbackLines, uiTheme])
 
   useEffect(() => {
     createTerminal()

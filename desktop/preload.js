@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('desktop', {
   platform: process.platform,
   isElectron: true,
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  pickDirectory: () => ipcRenderer.invoke('pick-directory'),
   window: {
     minimize: () => ipcRenderer.send('window-minimize'),
     maximize: () => ipcRenderer.send('window-maximize'),

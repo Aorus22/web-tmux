@@ -13,10 +13,13 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import type { TmuxPane } from '@/lib/tmux-types'
 import { tmuxSocket } from '@/lib/socket'
@@ -41,6 +44,8 @@ interface Props {
 export function PaneContextMenu({ pane, otherPanes, children }: Props) {
   const [swapOpen, setSwapOpen] = useState(false)
   const [killOpen, setKillOpen] = useState(false)
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [renameValue, setRenameValue] = useState('')
   const [busy, setBusy] = useState(false)
 
   const split = async (direction: 'horizontal' | 'vertical') => {
@@ -92,6 +97,20 @@ export function PaneContextMenu({ pane, otherPanes, children }: Props) {
     }
   }
 
+  const doRename = async () => {
+    if (!renameValue.trim()) return
+    setBusy(true)
+    try {
+      await runCommand(() => tmuxSocket.paneRename(pane.id, renameValue.trim()))
+      toast.success('Pane renamed')
+      setRenameOpen(false)
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const confirmKill = () => {
     if (shouldConfirm('pane')) setKillOpen(true)
     else void doKill()
@@ -101,20 +120,28 @@ export function PaneContextMenu({ pane, otherPanes, children }: Props) {
     <ContextMenu>
       <ContextMenuTrigger>{children}</ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onSelect={() => void split('horizontal')}>
+        <ContextMenuItem onClick={() => void split('horizontal')}>
           Split Right
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => void split('vertical')}>
+        <ContextMenuItem onClick={() => void split('vertical')}>
           Split Down
         </ContextMenuItem>
+        <ContextMenuItem
+          onClick={() => {
+            setRenameValue(pane.title || pane.currentCommand || '')
+            setRenameOpen(true)
+          }}
+        >
+          Rename Pane
+        </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => void zoom()}>Zoom</ContextMenuItem>
-        <ContextMenuItem onSelect={() => setSwapOpen(true)} disabled={otherPanes.length === 0}>
+        <ContextMenuItem onClick={() => void zoom()}>Zoom</ContextMenuItem>
+        <ContextMenuItem onClick={() => setSwapOpen(true)} disabled={otherPanes.length === 0}>
           Swap
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => void breakPane()}>Break To Window</ContextMenuItem>
+        <ContextMenuItem onClick={() => void breakPane()}>Break To Window</ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem variant="destructive" onSelect={confirmKill}>
+        <ContextMenuItem variant="destructive" onClick={confirmKill}>
           Kill
         </ContextMenuItem>
       </ContextMenuContent>
@@ -147,6 +174,34 @@ export function PaneContextMenu({ pane, otherPanes, children }: Props) {
               )}
             </div>
           </ScrollArea>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Rename Pane</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="pane-rename">New name</Label>
+            <Input
+              id="pane-rename"
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void doRename()
+              }}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRenameOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void doRename()} disabled={busy || !renameValue.trim()}>
+              Rename
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

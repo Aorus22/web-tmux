@@ -159,6 +159,39 @@
   html {
     @apply font-sans;
   }
+
+  /* Custom scrollbars (web-term style): a thin rounded thumb that follows the
+     active UI theme — --foreground is set per theme preset, so scrollbars
+     recolor automatically. Chromium/Electron (webkit) applies these to every
+     native scrollable surface (settings page, dialogs, terminal); the sidebar
+     ScrollArea renders its own themed thumb. */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 9999px;
+    background-clip: padding-box;
+    background-color: color-mix(in srgb, var(--foreground) 15%, transparent);
+    transition: background-color 150ms ease;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in srgb, var(--foreground) 35%, transparent);
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* Firefox fallback (the terminal's own scrollbar-color in .xterm below
+     overrides this via higher specificity). */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--foreground) 20%, transparent) transparent;
+  }
 }
 
 /* xterm overrides: transparent background so pane styling shows through */

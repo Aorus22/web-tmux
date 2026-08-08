@@ -1,5 +1,5 @@
-// PaneHeader (PRD §35): active dot, current command, cwd, pane ID, and a
-// hover toolbar (Split / Zoom / Kill). Double-click zooms (PRD §20).
+// PaneHeader (PRD §35): current path, pane ID, and a hover toolbar
+// (Split / Zoom / Kill). Double-click zooms (PRD §20).
 
 import { Maximize2, SplitSquareVertical, X } from 'lucide-react'
 import type { TmuxPane } from '@/lib/tmux-types'
@@ -62,17 +62,8 @@ export function PaneHeader({ pane, isActive, onZoom }: Props) {
           isActive ? 'bg-secondary/50' : 'bg-background/60',
         )}
       >
-        <span
-          className={cn(
-            'size-1.5 shrink-0 rounded-full',
-            isActive ? 'bg-emerald-500' : 'bg-muted-foreground/40',
-          )}
-        />
-        <span className="max-w-36 truncate font-medium text-foreground/90">
-          {pane.currentCommand || pane.title || 'shell'}
-        </span>
-        <span className="max-w-40 truncate text-muted-foreground">{pane.currentPath}</span>
-        <span className="ml-auto shrink-0 font-mono text-muted-foreground/70">
+        <span className="min-w-0 flex-1 truncate text-muted-foreground">{pane.currentPath}</span>
+        <span className="shrink-0 font-mono text-muted-foreground/70">
           {pane.id}
         </span>
         <span className="hidden shrink-0 items-center gap-0.5 group-hover/header:flex">

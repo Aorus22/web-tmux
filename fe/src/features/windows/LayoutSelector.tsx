@@ -39,12 +39,12 @@ export function LayoutSelector({ windowId }: Props) {
         <DropdownMenuLabel>Layout</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {LAYOUTS.map(({ id, label }) => (
-          <DropdownMenuItem key={id} onSelect={() => void apply(id)}>
+          <DropdownMenuItem key={id} onClick={() => void apply(id)}>
             {label}
           </DropdownMenuItem>
         ))}
         <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => void apply('next-layout')}>
+        <DropdownMenuItem onClick={() => void apply('next-layout')}>
           Next Layout
         </DropdownMenuItem>
       </DropdownMenuContent>

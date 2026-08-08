@@ -5,6 +5,7 @@ export interface DesktopApi {
   platform: string
   isElectron: boolean
   openExternal: (url: string) => void
+  pickDirectory: () => Promise<string | null>
   window: {
     minimize: () => void
     maximize: () => void

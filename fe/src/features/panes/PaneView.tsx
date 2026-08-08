@@ -31,13 +31,12 @@ export function PaneView({ pane, isActive, style }: Props) {
     (p) => p.windowId === pane.windowId && p.id !== pane.id,
   )
 
-  // Terminal theme background. xterm has allowTransparency, so it doesn't
-  // paint theme.background — the pane container is the visible background.
-  // Inline style overrides the bg-[var(--term-bg)] class when a preset is
-  // selected; with no preset it resolves to the same CSS variable (unchanged).
+  // Terminal background follows the app theme. xterm has allowTransparency, so
+  // it doesn't paint theme.background — the pane container is the visible
+  // background. Inline style overrides the bg-[var(--term-bg)] class; without
+  // a mapped terminal preset it resolves to the same CSS variable (unchanged).
   const uiTheme = useSettingsStore((s) => s.uiTheme)
-  const terminalTheme = useSettingsStore((s) => s.terminalTheme)
-  const termBg = terminalBackground(resolvedTerminalTheme(uiTheme, terminalTheme))
+  const termBg = terminalBackground(resolvedTerminalTheme(uiTheme))
 
   const zoom = async () => {
     try {

@@ -8,8 +8,8 @@ export interface Settings {
   // Selected UI theme preset name (see features/settings/data/ui-themes.ts).
   // Unknown/missing values fall back to the default dark theme.
   uiTheme: string
-  // Selected terminal theme preset name (see features/settings/data/
-  // terminal-themes.ts). null = follow the app UI theme's terminal colors.
+  // Legacy field, kept for persisted-value compatibility. The terminal now
+  // always follows the UI theme; this value is no longer read.
   terminalTheme: string | null
   fontFamily: string
   fontSize: number

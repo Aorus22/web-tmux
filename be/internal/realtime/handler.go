@@ -151,6 +151,12 @@ func (h *WSHandler) dispatch(ctx context.Context, c *Client, in Incoming) {
 		failOr(fail, h.svc.ResizePane(ctx, session, in.PaneID, in.Direction, in.Amount), ok)
 	case MsgPaneKill:
 		failOr(fail, h.svc.KillPane(ctx, session, in.PaneID), ok)
+	case MsgPaneRename:
+		if in.PaneID == "" {
+			fail(errString("paneId required"))
+			return
+		}
+		failOr(fail, h.svc.RenamePane(ctx, session, in.PaneID, in.Title), ok)
 	case MsgPaneZoom:
 		failOr(fail, h.svc.ZoomPane(ctx, session, in.PaneID), ok)
 	case MsgPaneBreak:

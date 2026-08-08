@@ -226,6 +226,12 @@ export class TmuxSocket {
     return id
   }
 
+  paneRename(paneId: string, title: string): string {
+    const id = this.nextRequestId()
+    this.send({ type: MSG.paneRename, paneId, title, requestId: id })
+    return id
+  }
+
   paneZoom(paneId: string): string {
     const id = this.nextRequestId()
     this.send({ type: MSG.paneZoom, paneId, requestId: id })

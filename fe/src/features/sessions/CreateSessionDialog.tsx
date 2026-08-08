@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react'
 import { create } from 'zustand'
 import { toast } from 'sonner'
+import { FolderOpen } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -17,6 +18,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { runCommand } from '@/lib/commands'
 import { tmuxSocket } from '@/lib/socket'
+import { desktop, isDesktop } from '@/lib/desktop-ipc'
 
 // Internal open-state store: App.tsx renders the dialog always; AppSidebar and
 // EmptyState open it via getState().setOpen(true).
@@ -69,6 +71,11 @@ export function CreateSessionDialog({ onCreated }: Props) {
     }
   }
 
+  const pickDirectory = async () => {
+    const dir = await desktop.pickDirectory()
+    if (dir) setCwd(dir)
+  }
+
   return (
     <Dialog
       open={open}
@@ -95,12 +102,27 @@ export function CreateSessionDialog({ onCreated }: Props) {
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="sess-cwd">Working directory</Label>
-            <Input
-              id="sess-cwd"
-              placeholder="~/projects (optional)"
-              value={cwd}
-              onChange={(e) => setCwd(e.target.value)}
-            />
+            <div className="flex gap-2">
+              <Input
+                id="sess-cwd"
+                className="flex-1"
+                placeholder="~/projects (optional)"
+                value={cwd}
+                onChange={(e) => setCwd(e.target.value)}
+              />
+              {isDesktop && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  aria-label="Browse for directory"
+                  title="Browse for directory"
+                  onClick={() => void pickDirectory()}
+                >
+                  <FolderOpen className="size-4" />
+                </Button>
+              )}
+            </div>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="sess-cmd">Initial command</Label>

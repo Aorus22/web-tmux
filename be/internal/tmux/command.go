@@ -165,6 +165,11 @@ func cmdKillPane(target string) command {
 	return cmd("kill-pane", "-t", target)
 }
 
+// cmdRenamePane sets a pane title (shown in the GUI pane header).
+func cmdRenamePane(target, title string) command {
+	return cmd("select-pane", "-t", target, "-T", title)
+}
+
 func cmdSelectPane(target string) command {
 	return cmd("select-pane", "-t", target)
 }

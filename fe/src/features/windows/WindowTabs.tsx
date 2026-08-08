@@ -138,26 +138,26 @@ export function WindowTabs() {
             </ContextMenuTrigger>
             <ContextMenuContent>
               <ContextMenuItem
-                onSelect={() => {
+                onClick={() => {
                   setRename({ id: w.id, name: w.name })
                   setRenameValue(w.name)
                 }}
               >
                 Rename Window
               </ContextMenuItem>
-              <ContextMenuItem onSelect={() => void move(w.id, -1)}>
+              <ContextMenuItem onClick={() => void move(w.id, -1)}>
                 Move Left
               </ContextMenuItem>
-              <ContextMenuItem onSelect={() => void move(w.id, 1)}>
+              <ContextMenuItem onClick={() => void move(w.id, 1)}>
                 Move Right
               </ContextMenuItem>
-              <ContextMenuItem onSelect={() => void breakActivePane(w.id)}>
+              <ContextMenuItem onClick={() => void breakActivePane(w.id)}>
                 Break Active Pane
               </ContextMenuItem>
               <ContextMenuSeparator />
               <ContextMenuItem
                 variant="destructive"
-                onSelect={() => {
+                onClick={() => {
                   if (shouldConfirm('window')) setKill(w.id)
                   else void doKill(w.id)
                 }}

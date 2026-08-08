@@ -481,19 +481,19 @@ export function isLightUiTheme(preset: UiThemePreset): boolean {
 }
 
 // Terminal preset name mapped from the UI theme (the terminal follows the app
-// theme when no explicit terminal theme is chosen). null when unknown.
+// theme). null when unknown.
 export function getMappedTerminalTheme(
   uiThemeName: string | null | undefined,
 ): string | null {
   return getUiTheme(uiThemeName).terminalTheme ?? null
 }
 
-// Resolve the terminal theme to use: an explicit terminalTheme wins; otherwise
-// fall back to the UI theme's mapped terminal preset. null = CSS variables.
+// Resolve the terminal theme to use. The terminal always follows the app
+// theme — an explicit terminalTheme override is intentionally ignored so
+// there is one theme for the whole app (a previously persisted terminalTheme
+// simply no longer applies). null = CSS variables.
 export function resolvedTerminalTheme(
   uiThemeName: string | null | undefined,
-  terminalTheme: string | null | undefined,
 ): string | null {
-  if (terminalTheme) return terminalTheme
   return getMappedTerminalTheme(uiThemeName)
 }

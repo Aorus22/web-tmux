@@ -31,6 +31,9 @@ type Incoming struct {
 	// session.rename
 	NewName string `json:"newName,omitempty"`
 
+	// pane.rename
+	Title string `json:"title,omitempty"`
+
 	// pane.swap
 	OtherPaneID string `json:"otherPaneId,omitempty"`
 
@@ -60,6 +63,7 @@ const (
 	MsgPaneSplit      = "pane.split"
 	MsgPaneResize     = "pane.resize"
 	MsgPaneKill       = "pane.kill"
+	MsgPaneRename     = "pane.rename"
 	MsgPaneZoom       = "pane.zoom"
 	MsgPaneBreak      = "pane.break"
 	MsgPaneSwap       = "pane.swap"

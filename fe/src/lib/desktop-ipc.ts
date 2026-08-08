@@ -14,6 +14,10 @@ export const desktop = {
   openExternal(url: string) {
     api?.openExternal(url)
   },
+  async pickDirectory(): Promise<string | null> {
+    if (!api) return null
+    return api.pickDirectory()
+  },
   window: {
     minimize: () => api?.window.minimize(),
     maximize: () => api?.window.maximize(),

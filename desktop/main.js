@@ -4,7 +4,7 @@
 // controls through a minimal preload bridge, and kill the backend on quit —
 // tmux sessions always stay alive.
 
-const { app, BrowserWindow, ipcMain, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron')
 const { spawn } = require('child_process')
 const path = require('path')
 const fs = require('fs')
@@ -134,6 +134,17 @@ ipcMain.handle('open-external', (_e, url) => {
   if (typeof url === 'string' && /^https?:\/\//.test(url)) {
     return shell.openExternal(url)
   }
+})
+
+// OS directory picker (PRD: new-session working directory). Returns the
+// selected path or null when cancelled.
+ipcMain.handle('pick-directory', async () => {
+  if (!mainWindow) return null
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Select working directory',
+    properties: ['openDirectory'],
+  })
+  return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
 })
 
 // --- app lifecycle ---

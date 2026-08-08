@@ -201,6 +201,15 @@ func (s *Service) KillPane(ctx context.Context, session, paneID string) error {
 	return m.RunCommand(cmdKillPane(paneID), "")
 }
 
+// RenamePane sets a pane's title (shown in the pane header).
+func (s *Service) RenamePane(ctx context.Context, session, paneID, title string) error {
+	m := s.monitorOrNil(session)
+	if m == nil {
+		return fmt.Errorf("session %q is not connected", session)
+	}
+	return m.RunCommand(cmdRenamePane(paneID, title), "")
+}
+
 // SelectPane focuses a pane by stable ID.
 func (s *Service) SelectPane(ctx context.Context, session, paneID string) error {
 	m := s.monitorOrNil(session)
