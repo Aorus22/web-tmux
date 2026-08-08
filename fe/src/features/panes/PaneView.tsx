@@ -58,7 +58,12 @@ export function PaneView({ pane, isActive, style }: Props) {
           if (!pane.active) void tmuxSocket.paneSelect(pane.id)
         }}
       >
-        <PaneHeader pane={pane} isActive={isActive} onZoom={() => void zoom()} />
+        <PaneHeader
+          pane={pane}
+          isActive={isActive}
+          canZoom={otherPanes.length > 0}
+          onZoom={() => void zoom()}
+        />
         <div className="relative min-h-0 flex-1">
           <TerminalView paneId={pane.id} />
         </div>

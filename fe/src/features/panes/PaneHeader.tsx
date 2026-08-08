@@ -1,10 +1,12 @@
-// PaneHeader (PRD §35): current path, pane ID, and a hover toolbar
-// (Split / Zoom / Kill). Double-click zooms (PRD §20).
+// PaneHeader (PRD §35): current path, pane ID, and an always-visible toolbar
+// (Split right / Split down / Zoom / Kill) with tooltips. Zoom only shows when
+// the window has another pane to toggle with. Double-click zooms (PRD §20).
 
-import { Maximize2, SplitSquareVertical, X } from 'lucide-react'
+import { Maximize2, SplitSquareHorizontal, SplitSquareVertical, X } from 'lucide-react'
 import type { TmuxPane } from '@/lib/tmux-types'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { tmuxSocket } from '@/lib/socket'
 import { runCommand } from '@/lib/commands'
 import { toast } from 'sonner'
@@ -24,15 +26,17 @@ import {
 interface Props {
   pane: TmuxPane
   isActive: boolean
+  // Zoom toggles between two+ panes; hide it for a single-pane window.
+  canZoom?: boolean
   onZoom: () => void
 }
 
-export function PaneHeader({ pane, isActive, onZoom }: Props) {
+export function PaneHeader({ pane, isActive, canZoom = true, onZoom }: Props) {
   const [killOpen, setKillOpen] = useState(false)
 
-  const split = async () => {
+  const split = async (direction: 'horizontal' | 'vertical' = 'vertical') => {
     try {
-      await runCommand(() => tmuxSocket.paneSplit(pane.id, 'vertical'))
+      await runCommand(() => tmuxSocket.paneSplit(pane.id, direction))
     } catch (e) {
       toast.error((e as Error).message)
     }
@@ -58,7 +62,7 @@ export function PaneHeader({ pane, isActive, onZoom }: Props) {
       <div
         onDoubleClick={onZoom}
         className={cn(
-          'group/header flex h-7 shrink-0 items-center gap-1.5 border-b px-2 text-[11px]',
+          'flex h-7 shrink-0 items-center gap-1.5 border-b px-2 text-[11px]',
           isActive ? 'bg-secondary/50' : 'bg-background/60',
         )}
       >
@@ -66,41 +70,82 @@ export function PaneHeader({ pane, isActive, onZoom }: Props) {
         <span className="shrink-0 font-mono text-muted-foreground/70">
           {pane.id}
         </span>
-        <span className="hidden shrink-0 items-center gap-0.5 group-hover/header:flex">
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label="Split Down"
-            onClick={(e) => {
-              e.stopPropagation()
-              void split()
-            }}
-          >
-            <SplitSquareVertical className="size-3" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label="Zoom"
-            onClick={(e) => {
-              e.stopPropagation()
-              onZoom()
-            }}
-          >
-            <Maximize2 className="size-3" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label="Kill pane"
-            className="hover:text-destructive"
-            onClick={(e) => {
-              e.stopPropagation()
-              confirmKill()
-            }}
-          >
-            <X className="size-3" />
-          </Button>
+        <span className="flex shrink-0 items-center gap-0.5">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="Split right"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    void split('horizontal')
+                  }}
+                >
+                  <SplitSquareHorizontal className="size-3" />
+                </Button>
+              }
+            />
+            <TooltipContent>Split right</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="Split down"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    void split()
+                  }}
+                >
+                  <SplitSquareVertical className="size-3" />
+                </Button>
+              }
+            />
+            <TooltipContent>Split down</TooltipContent>
+          </Tooltip>
+          {canZoom && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label="Zoom"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onZoom()
+                    }}
+                  >
+                    <Maximize2 className="size-3" />
+                  </Button>
+                }
+              />
+              <TooltipContent>Zoom</TooltipContent>
+            </Tooltip>
+          )}
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="Kill pane"
+                  className="hover:text-destructive"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    confirmKill()
+                  }}
+                >
+                  <X className="size-3" />
+                </Button>
+              }
+            />
+            <TooltipContent>Kill pane</TooltipContent>
+          </Tooltip>
         </span>
       </div>
 

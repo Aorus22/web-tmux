@@ -1,7 +1,11 @@
-// WindowTabs (PRD §34): tab strip above the workspace. Click = select-window;
-// right-click = context menu; trailing "+" creates a window.
+// WindowTabs (PRD §34): window-tab row, now rendered inside the title bar
+// (web-term pattern) — one top bar. Click = select-window; right-click =
+// context menu; trailing "+" creates a window. The root is the flex-1,
+// horizontally-scrolling middle of the title bar; interactive children opt
+// out of the Electron drag region via WebkitAppRegion 'no-drag'.
 
 import { useState } from 'react'
+import type { CSSProperties } from 'react'
 import { Plus, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -35,6 +39,11 @@ import { Label } from '@/components/ui/label'
 import { selectActiveWindowId, selectWindows, useTmuxStore } from '@/stores/tmuxStore'
 import { runCommand, shouldConfirm } from '@/lib/commands'
 import { tmuxSocket } from '@/lib/socket'
+import { isDesktop } from '@/lib/desktop-ipc'
+
+// WebkitAppRegion isn't in React's CSSProperties; intersect to type it cleanly.
+type DragStyle = CSSProperties & { WebkitAppRegion?: 'no-drag' }
+const noDrag: DragStyle | undefined = isDesktop ? { WebkitAppRegion: 'no-drag' } : undefined
 
 export function WindowTabs() {
   const windows = useTmuxStore(selectWindows)
@@ -98,7 +107,7 @@ export function WindowTabs() {
   }
 
   return (
-    <div className="flex h-9 shrink-0 items-center gap-0.5 overflow-x-auto border-b bg-background/60 px-2">
+    <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto no-scrollbar px-1">
       {windows.map((w) => {
         const active = w.id === activeWindowId
         return (
@@ -107,6 +116,7 @@ export function WindowTabs() {
               <div
                 role="button"
                 tabIndex={0}
+                style={noDrag}
                 onClick={() => void tmuxSocket.windowSelect(w.id)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') void tmuxSocket.windowSelect(w.id)
@@ -124,6 +134,7 @@ export function WindowTabs() {
                 <span
                   role="button"
                   tabIndex={-1}
+                  style={noDrag}
                   aria-label={`Close ${w.name}`}
                   className="hidden rounded p-px hover:bg-foreground/10 group-hover:inline-flex"
                   onClick={(e) => {
@@ -168,7 +179,13 @@ export function WindowTabs() {
           </ContextMenu>
         )
       })}
-      <Button variant="ghost" size="icon-xs" aria-label="New window" onClick={() => void newWindow()}>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        style={noDrag}
+        aria-label="New window"
+        onClick={() => void newWindow()}
+      >
         <Plus className="size-3.5" />
       </Button>
 

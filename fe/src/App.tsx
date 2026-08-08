@@ -16,7 +16,6 @@ import { getUiTheme, isLightUiTheme } from '@/features/settings/data/ui-themes'
 import { useKeyboardShortcut } from '@/hooks/useKeyboardShortcut'
 import { AppTitleBar } from '@/components/layout/AppTitleBar'
 import { AppSidebar } from '@/components/layout/AppSidebar'
-import { WindowTabs } from '@/features/windows/WindowTabs'
 import { PaneWorkspace } from '@/features/panes/PaneWorkspace'
 import { EmptyState } from '@/features/sessions/EmptyState'
 import { ErrorState } from '@/features/sessions/ErrorState'
@@ -162,7 +161,6 @@ export default function App() {
             <EmptyState onCreate={() => {}} />
           ) : (
             <>
-              {activeSession && <WindowTabs />}
               <div className="relative min-h-0 flex-1">
                 {openSessions.map((name) => (
                   <div
