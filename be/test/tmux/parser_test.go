@@ -1,12 +1,13 @@
-package tmux
+package tmux_test
 
 import (
+	"tmux-gui/be/internal/tmux"
 	"strings"
 	"testing"
 )
 
 func TestParseOutput(t *testing.T) {
-	p := NewParser()
+	p := tmux.NewParser()
 
 	ev, ok := p.ParseLine("%output %12 hello")
 	if !ok || ev.Kind != "output" || ev.PaneID != "%12" || ev.Data != "hello" {
@@ -15,7 +16,7 @@ func TestParseOutput(t *testing.T) {
 }
 
 func TestParseOutputSpaces(t *testing.T) {
-	p := NewParser()
+	p := tmux.NewParser()
 
 	// A lone space typed in the terminal: the whole %output payload is the
 	// data. It must survive verbatim — trimming it dropped the event, so the
@@ -42,14 +43,14 @@ func TestParseOutputSpaces(t *testing.T) {
 }
 
 func TestParseOutputWithEscape(t *testing.T) {
-	p := NewParser()
+	p := tmux.NewParser()
 	// tmux control mode escapes special chars as \ooo octal and \\ for backslash.
 	raw := "%output %3 \\033[32mok\\033[0m"
 	ev, ok := p.ParseLine(raw)
 	if !ok || ev.Kind != "output" || ev.PaneID != "%3" {
 		t.Fatalf("bad parse: %+v", ev)
 	}
-	decoded := DecodeOutput(ev.Data)
+	decoded := tmux.DecodeOutput(ev.Data)
 	want := "\x1b[32mok\x1b[0m"
 	if string(decoded) != want {
 		t.Fatalf("decode mismatch: got %q want %q", decoded, want)
@@ -57,16 +58,16 @@ func TestParseOutputWithEscape(t *testing.T) {
 }
 
 func TestDecodeOutputBackslash(t *testing.T) {
-	if got := string(DecodeOutput("a\\\\b")); got != "a\\b" {
+	if got := string(tmux.DecodeOutput("a\\\\b")); got != "a\\b" {
 		t.Fatalf("backslash decode: got %q", got)
 	}
-	if got := string(DecodeOutput("\\377")); got != "\xff" {
+	if got := string(tmux.DecodeOutput("\\377")); got != "\xff" {
 		t.Fatalf("octal decode: got %q", got)
 	}
 }
 
 func TestParseMarkers(t *testing.T) {
-	p := NewParser()
+	p := tmux.NewParser()
 
 	ev, ok := p.ParseLine("%begin 4 0")
 	if !ok || ev.Marker != "begin" || ev.Command != 4 {
@@ -83,7 +84,7 @@ func TestParseMarkers(t *testing.T) {
 }
 
 func TestParseWindowPaneChanged(t *testing.T) {
-	p := NewParser()
+	p := tmux.NewParser()
 	// tmux emits %window-pane-changed when the active pane changes (pane
 	// click / select-pane), including when select-pane crosses into another
 	// window (which also moves the current window).
@@ -97,7 +98,7 @@ func TestParseWindowPaneChanged(t *testing.T) {
 }
 
 func TestParseSessionWindowChanged(t *testing.T) {
-	p := NewParser()
+	p := tmux.NewParser()
 	// tmux emits %session-window-changed when the current window of a session
 	// changes — the frontend relies on it to resync after a tab click.
 	ev, ok := p.ParseLine("%session-window-changed $0 @1")
@@ -110,7 +111,7 @@ func TestParseSessionWindowChanged(t *testing.T) {
 }
 
 func TestParseLayoutChange(t *testing.T) {
-	p := NewParser()
+	p := tmux.NewParser()
 	ev, ok := p.ParseLine("%layout-change @3 8f06,80x24,0,0{...}")
 	if !ok || ev.Kind != "layout-change" {
 		t.Fatalf("bad layout-change: %+v", ev)
@@ -118,7 +119,7 @@ func TestParseLayoutChange(t *testing.T) {
 }
 
 func TestParseUnknownEventDoesNotPanic(t *testing.T) {
-	p := NewParser()
+	p := tmux.NewParser()
 	inputs := []string{
 		"%some-future-event payload",
 		"%exit",
@@ -142,23 +143,23 @@ func TestParseUnknownEventDoesNotPanic(t *testing.T) {
 }
 
 func TestSplitOutputMalformed(t *testing.T) {
-	_, _, ok := splitOutput("no-percent")
+	_, _, ok := tmux.SplitOutput("no-percent")
 	if ok {
 		t.Fatal("expected split failure")
 	}
-	_, _, ok = splitOutput("%12") // no space
+	_, _, ok = tmux.SplitOutput("%12") // no space
 	if ok {
 		t.Fatal("expected split failure for pane-only")
 	}
 }
 
 func TestParserRoundTripOutput(t *testing.T) {
-	p := NewParser()
+	p := tmux.NewParser()
 	ev, ok := p.ParseLine("%output %5 echo hi")
 	if !ok {
 		t.Fatal("parse failed")
 	}
-	got := string(DecodeOutput(ev.Data))
+	got := string(tmux.DecodeOutput(ev.Data))
 	if !strings.Contains(got, "echo") {
 		t.Fatalf("output content: %q", got)
 	}

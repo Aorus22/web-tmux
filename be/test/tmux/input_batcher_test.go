@@ -1,6 +1,7 @@
-package tmux
+package tmux_test
 
 import (
+	"tmux-gui/be/internal/tmux"
 	"encoding/hex"
 	"strings"
 	"sync"
@@ -11,7 +12,7 @@ import (
 func TestBatcherFlushesAfterInterval(t *testing.T) {
 	var mu sync.Mutex
 	var flushed []string
-	b := NewInputBatcher(20*time.Millisecond, 4096, func(pane, hexData string) {
+	b := tmux.NewInputBatcher(20*time.Millisecond, 4096, func(pane, hexData string) {
 		mu.Lock()
 		flushed = append(flushed, pane+":"+hexData)
 		mu.Unlock()
@@ -39,7 +40,7 @@ func TestBatcherFlushesAfterInterval(t *testing.T) {
 func TestBatcherUTF8(t *testing.T) {
 	var mu sync.Mutex
 	var flushed string
-	b := NewInputBatcher(20*time.Millisecond, 4096, func(_pane, hexData string) {
+	b := tmux.NewInputBatcher(20*time.Millisecond, 4096, func(_pane, hexData string) {
 		mu.Lock()
 		flushed = hexData
 		mu.Unlock()
@@ -62,7 +63,7 @@ func TestBatcherUTF8(t *testing.T) {
 func TestBatcherControlSequences(t *testing.T) {
 	var mu sync.Mutex
 	var flushed string
-	b := NewInputBatcher(20*time.Millisecond, 4096, func(_pane, hexData string) {
+	b := tmux.NewInputBatcher(20*time.Millisecond, 4096, func(_pane, hexData string) {
 		mu.Lock()
 		flushed = hexData
 		mu.Unlock()
@@ -88,7 +89,7 @@ func TestBatcherControlSequences(t *testing.T) {
 func TestBatcherMaxBytes(t *testing.T) {
 	var mu sync.Mutex
 	count := 0
-	b := NewInputBatcher(time.Hour, 16, func(_pane, _hex string) {
+	b := tmux.NewInputBatcher(time.Hour, 16, func(_pane, _hex string) {
 		mu.Lock()
 		count++
 		mu.Unlock()
@@ -112,7 +113,7 @@ func TestBatcherMaxBytes(t *testing.T) {
 func TestBatcherAggregatesRapidTyping(t *testing.T) {
 	var mu sync.Mutex
 	var flushes []string
-	b := NewInputBatcher(50*time.Millisecond, 4096, func(_pane, hexData string) {
+	b := tmux.NewInputBatcher(50*time.Millisecond, 4096, func(_pane, hexData string) {
 		mu.Lock()
 		flushes = append(flushes, hexData)
 		mu.Unlock()
@@ -141,7 +142,7 @@ func TestBatcherAggregatesRapidTyping(t *testing.T) {
 func TestBatcherStopFlushes(t *testing.T) {
 	var mu sync.Mutex
 	flushed := false
-	b := NewInputBatcher(time.Hour, 4096, func(_pane, _hex string) {
+	b := tmux.NewInputBatcher(time.Hour, 4096, func(_pane, _hex string) {
 		mu.Lock()
 		flushed = true
 		mu.Unlock()

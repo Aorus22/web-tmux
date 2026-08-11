@@ -1,6 +1,7 @@
-package tmux
+package tmux_test
 
 import (
+	"tmux-gui/be/internal/tmux"
 	"context"
 	"fmt"
 	"log/slog"
@@ -16,20 +17,20 @@ import (
 
 const testSocketName = "tmux-gui-test"
 
-func testService(t *testing.T) *Service {
+func testService(t *testing.T) *tmux.Service {
 	t.Helper()
-	socket := Socket{Name: testSocketName}
-	exec := NewExecutor(socket)
+	socket := tmux.Socket{Name: testSocketName}
+	exec := tmux.NewExecutor(socket)
 	if _, err := exec.Run(context.Background(), "-V"); err != nil {
 		t.Skip("tmux not installed:", err)
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	return NewService(socket, log, 2000)
+	return tmux.NewService(socket, log, 2000)
 }
 
 func cleanupServer(t *testing.T) {
 	t.Helper()
-	exec := NewExecutor(Socket{Name: testSocketName})
+	exec := tmux.NewExecutor(tmux.Socket{Name: testSocketName})
 	_, _ = exec.Run(context.Background(), "kill-server")
 }
 

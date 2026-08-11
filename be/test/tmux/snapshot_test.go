@@ -1,12 +1,13 @@
-package tmux
+package tmux_test
 
 import (
+	"tmux-gui/be/internal/tmux"
 	"strings"
 	"testing"
 )
 
 func TestParseSessionLine(t *testing.T) {
-	ses, ok := parseSession("dev|2|1|1786158000|120|30")
+	ses, ok := tmux.ParseSession("dev|2|1|1786158000|120|30")
 	if !ok {
 		t.Fatal("parse failed")
 	}
@@ -17,13 +18,13 @@ func TestParseSessionLine(t *testing.T) {
 }
 
 func TestParseSessionMalformed(t *testing.T) {
-	if _, ok := parseSession("only-name"); ok {
+	if _, ok := tmux.ParseSession("only-name"); ok {
 		t.Fatal("should fail on short line")
 	}
 }
 
 func TestParseWindowLine(t *testing.T) {
-	w, ok := parseWindow("@0|0|bash|1|2|80|24|8f06,80x24,0,0")
+	w, ok := tmux.ParseWindow("@0|0|bash|1|2|80|24|8f06,80x24,0,0")
 	if !ok {
 		t.Fatal("parse failed")
 	}
@@ -34,7 +35,7 @@ func TestParseWindowLine(t *testing.T) {
 }
 
 func TestParsePaneLine(t *testing.T) {
-	p, ok := parsePane("%12|1|@0|0|1|0|13|40|11|1234|bash|/home/user|user@host")
+	p, ok := tmux.ParsePane("%12|1|@0|0|1|0|13|40|11|1234|bash|/home/user|user@host")
 	if !ok {
 		t.Fatal("parse failed")
 	}
@@ -47,7 +48,7 @@ func TestParsePaneLine(t *testing.T) {
 }
 
 func TestParsePaneActive(t *testing.T) {
-	p, ok := parsePane("%1|0|@0|1|0|0|0|80|24|1|zsh|/|x")
+	p, ok := tmux.ParsePane("%1|0|@0|1|0|0|0|80|24|1|zsh|/|x")
 	if !ok || !p.Active || p.Zoomed {
 		t.Fatalf("bad pane active parse: %+v", p)
 	}
@@ -55,13 +56,13 @@ func TestParsePaneActive(t *testing.T) {
 
 func TestFormatRoundTrip(t *testing.T) {
 	// Each "#{...}" token is one field (pipes separate fields, not add one).
-	if n := strings.Count(sessionFormat, "#{"); n != 6 {
-		t.Fatalf("sessionFormat fields: %d", n)
+	if n := strings.Count(tmux.SessionFormat, "#{"); n != 6 {
+		t.Fatalf("tmux.SessionFormat fields: %d", n)
 	}
-	if n := strings.Count(windowFormat, "#{"); n != 8 {
-		t.Fatalf("windowFormat fields: %d", n)
+	if n := strings.Count(tmux.WindowFormat, "#{"); n != 8 {
+		t.Fatalf("tmux.WindowFormat fields: %d", n)
 	}
-	if n := strings.Count(paneFormat, "#{"); n != 13 {
-		t.Fatalf("paneFormat fields: %d", n)
+	if n := strings.Count(tmux.PaneFormat, "#{"); n != 13 {
+		t.Fatalf("tmux.PaneFormat fields: %d", n)
 	}
 }

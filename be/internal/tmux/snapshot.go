@@ -11,10 +11,12 @@ import (
 // SnapshotReader builds full state dumps using one-shot read-only queries
 // (PRD §9). These queries are safe to run while a control-mode client exists.
 
+// Format strings used by one-shot read-only queries. Exported so external
+// tests can assert the field counts.
 const (
-	sessionFormat = "#{session_name}|#{session_windows}|#{session_attached}|#{session_created}|#{session_width}|#{session_height}"
-	windowFormat  = "#{window_id}|#{window_index}|#{window_name}|#{window_active}|#{window_panes}|#{window_width}|#{window_height}|#{window_layout}"
-	paneFormat    = "#{pane_id}|#{pane_index}|#{window_id}|#{pane_active}|#{pane_zoomed_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{pane_pid}|#{pane_current_command}|#{pane_current_path}|#{pane_title}"
+	SessionFormat = "#{session_name}|#{session_windows}|#{session_attached}|#{session_created}|#{session_width}|#{session_height}"
+	WindowFormat  = "#{window_id}|#{window_index}|#{window_name}|#{window_active}|#{window_panes}|#{window_width}|#{window_height}|#{window_layout}"
+	PaneFormat    = "#{pane_id}|#{pane_index}|#{window_id}|#{pane_active}|#{pane_zoomed_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{pane_pid}|#{pane_current_command}|#{pane_current_path}|#{pane_title}"
 )
 
 type SnapshotReader struct {
@@ -27,7 +29,7 @@ func NewSnapshotReader(exec *Executor) *SnapshotReader {
 
 // ListSessions returns all sessions on the server.
 func (s *SnapshotReader) ListSessions(ctx context.Context) ([]Session, error) {
-	lines, err := s.exec.Output(ctx, "list-sessions", "-F", sessionFormat)
+	lines, err := s.exec.Output(ctx, "list-sessions", "-F", SessionFormat)
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +38,7 @@ func (s *SnapshotReader) ListSessions(ctx context.Context) ([]Session, error) {
 		if strings.TrimSpace(l) == "" {
 			continue
 		}
-		ses, ok := parseSession(l)
+		ses, ok := ParseSession(l)
 		if ok {
 			out = append(out, ses)
 		}
@@ -47,7 +49,7 @@ func (s *SnapshotReader) ListSessions(ctx context.Context) ([]Session, error) {
 
 // ListWindows returns windows for a session.
 func (s *SnapshotReader) ListWindows(ctx context.Context, session string) ([]Window, error) {
-	lines, err := s.exec.Output(ctx, "list-windows", "-t", session, "-F", windowFormat)
+	lines, err := s.exec.Output(ctx, "list-windows", "-t", session, "-F", WindowFormat)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +58,7 @@ func (s *SnapshotReader) ListWindows(ctx context.Context, session string) ([]Win
 		if strings.TrimSpace(l) == "" {
 			continue
 		}
-		if w, ok := parseWindow(l); ok {
+		if w, ok := ParseWindow(l); ok {
 			out = append(out, w)
 		}
 	}
@@ -66,7 +68,7 @@ func (s *SnapshotReader) ListWindows(ctx context.Context, session string) ([]Win
 
 // ListPanes returns panes for a window (or all windows of a session when window is "").
 func (s *SnapshotReader) ListPanes(ctx context.Context, target string) ([]Pane, error) {
-	lines, err := s.exec.Output(ctx, "list-panes", "-t", target, "-F", paneFormat)
+	lines, err := s.exec.Output(ctx, "list-panes", "-t", target, "-F", PaneFormat)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +77,7 @@ func (s *SnapshotReader) ListPanes(ctx context.Context, target string) ([]Pane, 
 		if strings.TrimSpace(l) == "" {
 			continue
 		}
-		if p, ok := parsePane(l); ok {
+		if p, ok := ParsePane(l); ok {
 			out = append(out, p)
 		}
 	}
@@ -187,7 +189,7 @@ func (s *SnapshotReader) HasSession(ctx context.Context, name string) (bool, err
 
 // --- parsers ---
 
-func parseSession(l string) (Session, bool) {
+func ParseSession(l string) (Session, bool) {
 	p := strings.Split(l, "|")
 	if len(p) < 6 {
 		return Session{}, false
@@ -205,7 +207,7 @@ func parseSession(l string) (Session, bool) {
 	}, true
 }
 
-func parseWindow(l string) (Window, bool) {
+func ParseWindow(l string) (Window, bool) {
 	p := strings.Split(l, "|")
 	if len(p) < 8 {
 		return Window{}, false
@@ -222,7 +224,7 @@ func parseWindow(l string) (Window, bool) {
 	}, true
 }
 
-func parsePane(l string) (Pane, bool) {
+func ParsePane(l string) (Pane, bool) {
 	p := strings.Split(l, "|")
 	if len(p) < 13 {
 		return Pane{}, false

@@ -372,7 +372,7 @@ func (s *Service) takeMonitor(session string) *Monitor {
 // Only used when no control-mode client exists (PRD §10 bootstrap path).
 // Uses raw argv (command.args), NOT command.line() — line() is control-mode
 // stdin syntax with tmux quoting, which must not be re-split as shell words.
-func (s *Service) execOneShot(ctx context.Context, c command) error {
+func (s *Service) execOneShot(ctx context.Context, c Command) error {
 	argv := append([]string{c.name}, c.args...)
 	if len(argv) == 0 {
 		return fmt.Errorf("empty command")

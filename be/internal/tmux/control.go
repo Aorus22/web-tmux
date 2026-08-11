@@ -125,7 +125,7 @@ func (c *Control) ReadLine() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return stripControlModeWrapper(strings.TrimRight(line, "\r\n")), nil
+	return StripControlModeWrapper(strings.TrimRight(line, "\r\n")), nil
 }
 
 // stripControlModeWrapper removes the DCS envelope tmux wraps control-mode
@@ -134,7 +134,7 @@ func (c *Control) ReadLine() (string, error) {
 // its own line. Without stripping, the parser would treat the first line as
 // raw output (it no longer starts with '%') and broadcast the `%begin`
 // marker to clients as garbage with an empty pane id.
-func stripControlModeWrapper(line string) string {
+func StripControlModeWrapper(line string) string {
 	line = strings.TrimPrefix(line, "\x1bP1000p")
 	return strings.TrimSuffix(line, "\x1b\\")
 }

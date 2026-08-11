@@ -1,6 +1,7 @@
-package server
+package server_test
 
 import (
+	"tmux-gui/be/internal/server"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -35,7 +36,7 @@ func restTestServer(t *testing.T) *httptest.Server {
 	svc := tmux.NewService(socket, log, 2000)
 	hub := realtime.NewHub(svc, log)
 	cfg := &config.Config{Host: "127.0.0.1", Port: 0}
-	return httptest.NewServer(NewRouter(cfg, svc, hub, log))
+	return httptest.NewServer(server.NewRouter(cfg, svc, hub, log))
 }
 
 func restCleanup(t *testing.T) {

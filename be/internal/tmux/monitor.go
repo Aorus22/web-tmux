@@ -161,7 +161,7 @@ func (m *Monitor) Resync() {
 
 // RunCommand sends a mutating command through control mode and correlates the
 // result with requestID (PRD §8, §28).
-func (m *Monitor) RunCommand(c command, requestID string) error {
+func (m *Monitor) RunCommand(c Command, requestID string) error {
 	m.mu.Lock()
 	if m.control == nil {
 		m.mu.Unlock()
@@ -171,7 +171,7 @@ func (m *Monitor) RunCommand(c command, requestID string) error {
 	ctrl := m.control
 	m.mu.Unlock()
 
-	if err := ctrl.Write(c.line()); err != nil {
+	if err := ctrl.Write(c.Line()); err != nil {
 		return err
 	}
 	return nil
