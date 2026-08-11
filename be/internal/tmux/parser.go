@@ -49,7 +49,11 @@ func (p *Parser) ParseLine(raw string) (ControlEvent, bool) {
 	payload := ""
 	if space >= 0 {
 		kind = rest[:space]
-		payload = strings.TrimSpace(rest[space+1:])
+		// Deliberately NOT trimmed: %output data is passed through verbatim.
+		// tmux only octal-escapes control characters — spaces are printable
+		// and arrive raw, so trimming here swallowed standalone/trailing
+		// spaces: typing a space worked in the shell but never rendered.
+		payload = rest[space+1:]
 	}
 
 	switch kind {

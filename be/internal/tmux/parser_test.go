@@ -14,6 +14,33 @@ func TestParseOutput(t *testing.T) {
 	}
 }
 
+func TestParseOutputSpaces(t *testing.T) {
+	p := NewParser()
+
+	// A lone space typed in the terminal: the whole %output payload is the
+	// data. It must survive verbatim — trimming it dropped the event, so the
+	// space worked in the shell but never rendered.
+	ev, ok := p.ParseLine("%output %12  ")
+	if !ok || ev.Kind != "output" || ev.PaneID != "%12" {
+		t.Fatalf("standalone space: bad parse: %+v ok=%v", ev, ok)
+	}
+	if ev.Data != " " {
+		t.Fatalf("standalone space: data %q, want a single space", ev.Data)
+	}
+
+	// Trailing space after a word (e.g. echoing "hello ").
+	ev, ok = p.ParseLine("%output %12 hello ")
+	if !ok || ev.Kind != "output" || ev.PaneID != "%12" || ev.Data != "hello " {
+		t.Fatalf("trailing space: bad parse: %+v ok=%v", ev, ok)
+	}
+
+	// Leading space in the data.
+	ev, ok = p.ParseLine("%output %12  hi")
+	if !ok || ev.Kind != "output" || ev.PaneID != "%12" || ev.Data != " hi" {
+		t.Fatalf("leading space: bad parse: %+v ok=%v", ev, ok)
+	}
+}
+
 func TestParseOutputWithEscape(t *testing.T) {
 	p := NewParser()
 	// tmux control mode escapes special chars as \ooo octal and \\ for backslash.
