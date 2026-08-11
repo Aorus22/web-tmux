@@ -8,7 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'
 import type { TmuxPane, TmuxSnapshot } from '@/lib/tmux-types'
-import { pixelRect, pxToColsRows } from '@/lib/geometry'
+import { pixelRect, pxToColsRows, closePaneGaps, CELL_W, CELL_H } from '@/lib/geometry'
 import { closeSocket, ensureSocket, getSocket } from '@/lib/sockets'
 import { useTmuxStore, type TransportState } from '@/stores/tmuxStore'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -136,56 +136,89 @@ export function PaneWorkspace({ session, snapshot, transport }: Props) {
   const wh = windowObj.height || panes[0].height
   const { w, h } = size
 
-  const positioned = visible.map((p) => ({
+  // tmux leaves a 1-cell border strip between panes (e.g. pane A spans
+  // [0,50), pane B starts at 51). Absorb those cells so panes tile
+  // edge-to-edge instead of showing workspace background between them.
+  const tiled = closePaneGaps(visible)
+
+  const positioned = tiled.map((p) => ({
     pane: p,
     rect: pixelRect(p.left, p.top, p.width, p.height, w, h, ww, wh),
   }))
 
-  // Build divider handles between horizontally/vertically adjacent panes.
+  // Build divider handles between panes that share an edge. A divider exists
+  // for ANY pair whose ranges overlap along the shared edge — not just
+  // same-height/same-width bands — so T layouts (full-height left pane next
+  // to a split right side) get a working vertical handle too. Each handle
+  // spans the overlapping portion of the edge. Adjacency is checked in CELL
+  // space (exact integers after closePaneGaps): only immediate neighbors get
+  // a divider — a looser `b.left > a.left` test also matched non-adjacent
+  // pairs (e.g. %0 and %2 with %1 in between), stacking two handles.
   const dividers: {
     key: string
     paneId: string
     direction: 'L' | 'R' | 'U' | 'D'
     style: CSSProperties
+    cellPx: { w: number; h: number }
   }[] = []
   for (const a of positioned) {
     for (const b of positioned) {
       if (a.pane.id === b.pane.id) continue
-      // vertical divider: same top/height band, a left of b
+      // Vertical divider: b immediately right of a, vertical ranges overlap.
       if (
-        Math.abs(a.rect.top - b.rect.top) < 4 &&
-        a.rect.height === b.rect.height &&
-        b.rect.left > a.rect.left
+        b.pane.left === a.pane.left + a.pane.width &&
+        a.pane.top < b.pane.top + b.pane.height &&
+        b.pane.top < a.pane.top + a.pane.height
       ) {
+        const top = Math.max(a.rect.top, b.rect.top)
+        const bottom = Math.min(
+          a.rect.top + a.rect.height,
+          b.rect.top + b.rect.height,
+        )
         dividers.push({
           key: `v-${a.pane.id}-${b.pane.id}`,
           paneId: a.pane.id,
           direction: 'R',
           style: {
             left: a.rect.left + a.rect.width - 2,
-            top: a.rect.top,
-            height: a.rect.height,
+            top,
+            height: bottom - top,
             width: 4,
             cursor: 'col-resize',
           },
+          // The dragged pane's actual rendered cell size — makes the divider
+          // track the pointer exactly regardless of zoom/font/theme.
+          cellPx: {
+            w: a.pane.width > 0 ? a.rect.width / a.pane.width : CELL_W,
+            h: a.pane.height > 0 ? a.rect.height / a.pane.height : CELL_H,
+          },
         })
       }
-      // horizontal divider: same left/width band, a above b
+      // Horizontal divider: b immediately below a, horizontal ranges overlap.
       if (
-        Math.abs(a.rect.left - b.rect.left) < 4 &&
-        a.rect.width === b.rect.width &&
-        b.rect.top > a.rect.top
+        b.pane.top === a.pane.top + a.pane.height &&
+        a.pane.left < b.pane.left + b.pane.width &&
+        b.pane.left < a.pane.left + a.pane.width
       ) {
+        const left = Math.max(a.rect.left, b.rect.left)
+        const right = Math.min(
+          a.rect.left + a.rect.width,
+          b.rect.left + b.rect.width,
+        )
         dividers.push({
           key: `h-${a.pane.id}-${b.pane.id}`,
           paneId: a.pane.id,
           direction: 'D',
           style: {
             top: a.rect.top + a.rect.height - 2,
-            left: a.rect.left,
-            width: a.rect.width,
+            left,
+            width: right - left,
             height: 4,
             cursor: 'row-resize',
+          },
+          cellPx: {
+            w: a.pane.width > 0 ? a.rect.width / a.pane.width : CELL_W,
+            h: a.pane.height > 0 ? a.rect.height / a.pane.height : CELL_H,
           },
         })
       }
@@ -213,6 +246,7 @@ export function PaneWorkspace({ session, snapshot, transport }: Props) {
             paneId={d.paneId}
             direction={d.direction}
             style={d.style}
+            cellPx={d.cellPx}
           />
         ))}
     </div>
