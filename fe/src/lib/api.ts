@@ -1,12 +1,26 @@
 // REST API client (PRD §9: read-only queries, §10: bootstrap create).
-// Consumed via TanStack Query. The frontend always calls relative /api paths;
-// Vite proxies in dev, Go serves in production — no CORS, no hardcoded URLs
-// (PRD §61).
+// Consumed via TanStack Query. The frontend always calls /api paths; Vite
+// proxies in dev, Go serves in production — no CORS, no hardcoded URLs
+// (PRD §61). Desktop: Electron serves the FE itself (stable app:// origin),
+// so the API base points at the backend sidecar port reported over IPC.
 
 import type { HealthResponse, TmuxInfo, TmuxSnapshot, TmuxTree } from './tmux-types'
+import { useAppStore } from '@/stores/appStore'
+import { isDesktop } from './desktop-ipc'
+
+// Resolve the backend base URL. Desktop production: the backend sidecar runs
+// on a dynamic local port (learned via IPC). Web/dev: relative paths (served
+// by the same origin or the Vite proxy).
+export function getApiBase(): string {
+  if (isDesktop && !import.meta.env.DEV) {
+    const port = useAppStore.getState().backendPort
+    if (port > 0) return `http://127.0.0.1:${port}`
+  }
+  return ''
+}
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(path)
+  const res = await fetch(getApiBase() + path)
   if (!res.ok) {
     throw new Error(`${path}: ${res.status} ${res.statusText}`)
   }
@@ -14,7 +28,7 @@ async function get<T>(path: string): Promise<T> {
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(getApiBase() + path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

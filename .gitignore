@@ -28,3 +28,6 @@ desktop/node_modules/
 
 # Logs
 *.log
+
+# Electron FE bundle (served by Electron itself; rebuilt by build-desktop.sh)
+desktop/resources/fe-dist/
