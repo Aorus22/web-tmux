@@ -16,6 +16,7 @@ import (
 //	GET  /api/tmux/info    — tmux version/config info
 //	GET  /api/sessions     — full session/window/pane tree (sidebar polling)
 //	GET  /api/sessions/{name}/snapshot — one session snapshot
+//	POST /api/sessions     — create a session (works with zero sessions)
 //	GET  /api/ws           — WebSocket: ?session=<name>
 //	GET  /                 — embedded frontend (SPA fallback)
 func NewRouter(cfg *config.Config, svc *tmux.Service, hub *realtime.Hub, log *slog.Logger) http.Handler {
@@ -26,6 +27,7 @@ func NewRouter(cfg *config.Config, svc *tmux.Service, hub *realtime.Hub, log *sl
 	mux.HandleFunc("GET /api/tmux/info", health.HandleInfo)
 	mux.HandleFunc("GET /api/sessions", health.HandleTree)
 	mux.HandleFunc("GET /api/sessions/{name}/snapshot", health.HandleSessionSnapshot)
+	mux.HandleFunc("POST /api/sessions", health.HandleSessionCreate)
 
 	ws := realtime.NewWSHandler(hub, svc, log)
 	mux.Handle("GET /api/ws", ws)

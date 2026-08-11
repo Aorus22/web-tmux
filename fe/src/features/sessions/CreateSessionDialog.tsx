@@ -16,8 +16,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { runCommand } from '@/lib/commands'
-import { tmuxSocket } from '@/lib/socket'
+import { api } from '@/lib/api'
 import { desktop, isDesktop } from '@/lib/desktop-ipc'
 
 // Internal open-state store: App.tsx renders the dialog always; AppSidebar and
@@ -56,8 +55,12 @@ export function CreateSessionDialog({ onCreated }: Props) {
     if (!name.trim()) return
     setBusy(true)
     try {
-      await runCommand(() =>
-        tmuxSocket.sessionCreate(name.trim(), cwd.trim() || undefined, command.trim() || undefined),
+      // REST, not the per-session WebSocket: creating the FIRST session must
+      // work when no socket exists yet.
+      await api.createSession(
+        name.trim(),
+        cwd.trim() || undefined,
+        command.trim() || undefined,
       )
       toast.success(`Session "${name.trim()}" created`)
       const created = name.trim()
