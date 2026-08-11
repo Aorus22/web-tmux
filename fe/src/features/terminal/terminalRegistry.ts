@@ -50,6 +50,15 @@ export const terminalRegistry = {
     r.term.write(data)
   },
 
+  // invalidateSnapshot re-arms the snapshot guard so the next capture-pane
+  // snapshot replaces the buffer instead of being dropped as a duplicate.
+  // Used to force a full-screen resync after zoom/layout/window changes, where
+  // only incremental output arrives and stale pixels can linger or overlap.
+  invalidateSnapshot(paneId: string) {
+    const r = registry.get(paneId)
+    if (r) r.snapshotWritten = false
+  },
+
   has(paneId: string): boolean {
     return registry.has(paneId)
   },
