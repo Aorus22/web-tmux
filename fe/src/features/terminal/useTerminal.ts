@@ -76,6 +76,7 @@ export function useTerminal({ paneId, onResize, onOpen }: UseTerminalOptions) {
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
+  const wheelCleanupRef = useRef<(() => void) | null>(null)
   const cbRef = useRef({ onResize, onOpen })
   cbRef.current = { onResize, onOpen }
 
@@ -85,6 +86,9 @@ export function useTerminal({ paneId, onResize, onOpen }: UseTerminalOptions) {
   const lineHeight = useSettingsStore((s) => s.lineHeight)
   const uiTheme = useSettingsStore((s) => s.uiTheme)
   const scrollbackLines = useSettingsStore((s) => s.scrollbackLines)
+  const tuiScrollEnabled = useSettingsStore((s) => s.tuiScrollPanes[paneId] ?? true)
+  const tuiScrollEnabledRef = useRef(tuiScrollEnabled)
+  tuiScrollEnabledRef.current = tuiScrollEnabled
 
   const createTerminal = useCallback(() => {
     if (!containerRef.current || termRef.current) return
@@ -116,6 +120,54 @@ export function useTerminal({ paneId, onResize, onOpen }: UseTerminalOptions) {
     term.onData((data) => {
       tmuxSocket.terminalInput(paneId, data)
     })
+
+    // Wheel → TUI paging when the pane toggle is On (PRD §46): xterm's own
+    // wheel plumbing proved unreliable here (its wheel listener never fired for
+    // this app's tmux-control panes), so intercept the wheel at the terminal
+    // root in the CAPTURE phase — before xterm's own listeners — and translate
+    // vertical movement into PageUp/PageDown, the same sequence the PageDown
+    // key produces (which OpenCode scrolls with). Off leaves the wheel to
+    // xterm's native scrollback handling.
+    let wheelAccum = 0 // leftover vertical delta (px) not yet spent on a page
+    const WHEEL_NOTCH_PX = 100 // ~one physical wheel notch per page key
+    const WHEEL_MAX_BURST = 3 // clamp a fast fling to at most this many pages
+    const wheelTarget = term.element ?? containerRef.current
+    const onWheel = (event: WheelEvent) => {
+      if (!tuiScrollEnabledRef.current) return // Off: xterm handles it natively
+      // Ignore horizontal and shift-modified wheels.
+      if (event.shiftKey || event.deltaX || event.deltaY === 0) return
+      // While On, always consume the wheel so xterm's scrollback or mouse
+      // protocol never processes it (we already ran in the capture phase).
+      event.preventDefault()
+      event.stopImmediatePropagation()
+
+      // Normalize the delta into pixels: pixel deltas are used as-is, line
+      // deltas scale by a cell height, and page deltas count as a full notch.
+      let deltaPx = 0
+      if (event.deltaMode === WheelEvent.DOM_DELTA_PIXEL) {
+        deltaPx = event.deltaY
+      } else if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+        deltaPx = event.deltaY * 16
+      } else if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+        deltaPx = event.deltaY * WHEEL_NOTCH_PX
+      }
+
+      // Accumulate tiny trackpad/pixel deltas until they make up a full notch,
+      // so a page is only sent per real notch rather than per pixel event.
+      wheelAccum += deltaPx
+      const notches = Math.trunc(wheelAccum / WHEEL_NOTCH_PX)
+      wheelAccum -= notches * WHEEL_NOTCH_PX
+      if (notches === 0) return
+
+      // Clamp bursts so one fast fling does not dump many page keys at once.
+      const pages = Math.max(-WHEEL_MAX_BURST, Math.min(WHEEL_MAX_BURST, notches))
+      const key = pages < 0 ? '\x1b[5~' : '\x1b[6~' // PageUp / PageDown
+      tmuxSocket.terminalInput(paneId, key.repeat(Math.abs(pages)))
+    }
+    wheelTarget?.addEventListener('wheel', onWheel, { capture: true, passive: false })
+    wheelCleanupRef.current = () => {
+      wheelTarget?.removeEventListener('wheel', onWheel, { capture: true })
+    }
 
     // Clipboard (PRD §40, §81): Ctrl+Shift+C copies the xterm selection,
     // Ctrl+C copies when there is a selection (else passes through as
@@ -164,6 +216,8 @@ export function useTerminal({ paneId, onResize, onOpen }: UseTerminalOptions) {
     createTerminal()
     return () => {
       resizeObserverRef.current?.disconnect()
+      wheelCleanupRef.current?.()
+      wheelCleanupRef.current = null
       if (termRef.current) {
         terminalRegistry.unregister(paneId)
         termRef.current.dispose()
