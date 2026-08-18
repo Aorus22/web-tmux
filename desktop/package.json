@@ -22,14 +22,9 @@
     "productName": "Tmux GUI",
     "files": [
       "main.js",
-      "preload.js",
-      "resources/tmux-gui-server"
+      "preload.js"
     ],
     "extraResources": [
-      {
-        "from": "resources/tmux-gui-server",
-        "to": "tmux-gui-server"
-      },
       {
         "from": "resources/fe-dist",
         "to": "fe-dist"
@@ -40,7 +35,22 @@
         "AppImage",
         "deb"
       ],
-      "category": "Utility"
+      "category": "Utility",
+      "extraResources": [
+        {
+          "from": "resources/tmux-gui-server",
+          "to": "tmux-gui-server"
+        }
+      ]
+    },
+    "win": {
+      "target": "nsis",
+      "extraResources": [
+        {
+          "from": "resources/tmux-gui-server.exe",
+          "to": "tmux-gui-server.exe"
+        }
+      ]
     }
   },
   "devDependencies": {
