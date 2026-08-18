@@ -199,6 +199,11 @@ func (m *Monitor) ResizeTerminal(cols, rows int) error {
 	if ctrl == nil {
 		return errors.New("tmux control mode not connected")
 	}
+	if runtime.GOOS != "windows" {
+		// Preserve the Unix control-mode resize path. The Windows adapter has
+		// no -C client and overrides this with resize-window below.
+		return m.RunCommand(cmdResizeClient(cols, rows), "")
+	}
 	return ctrl.Resize(cols, rows)
 }
 
