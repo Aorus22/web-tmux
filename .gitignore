@@ -28,3 +28,8 @@ desktop/node_modules/
 
 # Logs
 *.log
+
+# Local files from other branches / tooling
+mobile/
+.slim/
+.ignore
