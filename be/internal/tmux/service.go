@@ -75,15 +75,15 @@ func (s *Service) EnsureServer(ctx context.Context) error {
 
 // --- session operations ---
 
-// CreateSession creates a new session (PRD §14). Mutating: uses control mode
-// when a monitor is available, else one-shot (bootstrap path).
+// CreateSession creates a new session (PRD §14). Mutating operations use the
+// session monitor when one is available; native Windows monitors execute the
+// same typed command as a one-shot tmux process.
 func (s *Service) CreateSession(ctx context.Context, name, cwd, initialCmd string) error {
 	if err := ValidateSessionName(name); err != nil {
 		return err
 	}
 	if m := s.getMonitor(""); m != nil {
-		_ = m.RunCommand(cmdNewSession(name, cwd, initialCmd, true), "")
-		return nil
+		return m.RunCommand(cmdNewSession(name, cwd, initialCmd, true), "")
 	}
 	c := cmdNewSession(name, cwd, initialCmd, true)
 	return s.execOneShot(ctx, c)
@@ -95,8 +95,7 @@ func (s *Service) RenameSession(ctx context.Context, name, newName string) error
 		return err
 	}
 	if m := s.getMonitor(name); m != nil {
-		_ = m.RunCommand(cmdRenameSession(name, newName), "")
-		return nil
+		return m.RunCommand(cmdRenameSession(name, newName), "")
 	}
 	return s.execOneShot(ctx, cmdRenameSession(name, newName))
 }
@@ -287,6 +286,11 @@ func (s *Service) SendInput(session, paneID string, data []byte) error {
 }
 
 // ResizeTerminal resizes the control client's viewport (PRD §26 terminal.resize).
+//
+// Raw per-client resizes no longer flow straight from the WebSocket handler:
+// the realtime hub aggregates client viewports (minimum across the session,
+// debounced) and is the only caller of this method (§83). The size bounds
+// (cols >= 2, rows >= 1) mirror the hub's UpdateViewport validation.
 func (s *Service) ResizeTerminal(session string, cols, rows int) error {
 	if cols < 2 || rows < 1 {
 		return fmt.Errorf("invalid terminal size %dx%d", cols, rows)
@@ -295,7 +299,7 @@ func (s *Service) ResizeTerminal(session string, cols, rows int) error {
 	if m == nil {
 		return fmt.Errorf("session %q is not connected", session)
 	}
-	return m.RunCommand(cmdResizeClient(cols, rows), "")
+	return m.ResizeTerminal(cols, rows)
 }
 
 // CapturePane fetches terminal content for the initial snapshot (PRD §24).

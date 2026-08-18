@@ -12,8 +12,10 @@
   "scripts": {
     "start": "electron .",
     "dev": "NODE_ENV=development electron .",
+    "dev:win": "set NODE_ENV=development&& electron .",
     "build:linux": "electron-builder --linux AppImage deb",
-    "build": "npm run build:linux"
+    "build:win": "electron-builder --win",
+    "build": "electron-builder"
   },
   "build": {
     "appId": "dev.tmuxgui.desktop",

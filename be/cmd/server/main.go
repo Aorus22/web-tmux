@@ -18,9 +18,9 @@ import (
 )
 
 func main() {
-	if runtime.GOOS != "linux" {
+	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
 		fmt.Fprintln(os.Stderr, "Unsupported operating system.")
-		fmt.Fprintln(os.Stderr, "Tmux GUI currently supports Linux only.")
+		fmt.Fprintln(os.Stderr, "Tmux GUI currently supports Linux and Windows.")
 		os.Exit(1)
 	}
 

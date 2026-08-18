@@ -17,21 +17,22 @@ let backend = null
 
 function backendBinary() {
   // dev: use the compiled binary in desktop/resources (make dev-desktop builds it)
-  const local = path.join(__dirname, 'resources', 'tmux-gui-server')
+  const exe = process.platform === 'win32' ? 'tmux-gui-server.exe' : 'tmux-gui-server'
+  const local = path.join(__dirname, 'resources', exe)
   if (fs.existsSync(local)) return local
   // packaged: extraResources copies it to resources/tmux-gui-server
-  return path.join(process.resourcesPath, 'tmux-gui-server')
+  return path.join(process.resourcesPath, exe)
 }
 
 function startBackend() {
   const bin = backendBinary()
-  // Dev mode (PRD §64): Electron spawns Go on the FIXED :14101 port, and the
-  // window loads the Vite dev server on :14102, which proxies /api → :14101.
+  // Dev mode (PRD §64): Electron spawns Go on the FIXED :9001 port, and the
+  // window loads the Vite dev server on :9002, which proxies /api → :9001.
   // Production (PRD §50): dynamic port 0; Electron parses BACKEND_PORT.
   const env = {
     ...process.env,
     TMUXGUI_HOST: '127.0.0.1',
-    TMUXGUI_PORT: isDev ? '14101' : '0',
+    TMUXGUI_PORT: isDev ? '9001' : '0',
   }
   // If Electron itself runs inside a tmux session, TMUX/TMUX_PANE point at
   // that session's socket — every `tmux` call the backend makes would attach
@@ -112,9 +113,9 @@ function createWindow() {
   })
 
   // Dev (PRD §64): load the Vite dev server directly, like the web-term
-  // reference app — no waiting on the backend; Vite proxies /api → :14101.
+  // reference app — no waiting on the backend; Vite proxies /api → :9001.
   if (isDev) {
-    mainWindow.loadURL('http://127.0.0.1:14102')
+    mainWindow.loadURL('http://127.0.0.1:9002')
   }
   startBackend()
 }

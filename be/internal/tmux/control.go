@@ -1,3 +1,5 @@
+//go:build !windows
+
 package tmux
 
 import (
@@ -34,12 +36,31 @@ type Control struct {
 	reader *bufio.Reader
 	closed bool
 
+	// waitDone is closed exactly once, after the single cmd.Wait() (spawned in
+	// Start) reaps the child. Stop waits on it instead of calling Wait again —
+	// concurrent Wait calls on one *exec.Cmd race on its internals.
+	waitDone chan struct{}
+
 	// OnExit is called (in a goroutine) when the process exits unexpectedly.
 	OnExit func(err error)
 }
 
 func NewControl(session string, socket Socket, log *slog.Logger) *Control {
-	return &Control{session: session, socket: socket, log: log}
+	return &Control{
+		session:  session,
+		socket:   socket,
+		log:      log,
+		waitDone: make(chan struct{}),
+	}
+}
+
+// IsSynchronous reports whether RunCommand completes immediately. Unix
+// control mode returns false because completion arrives via %end/%error.
+func (c *Control) IsSynchronous() bool { return false }
+
+// RunCommand sends a typed command through the control-mode parser.
+func (c *Control) RunCommand(command command) error {
+	return c.Write(command.line())
 }
 
 // Start launches the control-mode client on a PTY. The session must exist.
@@ -85,6 +106,9 @@ func (c *Control) Start() error {
 				c.OnExit(err)
 			}
 		}
+		// Signal any concurrent Stop that the child has been reaped. This is
+		// the ONLY cmd.Wait() on this process.
+		close(c.waitDone)
 	}()
 	return nil
 }
@@ -141,7 +165,9 @@ func stripControlModeWrapper(line string) string {
 
 // Stop detaches the control client gracefully. It sends `detach-client` and
 // waits for the process to exit (tmuxy: never SIGKILL a CC client — always
-// detach first), falling back to SIGTERM after a timeout.
+// detach first), falling back to SIGTERM after a timeout. The child is reaped
+// by Start's single cmd.Wait(); Stop just waits for that reaping (or kills the
+// process after 2s to unblock it).
 func (c *Control) Stop() {
 	c.mu.Lock()
 	if c.closed || c.cmd == nil || c.cmd.Process == nil {
@@ -151,23 +177,21 @@ func (c *Control) Stop() {
 	c.closed = true
 	cmd := c.cmd
 	master := c.master
+	waitDone := c.waitDone
 	c.master = nil
 	c.reader = nil
 	c.mu.Unlock()
 
 	// Graceful detach. Errors are expected when the client already exited.
-	_ = c.Write("detach-client")
+	if master != nil {
+		_, _ = io.WriteString(master, "detach-client\n")
+	}
 
-	done := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(done)
-	}()
 	select {
-	case <-done:
+	case <-waitDone:
 	case <-time.After(2 * time.Second):
 		_ = cmd.Process.Kill()
-		<-done
+		<-waitDone
 	}
 	if master != nil {
 		_ = master.Close()

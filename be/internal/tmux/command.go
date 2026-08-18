@@ -2,7 +2,9 @@ package tmux
 
 import (
 	"fmt"
+	"os"
 	"regexp"
+	"runtime"
 	"strings"
 )
 
@@ -94,13 +96,11 @@ func cmdSwitchSession(name string) command {
 func cmdCreateWindow(session, name, cwd, initialCmd string) command {
 	var c command
 	if name != "" {
-		c = cmd("new-window", "-t", session, "-n", name, "-c", cwdOrHome(cwd))
+		c = cmd("new-window", "-t", session, "-n", name)
 	} else {
-		c = cmd("new-window", "-t", session, "-c", cwdOrHome(cwd))
+		c = cmd("new-window", "-t", session)
 	}
-	if initialCmd != "" {
-		c.args = append(c.args, initialCmd)
-	}
+	c.args = appendNewWindowArgs(c.args, cwd, initialCmd)
 	return c
 }
 
@@ -108,21 +108,54 @@ func cmdCreateWindow(session, name, cwd, initialCmd string) command {
 func cmdSplitBreakNewWindow(session, name, cwd, initialCmd string) command {
 	var c command
 	if name != "" {
-		c = cmd("new-window", "-t", session, "-n", name, "-c", cwdOrHome(cwd))
+		c = cmd("new-window", "-t", session, "-n", name)
 	} else {
-		c = cmd("new-window", "-t", session, "-c", cwdOrHome(cwd))
+		c = cmd("new-window", "-t", session)
 	}
-	if initialCmd != "" {
-		c.args = append(c.args, initialCmd)
-	}
+	c.args = appendNewWindowArgs(c.args, cwd, initialCmd)
 	return c
 }
 
-func cwdOrHome(cwd string) string {
-	if cwd == "" {
-		return "$HOME"
+// appendNewWindowArgs handles the platform-specific working-directory
+// behavior of the native Windows tmux port. Its -c implementation currently
+// returns "spawn failed", so use cmd.exe's `cd /d` in the shell command. A
+// bare Windows window still starts normally when cwd is empty.
+func appendNewWindowArgs(args []string, cwd, initialCmd string) []string {
+	if runtime.GOOS == "windows" {
+		if cwd != "" {
+			path := strings.ReplaceAll(cwd, `"`, `""`)
+			shellCmd := `cd /d "` + path + `"`
+			if initialCmd != "" {
+				shellCmd += " && " + initialCmd
+			} else {
+				shellCmd += " && cmd.exe"
+			}
+			return append(args, shellCmd)
+		}
+		if initialCmd != "" {
+			return append(args, initialCmd)
+		}
+		return args
 	}
-	return cwd
+
+	args = append(args, "-c", cwdOrHome(cwd))
+	if initialCmd != "" {
+		args = append(args, initialCmd)
+	}
+	return args
+}
+
+func cwdOrHome(cwd string) string {
+	if cwd != "" {
+		return cwd
+	}
+	if runtime.GOOS == "windows" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			return home
+		}
+		return "."
+	}
+	return "$HOME"
 }
 
 func cmdKillWindow(target string) command {

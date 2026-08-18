@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -34,9 +36,10 @@ const (
 	EvCommandResult = "command"
 )
 
-// Monitor owns the control-mode connection for one session: it spawns the
-// `tmux -CC` child, parses events, keeps a live snapshot, batches terminal
-// input, sends mutating commands, and reconnects with backoff (PRD §25, §48).
+// Monitor owns the tmux connection for one session. Unix uses a persistent
+// `tmux -CC` child and asynchronous control events. Native Windows tmux does
+// not implement -C, so the Windows adapter uses one-shot commands and this
+// monitor polls snapshots and pane captures instead.
 type Monitor struct {
 	session    string
 	socket     Socket
@@ -46,16 +49,17 @@ type Monitor struct {
 	log        *slog.Logger
 	scrollback int
 
-	mu         sync.Mutex
-	control    *Control
-	batcher    *InputBatcher
-	snapshot   *Snapshot
-	pending    []*PendingCommand // FIFO correlation (PRD §28)
-	subs       map[chan MonitorEvent]struct{}
-	seq        uint64
-	reconnect  bool
-	lastErr    error
-	resyncCh   chan struct{}
+	mu        sync.Mutex
+	control   *Control
+	batcher   *InputBatcher
+	snapshot  *Snapshot
+	pending   []*PendingCommand // FIFO correlation (PRD §28)
+	subs      map[chan MonitorEvent]struct{}
+	captures  map[string]string // last visible capture per pane (Windows)
+	seq       uint64
+	reconnect bool
+	lastErr   error
+	resyncCh  chan struct{}
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -84,6 +88,7 @@ func NewMonitor(session string, socket Socket, exec *Executor, log *slog.Logger,
 		log:        log.With("session", session),
 		scrollback: scrollback,
 		subs:       make(map[chan MonitorEvent]struct{}),
+		captures:   make(map[string]string),
 		resyncCh:   make(chan struct{}, 1),
 		ctx:        ctx,
 		cancel:     cancel,
@@ -167,14 +172,34 @@ func (m *Monitor) RunCommand(c command, requestID string) error {
 		m.mu.Unlock()
 		return errors.New("tmux control mode not connected")
 	}
-	m.pending = append(m.pending, &PendingCommand{RequestID: requestID})
 	ctrl := m.control
+	if !ctrl.IsSynchronous() {
+		m.pending = append(m.pending, &PendingCommand{RequestID: requestID})
+	}
 	m.mu.Unlock()
 
-	if err := ctrl.Write(c.line()); err != nil {
+	if err := ctrl.RunCommand(c); err != nil {
 		return err
 	}
+	if ctrl.IsSynchronous() {
+		// There is no %end marker on native Windows. The next polling tick
+		// publishes the resulting snapshot and terminal contents.
+		m.Resync()
+	}
 	return nil
+}
+
+// ResizeTerminal resizes the shared tmux viewport. Unix maps this to
+// refresh-client -C; native Windows maps it to resize-window because there is
+// no control-mode client to resize.
+func (m *Monitor) ResizeTerminal(cols, rows int) error {
+	m.mu.Lock()
+	ctrl := m.control
+	m.mu.Unlock()
+	if ctrl == nil {
+		return errors.New("tmux control mode not connected")
+	}
+	return ctrl.Resize(cols, rows)
 }
 
 // SendInput batches raw terminal bytes to a pane (PRD §22).
@@ -238,9 +263,13 @@ func (m *Monitor) run() {
 	batcher.Start()
 	defer batcher.Stop()
 
-	// Read loop: parses protocol lines as they arrive.
-	m.wg.Add(1)
-	go m.readLoop()
+	// Unix receives asynchronous protocol lines from the control client.
+	// Native Windows tmux has no control mode, so it uses the polling loop
+	// below instead.
+	if runtime.GOOS != "windows" {
+		m.wg.Add(1)
+		go m.readLoop()
+	}
 
 	// Startup: initial snapshot + ready broadcast.
 	if err := m.refreshSnapshot(); err != nil {
@@ -248,6 +277,11 @@ func (m *Monitor) run() {
 	}
 	m.broadcast(MonitorEvent{Type: EvReady})
 	m.broadcast(MonitorEvent{Type: EvState, Snapshot: m.Snapshot()})
+
+	if runtime.GOOS == "windows" {
+		m.runWindowsPolling()
+		return
+	}
 
 	// Reconnect/retry backoff: 250ms, 500ms, 1s, 2s, 5s, 10s (PRD §48).
 	backoff := []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second, 5 * time.Second, 10 * time.Second}
@@ -259,6 +293,69 @@ func (m *Monitor) run() {
 			return
 		case <-m.resyncCh:
 			m.handleResyncOrRetry(&attempt, backoff)
+		}
+	}
+}
+
+// runWindowsPolling supplies the asynchronous behavior that -C would provide
+// on Unix. The native Windows tmux port supports normal commands and
+// capture-pane, but not control-mode notifications.
+func (m *Monitor) runWindowsPolling() {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-m.resyncCh:
+			m.pollWindows()
+		case <-ticker.C:
+			m.pollWindows()
+		}
+	}
+}
+
+// pollWindows refreshes topology and sends a full visible-screen replacement
+// only when a pane changed. The clear/home prefix is intentional: capture-pane
+// returns a screen, while the frontend's terminal.output event is incremental.
+// This preserves native Windows functionality without appending duplicate
+// copies of the same captured screen.
+func (m *Monitor) pollWindows() {
+	previous := m.Snapshot()
+	if err := m.refreshSnapshot(); err != nil {
+		m.log.Debug("Windows tmux poll failed", "err", err)
+		return
+	}
+	current := m.Snapshot()
+	if !reflect.DeepEqual(previous, current) {
+		m.broadcast(MonitorEvent{Type: EvState, Snapshot: current})
+	}
+
+	panes := current.Panes
+	seen := make(map[string]struct{}, len(panes))
+	ctx, cancel := context.WithTimeout(m.ctx, 2*time.Second)
+	defer cancel()
+	for _, pane := range panes {
+		seen[pane.ID] = struct{}{}
+		data, err := m.reader.CapturePane(ctx, pane.ID, 0)
+		if err != nil {
+			continue
+		}
+		previousCapture, exists := m.captures[pane.ID]
+		m.captures[pane.ID] = data
+		// The initial terminal.capture request supplies the first screen and
+		// scrollback. Do not immediately overwrite it with the first poll.
+		if exists && previousCapture != data {
+			m.broadcast(MonitorEvent{
+				Type:   EvOutput,
+				PaneID: pane.ID,
+				Data:   []byte("\x1b[2J\x1b[H" + data),
+			})
+		}
+	}
+	for paneID := range m.captures {
+		if _, ok := seen[paneID]; !ok {
+			delete(m.captures, paneID)
 		}
 	}
 }
