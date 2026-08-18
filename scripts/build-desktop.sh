@@ -20,7 +20,7 @@ echo "==> Building Go backend -> desktop/resources/tmux-gui-server"
 echo "==> Packaging Electron"
 (
   cd "$ROOT/desktop"
-  npm run build:linux
+  npm run build
 )
 
 echo "==> Done. Artifacts in desktop/dist"

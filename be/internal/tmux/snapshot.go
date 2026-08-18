@@ -14,7 +14,7 @@ import (
 const (
 	sessionFormat = "#{session_name}|#{session_windows}|#{session_attached}|#{session_created}|#{session_width}|#{session_height}"
 	windowFormat  = "#{window_id}|#{window_index}|#{window_name}|#{window_active}|#{window_panes}|#{window_width}|#{window_height}|#{window_layout}"
-	paneFormat    = "#{pane_id}|#{pane_index}|#{window_id}|#{pane_active}|#{pane_zoomed_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{pane_pid}|#{pane_current_command}|#{pane_current_path}|#{pane_title}"
+	paneFormat    = "#{pane_id}|#{pane_index}|#{window_id}|#{pane_active}|#{window_zoomed_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{pane_pid}|#{pane_current_command}|#{pane_current_path}|#{pane_title}"
 )
 
 type SnapshotReader struct {
@@ -232,7 +232,10 @@ func parsePane(l string) (Pane, bool) {
 		Index:          atoiSafe(p[1]),
 		WindowID:       p[2],
 		Active:         p[3] == "1",
-		Zoomed:         p[4] == "1",
+		// tmux only reports window_zoomed_flag (per-window, true for every pane
+		// in the zoomed window); the zoomed pane is the active one, so a pane is
+		// "zoomed" only when the window is zoomed AND this pane is active.
+		Zoomed:         p[4] == "1" && p[3] == "1",
 		Left:           atoiSafe(p[5]),
 		Top:            atoiSafe(p[6]),
 		Width:          atoiSafe(p[7]),

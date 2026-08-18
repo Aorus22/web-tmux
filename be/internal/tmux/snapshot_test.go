@@ -34,11 +34,13 @@ func TestParseWindowLine(t *testing.T) {
 }
 
 func TestParsePaneLine(t *testing.T) {
-	p, ok := parsePane("%12|1|@0|0|1|0|13|40|11|1234|bash|/home/user|user@host")
+	// Zoomed pane: window_zoomed_flag=1 and pane_active=1 (the zoomed pane is
+	// always the active one).
+	p, ok := parsePane("%12|1|@0|1|1|0|13|40|11|1234|bash|/home/user|user@host")
 	if !ok {
 		t.Fatal("parse failed")
 	}
-	if p.ID != "%12" || p.Index != 1 || p.WindowID != "@0" || p.Active ||
+	if p.ID != "%12" || p.Index != 1 || p.WindowID != "@0" || !p.Active ||
 		!p.Zoomed || p.Left != 0 || p.Top != 13 || p.Width != 40 || p.Height != 11 ||
 		p.PID != 1234 || p.CurrentCommand != "bash" ||
 		p.CurrentPath != "/home/user" || p.Title != "user@host" {
