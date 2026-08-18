@@ -105,6 +105,21 @@ function backendBinary() {
   return path.join(process.resourcesPath, exe)
 }
 
+function resolveTmuxBinary() {
+  if (process.env.TMUXGUI_TMUX_BIN) return process.env.TMUXGUI_TMUX_BIN
+  if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
+    const wingetTmux = path.join(
+      process.env.LOCALAPPDATA,
+      'Microsoft',
+      'WinGet',
+      'Links',
+      'tmux.exe',
+    )
+    if (fs.existsSync(wingetTmux)) return wingetTmux
+  }
+  return 'tmux'
+}
+
 function startBackend() {
   const bin = backendBinary()
   // Dev mode (PRD §64): Electron spawns Go on the FIXED :9001 port, and the
@@ -116,6 +131,7 @@ function startBackend() {
     ...process.env,
     TMUXGUI_HOST: '127.0.0.1',
     TMUXGUI_PORT: isDev ? '9001' : '0',
+    TMUXGUI_TMUX_BIN: resolveTmuxBinary(),
   }
   // If Electron itself runs inside a tmux session, TMUX/TMUX_PANE point at
   // that session's socket — every `tmux` call the backend makes would attach
