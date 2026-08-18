@@ -33,3 +33,6 @@ desktop/node_modules/
 mobile/
 .slim/
 .ignore
+
+# Electron FE bundle (served by Electron itself; rebuilt by build-desktop.sh)
+desktop/resources/fe-dist/

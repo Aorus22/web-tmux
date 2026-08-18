@@ -49,14 +49,18 @@ func (p *Parser) ParseLine(raw string) (ControlEvent, bool) {
 	payload := ""
 	if space >= 0 {
 		kind = rest[:space]
-		payload = strings.TrimSpace(rest[space+1:])
+		// Deliberately NOT trimmed: %output data is passed through verbatim.
+		// tmux only octal-escapes control characters — spaces are printable
+		// and arrive raw, so trimming here swallowed standalone/trailing
+		// spaces: typing a space worked in the shell but never rendered.
+		payload = rest[space+1:]
 	}
 
 	switch kind {
 	case "begin", "end", "error":
 		return parseMarker(kind, payload), true
 	case "output":
-		pane, data, ok := splitOutput(payload)
+		pane, data, ok := SplitOutput(payload)
 		if !ok {
 			return ControlEvent{Kind: "unknown"}, true
 		}
@@ -100,9 +104,10 @@ func parseMarker(kind, payload string) ControlEvent {
 	return ev
 }
 
-// splitOutput splits "%output %<pane> <data>" payloads. tmux output data uses
-// %<pane-id> prefix followed by a space, then escaped data.
-func splitOutput(payload string) (pane, data string, ok bool) {
+// SplitOutput splits "%output %<pane> <data>" payloads. tmux output data uses
+// %<pane-id> prefix followed by a space, then escaped data. Exported for the
+// external test package.
+func SplitOutput(payload string) (pane, data string, ok bool) {
 	if !strings.HasPrefix(payload, "%") {
 		return "", "", false
 	}

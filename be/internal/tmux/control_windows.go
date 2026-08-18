@@ -62,7 +62,7 @@ func (c *Control) Start() error {
 // RunCommand executes a typed mutation with argv preserved. Using argv instead
 // of command.line() is important: line() is control-mode syntax and must not
 // be reparsed as shell words.
-func (c *Control) RunCommand(command command) error {
+func (c *Control) RunCommand(command Command) error {
 	c.mu.Lock()
 	if c.closed || !c.running {
 		c.mu.Unlock()
@@ -85,7 +85,7 @@ func (c *Control) RunCommand(command command) error {
 // Resize updates the active tmux window directly. refresh-client -C only
 // applies to a control-mode client, which is unavailable on native Windows.
 func (c *Control) Resize(cols, rows int) error {
-	return c.RunCommand(command{
+	return c.RunCommand(Command{
 		name: "resize-window",
 		args: []string{"-t", c.session, "-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows)},
 	})
@@ -103,7 +103,7 @@ func (c *Control) ReadLine() (string, error) {
 	return "", errors.New("tmux control mode is unavailable on native Windows")
 }
 
-func stripControlModeWrapper(line string) string {
+func StripControlModeWrapper(line string) string {
 	line = strings.TrimPrefix(line, "\x1bP1000p")
 	return strings.TrimSuffix(line, "\x1b\\")
 }

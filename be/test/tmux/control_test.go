@@ -1,6 +1,10 @@
-package tmux
+package tmux_test
 
-import "testing"
+import (
+	"testing"
+
+	"tmux-gui/be/internal/tmux"
+)
 
 func TestStripControlModeWrapper(t *testing.T) {
 	cases := []struct {
@@ -31,7 +35,7 @@ func TestStripControlModeWrapper(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := stripControlModeWrapper(c.in); got != c.want {
+			if got := tmux.StripControlModeWrapper(c.in); got != c.want {
 				t.Fatalf("strip(%q) = %q, want %q", c.in, got, c.want)
 			}
 		})

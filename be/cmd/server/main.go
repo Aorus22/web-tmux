@@ -44,20 +44,22 @@ func main() {
 	router := server.NewRouter(cfg, svc, hub, log)
 	srv := server.New(cfg.Addr(), router, log)
 
-	// Dynamic port (Electron: TMUXGUI_PORT=0): print BACKEND_PORT:<n> so the
-	// parent process can load the URL (PRD §50).
-	if cfg.Port == 0 {
-		ln, err := net.Listen("tcp", cfg.Addr())
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "listen:", err)
-			os.Exit(1)
-		}
-		fmt.Printf("BACKEND_PORT:%d\n", ln.Addr().(*net.TCPAddr).Port)
-		go func() { _ = srv.Serve(ln) }()
-	} else {
-		go func() { _ = srv.ListenAndServe() }()
+	// Bind explicitly so the actual port is always known: Electron needs
+	// BACKEND_PORT:<n> to load the URL (PRD §50). The desktop app pins a fixed
+	// port so the renderer origin stays stable and localStorage (settings)
+	// survives restarts; if that port is busy (e.g. the web version is
+	// running), fall back to a dynamic port rather than failing to start.
+	ln, err := net.Listen("tcp", cfg.Addr())
+	if err != nil && cfg.Port != 0 {
+		log.Warn("port busy, falling back to dynamic port", "addr", cfg.Addr(), "err", err)
+		ln, err = net.Listen("tcp", net.JoinHostPort(cfg.Host, "0"))
 	}
-
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "listen:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("BACKEND_PORT:%d\n", ln.Addr().(*net.TCPAddr).Port)
+	go func() { _ = srv.Serve(ln) }()
 	// Graceful shutdown (PRD §49): close HTTP, cancel WS clients, stop
 	// control-mode children. tmux sessions are never killed.
 	stop := make(chan os.Signal, 1)

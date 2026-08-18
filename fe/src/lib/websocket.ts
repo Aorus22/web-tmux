@@ -9,6 +9,7 @@
 // The tmuxStore owns live state; this module is transport only.
 
 import { EV, MSG, type WsIncoming, type WsOutgoing } from './protocol'
+import { getApiBase } from './api'
 
 export interface WsHandlers {
   onReady?: (session: string) => void
@@ -64,8 +65,12 @@ export class TmuxSocket {
   }
 
   private open() {
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const url = `${proto}://${window.location.host}/api/ws?session=${encodeURIComponent(this.session)}`
+    // Desktop: absolute URL to the backend sidecar (the FE is served from the
+    // stable app:// origin, not by the backend). Web/dev: same-origin relative.
+    const base = getApiBase()
+    const url = base
+      ? `${base.replace(/^http/, 'ws')}/api/ws?session=${encodeURIComponent(this.session)}`
+      : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/api/ws?session=${encodeURIComponent(this.session)}`
     this.setTransportState('connecting')
 
     // Bump the generation and retire any previous socket: a superseded

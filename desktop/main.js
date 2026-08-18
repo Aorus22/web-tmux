@@ -4,16 +4,67 @@
 // controls through a minimal preload bridge, and kill the backend on quit —
 // tmux sessions always stay alive.
 
-const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron')
+const { app, BrowserWindow, ipcMain, shell, dialog, protocol, net } = require('electron')
 const { spawn } = require('child_process')
 const path = require('path')
 const fs = require('fs')
+const { pathToFileURL } = require('url')
 
 const isDev = process.env.NODE_ENV === 'development'
+
+// --- custom protocol: the desktop app serves its own FE bundle ---
+// Register BEFORE app ready (required by Electron). The renderer loads
+// `app://tmux-gui/index.html` — a STABLE origin that never changes between
+// runs, so localStorage (UI settings) survives restarts regardless of which
+// port the backend sidecar ends up on (web-term pattern: the shell serves the
+// FE, the backend only provides the API).
+
+const APP_SCHEME = 'app'
+const APP_HOST = 'tmux-gui'
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: APP_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+    },
+  },
+])
+
+// FE dist location: unpackaged → desktop/resources/fe-dist; packaged →
+// resources/fe-dist (extraResources).
+function feDistDir() {
+  const local = path.join(__dirname, 'resources', 'fe-dist')
+  if (fs.existsSync(local)) return local
+  return path.join(process.resourcesPath, 'fe-dist')
+}
+
+function serveFeDist() {
+  const root = feDistDir()
+  protocol.handle(APP_SCHEME, (request) => {
+    const { hostname, pathname } = new URL(request.url)
+    if (hostname !== APP_HOST) {
+      return new Response('not found', { status: 404 })
+    }
+    // Map the URL path onto the dist directory; index.html is the fallback
+    // (the FE is a single page).
+    let rel = decodeURIComponent(pathname)
+    if (rel === '/' || rel === '') rel = '/index.html'
+    const file = path.normalize(path.join(root, rel))
+    if (!file.startsWith(path.normalize(root))) {
+      return new Response('forbidden', { status: 403 })
+    }
+    return net.fetch(pathToFileURL(file).toString())
+  })
+}
 
 // --- backend lifecycle ---
 
 let backend = null
+let backendPort = null
 
 function backendBinary() {
   // dev: use the compiled binary in desktop/resources (make dev-desktop builds it)
@@ -28,7 +79,9 @@ function startBackend() {
   const bin = backendBinary()
   // Dev mode (PRD §64): Electron spawns Go on the FIXED :9001 port, and the
   // window loads the Vite dev server on :9002, which proxies /api → :9001.
-  // Production (PRD §50): dynamic port 0; Electron parses BACKEND_PORT.
+  // Production: dynamic port 0 — the renderer origin is the stable app://
+  // protocol (served by Electron itself), so the backend port no longer
+  // matters for settings persistence; the FE learns the port via IPC.
   const env = {
     ...process.env,
     TMUXGUI_HOST: '127.0.0.1',
@@ -48,11 +101,8 @@ function startBackend() {
     const m = portBuf.match(/BACKEND_PORT:(\d+)/)
     if (m) {
       const port = Number(m[1])
-      mainWindow.webContents.send('backend-ready', port)
-      if (!isDev) {
-        // prod: load once the dynamic backend port is known
-        mainWindow.loadURL(`http://127.0.0.1:${port}`)
-      }
+      backendPort = port
+      mainWindow?.webContents.send('backend-ready', port)
     }
   })
 
@@ -61,6 +111,7 @@ function startBackend() {
   })
 
   backend.on('exit', (code) => {
+    backendPort = null
     if (!app.isQuiting) {
       console.error('backend exited', code)
     }
@@ -116,6 +167,11 @@ function createWindow() {
   // reference app — no waiting on the backend; Vite proxies /api → :9001.
   if (isDev) {
     mainWindow.loadURL('http://127.0.0.1:9002')
+  } else {
+    // Prod: the FE is served by Electron itself over the stable app:// origin
+    // (see serveFeDist). No waiting on the backend — the renderer learns the
+    // backend port via IPC and self-heals once it is up.
+    mainWindow.loadURL(`${APP_SCHEME}://${APP_HOST}/index.html`)
   }
   startBackend()
 }
@@ -131,6 +187,7 @@ ipcMain.on('window-close', () => mainWindow?.close())
 ipcMain.handle('get-window-state', () =>
   mainWindow ? (mainWindow.isMaximized() ? 'maximized' : 'restored') : 'restored',
 )
+ipcMain.handle('get-backend-port', () => backendPort)
 ipcMain.handle('open-external', (_e, url) => {
   if (typeof url === 'string' && /^https?:\/\//.test(url)) {
     return shell.openExternal(url)
@@ -162,6 +219,7 @@ if (!gotLock) {
   })
 
   app.whenReady().then(() => {
+    serveFeDist()
     createWindow()
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()

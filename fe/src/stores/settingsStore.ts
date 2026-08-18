@@ -15,6 +15,8 @@ export interface Settings {
   fontSize: number
   lineHeight: number
   scrollbackLines: number
+  // Per-tmux-pane wheel behavior: true sends PageUp/PageDown to TUIs.
+  tuiScrollPanes: Record<string, boolean>
   confirmKillPane: boolean
   confirmKillWindow: boolean
   confirmKillSession: boolean
@@ -22,6 +24,7 @@ export interface Settings {
 
 interface SettingsState extends Settings {
   set: (patch: Partial<Settings>) => void
+  setTuiScrollPane: (paneId: string, enabled: boolean) => void
   reset: () => void
 }
 
@@ -32,6 +35,7 @@ const DEFAULTS: Settings = {
   fontSize: 14,
   lineHeight: 1.35,
   scrollbackLines: 2000,
+  tuiScrollPanes: {},
   confirmKillPane: true,
   confirmKillWindow: true,
   confirmKillSession: true,
@@ -42,6 +46,10 @@ export const useSettingsStore = create<SettingsState>()(
     (set) => ({
       ...DEFAULTS,
       set: (patch) => set(patch),
+      setTuiScrollPane: (paneId, enabled) =>
+        set((state) => ({
+          tuiScrollPanes: { ...state.tuiScrollPanes, [paneId]: enabled },
+        })),
       reset: () => set(DEFAULTS),
     }),
     {

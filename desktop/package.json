@@ -29,6 +29,10 @@
       {
         "from": "resources/tmux-gui-server",
         "to": "tmux-gui-server"
+      },
+      {
+        "from": "resources/fe-dist",
+        "to": "fe-dist"
       }
     ],
     "linux": {

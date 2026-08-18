@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('desktop', {
       return () => ipcRenderer.removeListener('window-state-change', listener)
     },
   },
-  getBackendPort: () => Promise.resolve(null),
+  getBackendPort: () => ipcRenderer.invoke('get-backend-port'),
   onBackendReady: (cb) => {
     const listener = (_e, port) => cb(port)
     ipcRenderer.on('backend-ready', listener)

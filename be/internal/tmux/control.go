@@ -59,8 +59,8 @@ func NewControl(session string, socket Socket, log *slog.Logger) *Control {
 func (c *Control) IsSynchronous() bool { return false }
 
 // RunCommand sends a typed command through the control-mode parser.
-func (c *Control) RunCommand(command command) error {
-	return c.Write(command.line())
+func (c *Control) RunCommand(command Command) error {
+	return c.Write(command.Line())
 }
 
 // Start launches the control-mode client on a PTY. The session must exist.
@@ -149,7 +149,7 @@ func (c *Control) ReadLine() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return stripControlModeWrapper(strings.TrimRight(line, "\r\n")), nil
+	return StripControlModeWrapper(strings.TrimRight(line, "\r\n")), nil
 }
 
 // stripControlModeWrapper removes the DCS envelope tmux wraps control-mode
@@ -158,7 +158,7 @@ func (c *Control) ReadLine() (string, error) {
 // its own line. Without stripping, the parser would treat the first line as
 // raw output (it no longer starts with '%') and broadcast the `%begin`
 // marker to clients as garbage with an empty pane id.
-func stripControlModeWrapper(line string) string {
+func StripControlModeWrapper(line string) string {
 	line = strings.TrimPrefix(line, "\x1bP1000p")
 	return strings.TrimSuffix(line, "\x1b\\")
 }

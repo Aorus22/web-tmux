@@ -6,12 +6,14 @@ import { Maximize2, SplitSquareHorizontal, SplitSquareVertical, X } from 'lucide
 import type { TmuxPane } from '@/lib/tmux-types'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { tmuxSocket } from '@/lib/socket'
 import { runCommand } from '@/lib/commands'
 import { toast } from 'sonner'
 import { shouldConfirm } from '@/lib/commands'
 import { useState } from 'react'
+import { useSettingsStore } from '@/stores/settingsStore'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -33,6 +35,8 @@ interface Props {
 
 export function PaneHeader({ pane, isActive, canZoom = true, onZoom }: Props) {
   const [killOpen, setKillOpen] = useState(false)
+  const tuiScrollEnabled = useSettingsStore((s) => s.tuiScrollPanes[pane.id] ?? true)
+  const setTuiScrollPane = useSettingsStore((s) => s.setTuiScrollPane)
 
   const split = async (direction: 'horizontal' | 'vertical' = 'vertical') => {
     try {
@@ -69,6 +73,19 @@ export function PaneHeader({ pane, isActive, canZoom = true, onZoom }: Props) {
         <span className="min-w-0 flex-1 truncate text-muted-foreground">{pane.currentPath}</span>
         <span className="shrink-0 font-mono text-muted-foreground/70">
           {pane.id}
+        </span>
+        <span
+          className="flex shrink-0 items-center gap-1 text-[10px] font-medium"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span className="text-muted-foreground/70">TUI</span>
+          <span>{tuiScrollEnabled ? 'On' : 'Off'}</span>
+          <Switch
+            size="sm"
+            checked={tuiScrollEnabled}
+            onCheckedChange={(checked) => setTuiScrollPane(pane.id, checked === true)}
+            aria-label={`TUI scroll for ${pane.id}`}
+          />
         </span>
         <span className="flex shrink-0 items-center gap-0.5">
           <Tooltip>

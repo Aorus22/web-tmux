@@ -44,14 +44,15 @@ func quote(s string) string {
 	return `"` + s + `"`
 }
 
-// command is a control-mode command: command name + args.
-type command struct {
+// Command is a control-mode command: command name + args. Exported so the
+// external test package (be/test) can assert on rendered command lines.
+type Command struct {
 	name string
 	args []string
 }
 
-// line renders the command as a single control-mode stdin line.
-func (c command) line() string {
+// Line renders the command as a single control-mode stdin line.
+func (c Command) Line() string {
 	parts := []string{c.name}
 	for _, a := range c.args {
 		parts = append(parts, quote(a))
@@ -59,13 +60,13 @@ func (c command) line() string {
 	return strings.Join(parts, " ")
 }
 
-func cmd(name string, args ...string) command {
-	return command{name: name, args: args}
+func cmd(name string, args ...string) Command {
+	return Command{name: name, args: args}
 }
 
 // --- Session commands ---
 
-func cmdNewSession(name, cwd, initialCmd string, detached bool) command {
+func cmdNewSession(name, cwd, initialCmd string, detached bool) Command {
 	args := []string{"-d", "-s", name}
 	if cwd != "" {
 		args = append(args, "-c", cwd)
@@ -77,15 +78,15 @@ func cmdNewSession(name, cwd, initialCmd string, detached bool) command {
 	return c
 }
 
-func cmdKillSession(name string) command {
+func cmdKillSession(name string) Command {
 	return cmd("kill-session", "-t", name)
 }
 
-func cmdRenameSession(name, newName string) command {
+func cmdRenameSession(name, newName string) Command {
 	return cmd("rename-session", "-t", name, newName)
 }
 
-func cmdSwitchSession(name string) command {
+func cmdSwitchSession(name string) Command {
 	return cmd("switch-client", "-t", name)
 }
 
@@ -93,8 +94,8 @@ func cmdSwitchSession(name string) command {
 
 // CreateWindow uses the split-window + break-pane compatibility helper
 // (PRD §11): plain `new-window` over control mode is unreliable (tmuxy: crashes 3.5a).
-func cmdCreateWindow(session, name, cwd, initialCmd string) command {
-	var c command
+func cmdCreateWindow(session, name, cwd, initialCmd string) Command {
+	var c Command
 	if name != "" {
 		c = cmd("new-window", "-t", session, "-n", name)
 	} else {
@@ -105,8 +106,8 @@ func cmdCreateWindow(session, name, cwd, initialCmd string) command {
 }
 
 // cmdSplitBreakNewWindow implements new-window as splitw -d -P + breakp.
-func cmdSplitBreakNewWindow(session, name, cwd, initialCmd string) command {
-	var c command
+func cmdSplitBreakNewWindow(session, name, cwd, initialCmd string) Command {
+	var c Command
 	if name != "" {
 		c = cmd("new-window", "-t", session, "-n", name)
 	} else {
@@ -158,29 +159,29 @@ func cwdOrHome(cwd string) string {
 	return "$HOME"
 }
 
-func cmdKillWindow(target string) command {
+func cmdKillWindow(target string) Command {
 	return cmd("kill-window", "-t", target)
 }
 
-func cmdRenameWindow(target, name string) command {
+func cmdRenameWindow(target, name string) Command {
 	return cmd("rename-window", "-t", target, name)
 }
 
-func cmdSelectWindow(target string) command {
+func cmdSelectWindow(target string) Command {
 	return cmd("select-window", "-t", target)
 }
 
-func cmdMoveWindow(target string, offset int) command {
+func cmdMoveWindow(target string, offset int) Command {
 	return cmd("move-window", "-t", target, fmt.Sprintf("%+d", offset))
 }
 
-func cmdSelectLayout(target, layout string) command {
+func cmdSelectLayout(target, layout string) Command {
 	return cmd("select-layout", "-t", target, layout)
 }
 
 // --- Pane commands ---
 
-func cmdSplitPane(target, direction, cwd string) command {
+func cmdSplitPane(target, direction, cwd string) Command {
 	// direction: "horizontal" = split left/right (tmux -h), "vertical" = top/bottom (-v)
 	args := []string{"-t", target}
 	if direction == "vertical" {
@@ -194,36 +195,36 @@ func cmdSplitPane(target, direction, cwd string) command {
 	return cmd("split-window", args...)
 }
 
-func cmdKillPane(target string) command {
+func cmdKillPane(target string) Command {
 	return cmd("kill-pane", "-t", target)
 }
 
 // cmdRenamePane sets a pane title (shown in the GUI pane header).
-func cmdRenamePane(target, title string) command {
+func cmdRenamePane(target, title string) Command {
 	return cmd("select-pane", "-t", target, "-T", title)
 }
 
-func cmdSelectPane(target string) command {
+func cmdSelectPane(target string) Command {
 	return cmd("select-pane", "-t", target)
 }
 
-func cmdZoomPane(target string) command {
+func cmdZoomPane(target string) Command {
 	return cmd("resize-pane", "-Z", "-t", target)
 }
 
-func cmdResizePane(target, direction string, amount int) command {
+func cmdResizePane(target, direction string, amount int) Command {
 	return cmd("resize-pane", "-t", target, "-"+direction, fmt.Sprintf("%d", amount))
 }
 
-func cmdSwapPane(target, other string) command {
+func cmdSwapPane(target, other string) Command {
 	return cmd("swap-pane", "-s", target, "-t", other)
 }
 
-func cmdBreakPane(target string) command {
+func cmdBreakPane(target string) Command {
 	return cmd("break-pane", "-t", target)
 }
 
-func cmdJoinPane(src, dst string) command {
+func cmdJoinPane(src, dst string) Command {
 	return cmd("join-pane", "-s", src, "-t", dst)
 }
 
@@ -233,21 +234,41 @@ func cmdJoinPane(src, dst string) command {
 // PRD §22). tmux 3.7 requires each key to be its OWN hex argument — a single
 // concatenated hex string is silently ignored ("-H flag expects each key to be
 // a hexadecimal number for an ASCII character"). Data is a hex string.
-func cmdSendHex(pane, hex string) command {
+func cmdSendHex(pane, hex string) Command {
 	args := []string{"-t", pane, "-H"}
 	for i := 0; i+2 <= len(hex); i += 2 {
 		args = append(args, hex[i:i+2])
 	}
-	return command{name: "send-keys", args: args}
+	return Command{name: "send-keys", args: args}
 }
 
 // cmdDetachClient tells the control-mode client to detach gracefully.
-func cmdDetachClient() command {
+func cmdDetachClient() Command {
 	return cmd("detach-client")
 }
 
 // cmdResizeClient resizes the control-mode client viewport. In control mode,
 // the client size determines the attached window size.
-func cmdResizeClient(cols, rows int) command {
+func cmdResizeClient(cols, rows int) Command {
 	return cmd("refresh-client", "-C", fmt.Sprintf("%d,%d", cols, rows))
 }
+
+// --- Exported wrappers for external tests (be/test) ---
+// The command builders are package-internal; the external test package can
+// only reach the exported surface, so the tested builders are mirrored here.
+
+func CmdKillPane(target string) Command { return cmdKillPane(target) }
+
+func CmdSelectWindow(target string) Command { return cmdSelectWindow(target) }
+
+func CmdRenameWindow(target, name string) Command { return cmdRenameWindow(target, name) }
+
+func CmdSplitPane(target, direction, cwd string) Command { return cmdSplitPane(target, direction, cwd) }
+
+func CmdSendHex(pane, hex string) Command { return cmdSendHex(pane, hex) }
+
+func CmdCreateWindow(session, name, cwd, initialCmd string) Command {
+	return cmdCreateWindow(session, name, cwd, initialCmd)
+}
+
+func CmdRenameSession(name, newName string) Command { return cmdRenameSession(name, newName) }

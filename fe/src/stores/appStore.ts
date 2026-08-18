@@ -12,6 +12,11 @@ interface AppState {
   activeSession: string | null
   openSessions: string[]
 
+  // Backend sidecar port (desktop only). Electron spawns the Go backend on a
+  // dynamic port and reports it over IPC; the FE serves itself (app:// origin)
+  // so it must talk to the backend at an absolute URL. 0 = unknown/web mode.
+  backendPort: number
+
   // Sidebar page: 'settings' shows the dedicated Settings page in the main
   // area (while tabs stay open underneath).
   sidebarPage: SidebarPage
@@ -28,6 +33,7 @@ interface AppState {
   // setActiveSession switches the active tab view (null = no tab focused,
   // e.g. while viewing a sidebar page).
   setActiveSession: (name: string | null) => void
+  setBackendPort: (port: number) => void
   setSidebarPage: (page: SidebarPage) => void
 
   toggleSidebar: () => void
@@ -38,6 +44,7 @@ interface AppState {
 export const useAppStore = create<AppState>()((set) => ({
   activeSession: null,
   openSessions: [],
+  backendPort: 0,
   sidebarPage: 'sessions',
   sidebarOpen: true,
   paletteOpen: false,
@@ -71,6 +78,8 @@ export const useAppStore = create<AppState>()((set) => ({
       // Only tabs that are actually open can be displayed.
       sidebarPage: activeSession ? 'sessions' : s.sidebarPage,
     })),
+
+  setBackendPort: (backendPort) => set({ backendPort }),
 
   setSidebarPage: (sidebarPage) => set({ sidebarPage }),
 
