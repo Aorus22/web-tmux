@@ -131,7 +131,7 @@ func (s *SnapshotReader) Tree(ctx context.Context) (*Tree, error) {
 	if err != nil {
 		return nil, err
 	}
-	tree := &Tree{}
+	tree := &Tree{Sessions: []SessionTreeNode{}}
 	for _, ses := range sessions {
 		windows, err := s.ListWindows(ctx, ses.Name)
 		if err != nil {
@@ -142,7 +142,7 @@ func (s *SnapshotReader) Tree(ctx context.Context) (*Tree, error) {
 		if err != nil {
 			continue
 		}
-		node := SessionTreeNode{Session: ses}
+		node := SessionTreeNode{Session: ses, Windows: []WindowTreeNode{}}
 		byWindow := map[string]*WindowTreeNode{}
 		for i := range windows {
 			w := windows[i]

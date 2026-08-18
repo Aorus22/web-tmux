@@ -4,11 +4,10 @@
 // controls through a minimal preload bridge, and kill the backend on quit —
 // tmux sessions always stay alive.
 
-const { app, BrowserWindow, ipcMain, shell, dialog, protocol, net } = require('electron')
+const { app, BrowserWindow, ipcMain, shell, dialog, protocol } = require('electron')
 const { spawn } = require('child_process')
 const path = require('path')
 const fs = require('fs')
-const { pathToFileURL } = require('url')
 
 const isDev = process.env.NODE_ENV === 'development'
 
@@ -43,21 +42,52 @@ function feDistDir() {
 }
 
 function serveFeDist() {
-  const root = feDistDir()
-  protocol.handle(APP_SCHEME, (request) => {
+  const root = path.resolve(feDistDir())
+  const mimeTypes = {
+    '.css': 'text/css; charset=utf-8',
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.ico': 'image/x-icon',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.wasm': 'application/wasm',
+  }
+
+  protocol.handle(APP_SCHEME, async (request) => {
     const { hostname, pathname } = new URL(request.url)
     if (hostname !== APP_HOST) {
       return new Response('not found', { status: 404 })
     }
-    // Map the URL path onto the dist directory; index.html is the fallback
-    // (the FE is a single page).
-    let rel = decodeURIComponent(pathname)
-    if (rel === '/' || rel === '') rel = '/index.html'
-    const file = path.normalize(path.join(root, rel))
-    if (!file.startsWith(path.normalize(root))) {
+
+    // Map the URL path onto the dist directory. Read files directly instead
+    // of delegating to net.fetch(file://...), which can return ERR_UNEXPECTED
+    // for custom protocols on Windows.
+    const rel = decodeURIComponent(pathname).replace(/^[/\\]+/, '') || 'index.html'
+    const file = path.resolve(root, rel)
+    const relative = path.relative(root, file)
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
       return new Response('forbidden', { status: 403 })
     }
-    return net.fetch(pathToFileURL(file).toString())
+
+    try {
+      const data = await fs.promises.readFile(file)
+      const contentType = mimeTypes[path.extname(file).toLowerCase()] ?? 'application/octet-stream'
+      return new Response(data, {
+        headers: { 'Content-Type': contentType },
+      })
+    } catch (err) {
+      if (err?.code === 'ENOENT') {
+        return new Response('not found', { status: 404 })
+      }
+      console.error('failed to serve renderer resource', file, err)
+      return new Response('internal server error', { status: 500 })
+    }
   })
 }
 

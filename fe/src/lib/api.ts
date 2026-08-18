@@ -53,7 +53,12 @@ export const api = {
 
   tmuxInfo: () => get<TmuxInfo>('/api/tmux/info'),
 
-  tree: () => get<TmuxTree>('/api/sessions'),
+  tree: async () => {
+    const tree = await get<TmuxTree>('/api/sessions')
+    // Older/native backends may encode empty slices as null. Keep the UI
+    // contract stable so consumers can safely use sessions.length.
+    return { ...tree, sessions: tree?.sessions ?? [] }
+  },
 
   snapshot: (session: string) =>
     get<TmuxSnapshot>(`/api/sessions/${encodeURIComponent(session)}/snapshot`),

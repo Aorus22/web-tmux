@@ -25,6 +25,7 @@ export function CommandPalette() {
   const setOpen = useAppStore((s) => s.setPaletteOpen)
   const snapshot = useTmuxStore((s) => s.snapshot)
   const { data: tree } = useQuery({ queryKey: ['tree'], queryFn: api.tree })
+  const sessions = tree?.sessions ?? []
 
   const activeWindow = snapshot?.windows.find((w) => w.id === snapshot.activeWindow)
   const activePane = snapshot?.panes.find((p) => p.id === snapshot.activePane)
@@ -94,11 +95,11 @@ export function CommandPalette() {
             Kill Pane
           </CommandItem>
         </CommandGroup>
-        {tree && tree.sessions.length > 0 && (
+        {sessions.length > 0 && (
           <>
             <CommandSeparator />
             <CommandGroup heading="Open Session">
-              {tree.sessions.map((node) => (
+              {sessions.map((node) => (
                 <CommandItem
                   key={node.session.name}
                   onSelect={() => {

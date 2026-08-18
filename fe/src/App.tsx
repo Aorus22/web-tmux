@@ -164,9 +164,9 @@ export default function App() {
   )
 
   const tmuxInstalled = tree !== undefined
-  const hasSessions = (tree?.sessions.length ?? 0) > 0
+  const hasSessions = (tree?.sessions?.length ?? 0) > 0
   const showingPage = !activeSession && sidebarPage === 'settings'
-  const emptyTree = tree ?? { sessions: [] }
+  const emptyTree = { sessions: tree?.sessions ?? [] }
 
   // Startup windows must never flash the error page: (1) desktop — the
   // backend sidecar is still warming up and its port hasn't arrived over IPC
