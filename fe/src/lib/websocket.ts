@@ -15,7 +15,7 @@ export interface WsHandlers {
   onReady?: (session: string) => void
   onStateSnapshot?: (snap: unknown) => void
   onStateDelta?: (snap: unknown) => void
-  onTerminalOutput?: (paneId: string, data: string) => void
+  onTerminalOutput?: (paneId: string, data: string, replace?: boolean) => void
   onTerminalSnapshot?: (paneId: string, data: string) => void
   onCommandResult?: (requestId: string, ok: boolean, message?: string) => void
   onReconnecting?: () => void
@@ -147,7 +147,7 @@ export class TmuxSocket {
         this.handlers.onStateDelta?.(msg.snapshot)
         break
       case EV.terminalOutput:
-        if (msg.paneId) this.handlers.onTerminalOutput?.(msg.paneId, msg.data ?? '')
+        if (msg.paneId) this.handlers.onTerminalOutput?.(msg.paneId, msg.data ?? '', msg.replace)
         break
       case EV.terminalSnapshot:
         if (msg.paneId) this.handlers.onTerminalSnapshot?.(msg.paneId, msg.data ?? '')

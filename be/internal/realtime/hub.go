@@ -13,18 +13,18 @@ import (
 // One control-mode monitor per session, shared by all clients of that session;
 // the monitor is torn down when the last client leaves (PRD §7, §50).
 type Hub struct {
-	svc  *tmux.Service
-	log  *slog.Logger
+	svc *tmux.Service
+	log *slog.Logger
 
 	mu       sync.Mutex
 	sessions map[string]*sessionGroup
 }
 
 type sessionGroup struct {
-	session  string
-	monitor  *tmux.Monitor
-	clients  map[*Client]struct{}
-	closed   bool
+	session string
+	monitor *tmux.Monitor
+	clients map[*Client]struct{}
+	closed  bool
 }
 
 func NewHub(svc *tmux.Service, log *slog.Logger) *Hub {
@@ -100,7 +100,7 @@ func (h *Hub) relay(session string, c *Client) {
 	for ev := range ch {
 		switch ev.Type {
 		case tmux.EvOutput:
-			c.Send(Outgoing{Type: EvTerminalOutput, PaneID: ev.PaneID, Data: string(ev.Data)})
+			c.Send(Outgoing{Type: EvTerminalOutput, PaneID: ev.PaneID, Data: string(ev.Data), Replace: ev.Replace})
 		case tmux.EvState:
 			// Session is set so the frontend can drop state that arrives on a
 			// stale connection left over from a previous session (guards

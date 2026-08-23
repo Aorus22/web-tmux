@@ -32,6 +32,7 @@ export interface WsOutgoing {
   session?: string
   paneId?: string
   data?: string
+  replace?: boolean
   message?: string
   seq?: number
   snapshot?: TmuxSnapshot

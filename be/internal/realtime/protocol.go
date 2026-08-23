@@ -5,7 +5,7 @@ package realtime
 
 // Incoming is a client → server WebSocket message.
 type Incoming struct {
-	Type     string `json:"type"`
+	Type      string `json:"type"`
 	RequestID string `json:"requestId,omitempty"`
 
 	// hello / terminal.resize
@@ -48,6 +48,7 @@ type Outgoing struct {
 	Session   string      `json:"session,omitempty"`
 	PaneID    string      `json:"paneId,omitempty"`
 	Data      string      `json:"data,omitempty"`
+	Replace   bool        `json:"replace,omitempty"`
 	Message   string      `json:"message,omitempty"`
 	Seq       uint64      `json:"seq,omitempty"`
 	Snapshot  interface{} `json:"snapshot,omitempty"`
@@ -55,29 +56,29 @@ type Outgoing struct {
 
 // Message types (client → server).
 const (
-	MsgHello          = "hello"
-	MsgTerminalInput  = "terminal.input"
-	MsgTerminalResize = "terminal.resize"
-	MsgTerminalCapture = "terminal.capture"
-	MsgPaneSelect     = "pane.select"
-	MsgPaneSplit      = "pane.split"
-	MsgPaneResize     = "pane.resize"
-	MsgPaneKill       = "pane.kill"
-	MsgPaneRename     = "pane.rename"
-	MsgPaneZoom       = "pane.zoom"
-	MsgPaneBreak      = "pane.break"
-	MsgPaneSwap       = "pane.swap"
-	MsgWindowSelect   = "window.select"
-	MsgWindowCreate   = "window.create"
-	MsgWindowRename   = "window.rename"
-	MsgWindowKill     = "window.kill"
-	MsgWindowLayout   = "window.layout"
-	MsgWindowMove     = "window.move"
+	MsgHello             = "hello"
+	MsgTerminalInput     = "terminal.input"
+	MsgTerminalResize    = "terminal.resize"
+	MsgTerminalCapture   = "terminal.capture"
+	MsgPaneSelect        = "pane.select"
+	MsgPaneSplit         = "pane.split"
+	MsgPaneResize        = "pane.resize"
+	MsgPaneKill          = "pane.kill"
+	MsgPaneRename        = "pane.rename"
+	MsgPaneZoom          = "pane.zoom"
+	MsgPaneBreak         = "pane.break"
+	MsgPaneSwap          = "pane.swap"
+	MsgWindowSelect      = "window.select"
+	MsgWindowCreate      = "window.create"
+	MsgWindowRename      = "window.rename"
+	MsgWindowKill        = "window.kill"
+	MsgWindowLayout      = "window.layout"
+	MsgWindowMove        = "window.move"
 	MsgWindowBreakActive = "window.break-active"
-	MsgSessionCreate  = "session.create"
-	MsgSessionRename  = "session.rename"
-	MsgSessionKill    = "session.kill"
-	MsgStateResync    = "state.resync"
+	MsgSessionCreate     = "session.create"
+	MsgSessionRename     = "session.rename"
+	MsgSessionKill       = "session.kill"
+	MsgStateResync       = "state.resync"
 )
 
 // Message types (server → client).

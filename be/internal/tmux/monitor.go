@@ -16,8 +16,9 @@ type MonitorEvent struct {
 	Type string // "output" | "state" | "ready" | "disconnected" | "reconnecting"
 
 	// output
-	PaneID string
-	Data   []byte
+	PaneID  string
+	Data    []byte
+	Replace bool // full screen replacement (native Windows polling)
 
 	// state: full snapshot after a topology change
 	Snapshot *Snapshot
@@ -321,10 +322,9 @@ func (m *Monitor) runWindowsPolling() {
 }
 
 // pollWindows refreshes topology and sends a full visible-screen replacement
-// only when a pane changed. The clear/home prefix is intentional: capture-pane
-// returns a screen, while the frontend's terminal.output event is incremental.
-// This preserves native Windows functionality without appending duplicate
-// copies of the same captured screen.
+// only when a pane changed. The realtime layer marks these frames as Replace
+// so the frontend can serialize screen replacement separately from Linux's
+// incremental PTY output.
 func (m *Monitor) pollWindows() {
 	previous := m.Snapshot()
 	if err := m.refreshSnapshot(); err != nil {
@@ -342,7 +342,7 @@ func (m *Monitor) pollWindows() {
 	defer cancel()
 	for _, pane := range panes {
 		seen[pane.ID] = struct{}{}
-		data, err := m.reader.CapturePane(ctx, pane.ID, 0)
+		data, err := m.reader.CapturePaneScreen(ctx, pane.ID)
 		if err != nil {
 			continue
 		}
@@ -352,9 +352,10 @@ func (m *Monitor) pollWindows() {
 		// scrollback. Do not immediately overwrite it with the first poll.
 		if exists && previousCapture != data {
 			m.broadcast(MonitorEvent{
-				Type:   EvOutput,
-				PaneID: pane.ID,
-				Data:   []byte("\x1b[2J\x1b[H" + data),
+				Type:    EvOutput,
+				PaneID:  pane.ID,
+				Data:    []byte(data),
+				Replace: true,
 			})
 		}
 	}

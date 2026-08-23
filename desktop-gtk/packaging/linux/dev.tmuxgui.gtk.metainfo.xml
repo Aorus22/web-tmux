@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.tmuxgui.gtk</id>
+  <name>Tmux GUI</name>
+  <summary>Native GTK control surface for tmux</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description><p>Manage tmux sessions, windows, panes, layouts and terminals in a native libadwaita desktop interface.</p></description>
+  <launchable type="desktop-id">dev.tmuxgui.gtk.desktop</launchable>
+  <provides><binary>tmux-gui-gtk</binary></provides>
+</component>

@@ -16,6 +16,8 @@ type Registered = {
   // and can queue TWO terminal.capture requests on the one WebSocket, and both
   // responses would otherwise append the same screen → every line doubled.
   snapshotWritten?: boolean
+  pendingScreen?: string
+  writingScreen?: boolean
 }
 
 const registry = new Map<string, Registered>()
@@ -38,6 +40,44 @@ export const terminalRegistry = {
     r?.term.write(data)
   },
 
+  // Native Windows polling produces complete screen frames. xterm parses
+  // writes asynchronously, so clearing immediately before every write can
+  // interleave an older frame with a newer one during resize. Keep only the
+  // newest pending frame and start the next one after the previous write's
+  // callback, making clear + write atomic at the frame level.
+  replaceScreen(paneId: string, data: string) {
+    const r = registry.get(paneId)
+    if (!r) return
+    r.pendingScreen = data
+    if (r.writingScreen) return
+    r.writingScreen = true
+
+    const flush = () => {
+      if (registry.get(paneId) !== r) return
+      const next = r.pendingScreen
+      r.pendingScreen = undefined
+      if (next === undefined) {
+        r.writingScreen = false
+        return
+      }
+      // `Terminal.clear()` only clears the buffer; it does not move xterm's
+      // cursor back to the origin. Native Windows frames are complete grids,
+      // so writing the next frame from the previous cursor position shifts
+      // rows/columns and produces artifacts such as `Se-`/`PadaPadanan`.
+      // Keep clear + frame in one parser write so it cannot interleave.
+      // capture-pane includes trailing spaces up to the exact pane width. A
+      // full-width row can trigger xterm's auto-wrap before its CRLF is
+      // consumed, so replay each row at an explicit origin instead of relying
+      // on newline/wrap behavior.
+      const rows = next.replace(/\r\n?/g, '\n').split('\n')
+      const positioned = rows
+        .map((row, index) => `\x1b[${index + 1};1H${row}`)
+        .join('')
+      r.term.write(`\x1b[2J\x1b[H${positioned}`, () => queueMicrotask(flush))
+    }
+    flush()
+  },
+
   // writeSnapshot applies the initial capture-pane screen. Idempotent per
   // terminal instance: the first snapshot clears stale pre-snapshot content
   // (e.g. the control-mode attach redraw) and replaces the buffer; later
@@ -46,8 +86,7 @@ export const terminalRegistry = {
     const r = registry.get(paneId)
     if (!r || r.snapshotWritten) return
     r.snapshotWritten = true
-    r.term.clear()
-    r.term.write(data)
+    terminalRegistry.replaceScreen(paneId, data)
   },
 
   // invalidateSnapshot re-arms the snapshot guard so the next capture-pane

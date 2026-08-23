@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Tmux GUI
+Comment=Native GTK control surface for tmux
+Exec=tmux-gui-gtk
+Icon=dev.tmuxgui.gtk
+Terminal=false
+Type=Application
+Categories=Utility;System;TerminalEmulator;
+StartupWMClass=dev.tmuxgui.gtk

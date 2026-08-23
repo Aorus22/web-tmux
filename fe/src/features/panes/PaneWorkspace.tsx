@@ -84,12 +84,31 @@ export function PaneWorkspace({ session, snapshot, transport }: Props) {
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
+    const measure = () => {
+      // Electron's frameless Windows window can update the document viewport
+      // before ResizeObserver delivers a notification for this flex child.
+      // Measure on the next frame as a fallback so pane pixel geometry and
+      // xterm.fit never keep the previous window size after a native resize.
+      requestAnimationFrame(() => {
+        const r = el.getBoundingClientRect()
+        setSize((prev) =>
+          prev.w === r.width && prev.h === r.height
+            ? prev
+            : { w: r.width, h: r.height },
+        )
+      })
+    }
     const ro = new ResizeObserver((entries) => {
       const r = entries[0]?.contentRect
       if (r) setSize({ w: r.width, h: r.height })
     })
     ro.observe(el)
-    return () => ro.disconnect()
+    window.addEventListener('resize', measure)
+    measure()
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', measure)
+    }
   }, [])
 
   const activeWindowId = snapshot?.activeWindow
@@ -191,7 +210,7 @@ export function PaneWorkspace({ session, snapshot, transport }: Props) {
     return (
       <div
         ref={containerRef}
-        className="relative min-h-0 flex-1 overflow-hidden bg-[var(--term-bg)]"
+        className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-[var(--term-bg)]"
         style={{ background: termBg }}
       >
         <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
@@ -328,7 +347,7 @@ export function PaneWorkspace({ session, snapshot, transport }: Props) {
   return (
     <div
       ref={containerRef}
-      className="relative min-h-0 flex-1 overflow-hidden bg-[var(--term-bg)]"
+      className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-[var(--term-bg)]"
       style={{ background: termBg }}
     >
       {positioned.map(({ pane, rect }) =>

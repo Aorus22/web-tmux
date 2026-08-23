@@ -33,8 +33,9 @@ function makeHandlers(session: string): WsHandlers {
     onStateDelta: (snap) => {
       useTmuxStore.getState().setSnapshot(session, snap as never)
     },
-    onTerminalOutput: (paneId, data) => {
-      terminalRegistry.write(paneId, data)
+    onTerminalOutput: (paneId, data, replace) => {
+      if (replace) terminalRegistry.replaceScreen(paneId, data)
+      else terminalRegistry.write(paneId, data)
     },
     onTerminalSnapshot: (paneId, data) => {
       // Full-screen replacement (idempotent per terminal instance) — never

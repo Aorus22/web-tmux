@@ -11,6 +11,7 @@ tmux-gui/
 ├── be/         Go backend — tmux control mode, REST API, WebSocket, embedded FE
 ├── fe/         React + TypeScript + Vite + Tailwind + shadcn/ui + xterm.js
 ├── desktop/    Electron shell — spawns the Go backend, opens the window
+├── desktop-gtk/ Native GTK 4/libadwaita frontend with libvterm terminal
 ├── scripts/    Dev/build helper scripts
 └── Makefile    Shortcuts
 ```
@@ -52,13 +53,29 @@ make build
 
 The React build is embedded into the Go binary; a single executable serves everything.
 
-## Desktop build
+## Desktop build (Electron)
 
 ```bash
 make build-desktop
 ```
 
 Produces AppImage / .deb via electron-builder (Linux).
+
+## Native GTK desktop
+
+The repository also ships a native GTK 4 + libadwaita desktop frontend. Its
+terminal widget is backed by the open-source `libvterm` library, so terminal
+input, IME, mouse reporting, scrollback, selection and clipboard stay native.
+It shares the same Go REST/WebSocket backend and can run beside the web or
+Electron frontend.
+
+```bash
+# Linux: AppImage (if linuxdeploy is installed) + .deb
+make build-gtk
+
+# Windows portable ZIP (MSYS2 MINGW64 GTK runtime)
+make build-gtk-windows
+```
 
 ## Configuration (backend)
 

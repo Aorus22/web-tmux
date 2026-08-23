@@ -1,4 +1,4 @@
-.PHONY: install dev-web dev-desktop build-fe build-be build build-desktop test test-be test-fe clean
+.PHONY: install dev-web dev-desktop dev-gtk build-fe build-be build build-desktop build-gtk build-gtk-windows test test-be test-fe test-gtk clean
 
 install:
 	cd fe && npm install
@@ -13,6 +13,9 @@ dev-web:
 dev-desktop:
 	./scripts/dev-desktop.sh
 
+dev-gtk:
+	./desktop-gtk/scripts/dev-linux.sh
+
 build-fe:
 	cd fe && npm run build
 
@@ -26,6 +29,12 @@ build: build-fe build-be
 build-desktop:
 	./scripts/build-desktop.sh
 
+build-gtk:
+	./desktop-gtk/scripts/build-linux.sh
+
+build-gtk-windows:
+	powershell -ExecutionPolicy Bypass -File desktop-gtk/scripts/build-windows.ps1
+
 test: test-be test-fe
 
 test-be:
@@ -33,6 +42,9 @@ test-be:
 
 test-fe:
 	cd fe && npm run test
+
+test-gtk:
+	cd desktop-gtk && go test ./...
 
 clean:
 	rm -rf dist

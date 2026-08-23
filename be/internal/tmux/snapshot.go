@@ -169,6 +169,13 @@ func (s *SnapshotReader) CapturePane(ctx context.Context, paneID string, scrollb
 	return s.exec.Run(ctx, "capture-pane", "-p", "-e", "-J", "-t", paneID, "-S", fmt.Sprintf("-%d", scrollback))
 }
 
+// CapturePaneScreen preserves the visible terminal grid for native Windows.
+// Joining wrapped rows is useful for text extraction but corrupts TUI frames
+// when the capture is replayed into xterm.
+func (s *SnapshotReader) CapturePaneScreen(ctx context.Context, paneID string) (string, error) {
+	return s.exec.Run(ctx, "capture-pane", "-p", "-e", "-N", "-t", paneID, "-S", "-0")
+}
+
 // TmuxVersion returns the installed tmux version string, or an error.
 func (s *SnapshotReader) TmuxVersion(ctx context.Context) (string, error) {
 	raw, err := s.exec.Run(ctx, "-V")

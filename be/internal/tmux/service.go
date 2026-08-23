@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"sync"
 )
 
@@ -304,6 +305,9 @@ func (s *Service) ResizeTerminal(session string, cols, rows int) error {
 
 // CapturePane fetches terminal content for the initial snapshot (PRD §24).
 func (s *Service) CapturePane(ctx context.Context, session, paneID string) (string, error) {
+	if runtime.GOOS == "windows" {
+		return s.reader.CapturePaneScreen(ctx, paneID)
+	}
 	return s.reader.CapturePane(ctx, paneID, s.scrollback)
 }
 

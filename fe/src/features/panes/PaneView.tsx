@@ -64,7 +64,7 @@ export function PaneView({ pane, isActive, style }: Props) {
           canZoom={otherPanes.length > 0}
           onZoom={() => void zoom()}
         />
-        <div className="relative min-h-0 flex-1">
+        <div className="relative min-h-0 min-w-0 flex-1">
           <TerminalView paneId={pane.id} />
         </div>
       </div>
