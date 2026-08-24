@@ -16,9 +16,10 @@ type MonitorEvent struct {
 	Type string // "output" | "state" | "ready" | "disconnected" | "reconnecting"
 
 	// output
-	PaneID  string
-	Data    []byte
-	Replace bool // full screen replacement (native Windows polling)
+	PaneID     string
+	Data       []byte
+	Replace    bool // full screen replacement (native Windows polling)
+	ScreenRows int  // leading Data lines above this count are scrollback history
 
 	// state: full snapshot after a topology change
 	Snapshot *Snapshot
@@ -350,7 +351,13 @@ func (m *Monitor) runWindowsPolling() {
 				m.refreshTopology()
 				topologyDue = now.Add(idleCadence)
 			}
-			panes := m.Snapshot().Panes
+			// The first snapshot may still be failing; skip this tick rather
+			// than dereferencing a nil cached snapshot.
+			snap := m.Snapshot()
+			if snap == nil {
+				continue
+			}
+			panes := snap.Panes
 			live := make(map[string]struct{}, len(panes))
 			for _, pane := range panes {
 				live[pane.ID] = struct{}{}
@@ -391,13 +398,25 @@ func (m *Monitor) refreshTopology() {
 }
 
 // captureVisiblePane replaces the client's screen for one pane when its
-// visible content changed since the previous poll.
+// visible content changed since the previous poll. The capture includes
+// scrollback history; ScreenRows tells the client where the live screen starts.
 func (m *Monitor) captureVisiblePane(paneID string) {
 	ctx, cancel := context.WithTimeout(m.ctx, 2*time.Second)
 	defer cancel()
-	data, err := m.reader.CapturePaneScreen(ctx, paneID)
+	data, err := m.reader.CapturePaneScreen(ctx, paneID, m.scrollback)
 	if err != nil {
 		return
+	}
+	screenRows := 0
+	// refreshTopology may have failed on the first ticks; guard against a nil
+	// cached snapshot so a capture can never take the process down.
+	if snap := m.Snapshot(); snap != nil {
+		for _, pane := range snap.Panes {
+			if pane.ID == paneID {
+				screenRows = pane.Height
+				break
+			}
+		}
 	}
 	m.mu.Lock()
 	previousCapture, exists := m.captures[paneID]
@@ -407,10 +426,11 @@ func (m *Monitor) captureVisiblePane(paneID string) {
 	// scrollback. Do not immediately overwrite it with the first poll.
 	if exists && previousCapture != data {
 		m.broadcast(MonitorEvent{
-			Type:    EvOutput,
-			PaneID:  paneID,
-			Data:    []byte(data),
-			Replace: true,
+			Type:       EvOutput,
+			PaneID:     paneID,
+			Data:       []byte(data),
+			Replace:    true,
+			ScreenRows: screenRows,
 		})
 	}
 }

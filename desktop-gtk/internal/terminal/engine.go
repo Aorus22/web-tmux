@@ -104,6 +104,23 @@ func (e *Engine) Cursor() Cursor {
 }
 func (e *Engine) Scrollback() [][]Cell { return e.scrollback }
 
+// AppendHistory appends captured history lines directly to the scrollback
+// buffer. Polling mode (Windows) rewrites the screen instead of scrolling it,
+// so history never reaches the buffer through normal feeding.
+func (e *Engine) AppendHistory(lines [][]Cell) {
+	if len(lines) == 0 {
+		return
+	}
+	e.scrollback = append(e.scrollback, lines...)
+	if e.scrollbackLimit > 0 && len(e.scrollback) > e.scrollbackLimit {
+		copy(e.scrollback, e.scrollback[len(e.scrollback)-e.scrollbackLimit:])
+		e.scrollback = e.scrollback[:e.scrollbackLimit]
+	}
+}
+
+// ClearScrollback drops all buffered history lines.
+func (e *Engine) ClearScrollback() { e.scrollback = nil }
+
 // TrimScrollback keeps at most n history lines. Replacement frames must never
 // grow history; this undoes any lines a synthetic frame pushed.
 func (e *Engine) TrimScrollback(n int) {

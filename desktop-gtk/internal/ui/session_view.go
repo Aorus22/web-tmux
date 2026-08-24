@@ -18,8 +18,9 @@ import (
 )
 
 type pendingTerminal struct {
-	data    string
-	replace bool
+	data       string
+	replace    bool
+	screenRows int
 }
 
 type PaneWidget struct {
@@ -233,10 +234,10 @@ func (v *SessionView) handleMessage(msg protocol.Outgoing) {
 			if msg.Snapshot != nil && (msg.Session == "" || msg.Session == v.session) {
 				v.applySnapshot(msg.Snapshot)
 			}
-		case protocol.TerminalSnapshot:
-			v.handleTerminal(msg.PaneID, msg.Data, true)
-		case protocol.TerminalOutput:
-			v.handleTerminal(msg.PaneID, msg.Data, msg.Replace)
+			case protocol.TerminalSnapshot:
+				v.handleTerminal(msg.PaneID, msg.Data, true, msg.ScreenRows)
+			case protocol.TerminalOutput:
+				v.handleTerminal(msg.PaneID, msg.Data, msg.Replace, msg.ScreenRows)
 		case protocol.CommandError, protocol.ServerError:
 			v.toast(msg.Message)
 		case protocol.TmuxDisconnected:
@@ -250,10 +251,10 @@ func (v *SessionView) handleMessage(msg protocol.Outgoing) {
 	})
 }
 
-func (v *SessionView) handleTerminal(paneID, data string, replace bool) {
+func (v *SessionView) handleTerminal(paneID, data string, replace bool, screenRows int) {
 	if pane := v.panes[paneID]; pane != nil {
 		if replace {
-			pane.surface.ReplaceScreen(data)
+			pane.surface.ReplaceScreen(data, screenRows)
 		} else {
 			pane.surface.Feed([]byte(data))
 		}
@@ -261,7 +262,7 @@ func (v *SessionView) handleTerminal(paneID, data string, replace bool) {
 	}
 	p := v.pending[paneID]
 	if replace {
-		p = pendingTerminal{data: data, replace: true}
+		p = pendingTerminal{data: data, replace: true, screenRows: screenRows}
 	} else {
 		p.data += data
 		if len(p.data) > 1<<20 {
@@ -327,7 +328,7 @@ func (v *SessionView) reconcilePanes() {
 			v.grid.Attach(widget.frame, 0, 0, 1, 1)
 			if pending, ok := v.pending[pane.ID]; ok {
 				if pending.replace {
-					widget.surface.ReplaceScreen(pending.data)
+					widget.surface.ReplaceScreen(pending.data, pending.screenRows)
 				} else {
 					widget.surface.Feed([]byte(pending.data))
 				}

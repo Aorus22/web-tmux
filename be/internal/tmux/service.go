@@ -303,12 +303,29 @@ func (s *Service) ResizeTerminal(session string, cols, rows int) error {
 	return m.ResizeTerminal(cols, rows)
 }
 
-// CapturePane fetches terminal content for the initial snapshot (PRD §24).
-func (s *Service) CapturePane(ctx context.Context, session, paneID string) (string, error) {
-	if runtime.GOOS == "windows" {
-		return s.reader.CapturePaneScreen(ctx, paneID)
+// CapturePane fetches terminal content for the initial capture (PRD §24).
+// It returns the capture blob and the pane height: everything above the last
+// screenRows lines of the blob is scrollback history.
+func (s *Service) CapturePane(ctx context.Context, session, paneID string) (string, int, error) {
+	screenRows := 0
+	if m := s.monitorOrNil(session); m != nil {
+		// The monitor may not have taken its first snapshot yet; Snapshot()
+		// returns nil then and dereferencing it here used to panic the server.
+		if snap := m.Snapshot(); snap != nil {
+			for _, pane := range snap.Panes {
+				if pane.ID == paneID {
+					screenRows = pane.Height
+					break
+				}
+			}
+		}
 	}
-	return s.reader.CapturePane(ctx, paneID, s.scrollback)
+	if runtime.GOOS == "windows" {
+		data, err := s.reader.CapturePaneScreen(ctx, paneID, s.scrollback)
+		return data, screenRows, err
+	}
+	data, err := s.reader.CapturePane(ctx, paneID, s.scrollback)
+	return data, screenRows, err
 }
 
 // Snapshot returns a fresh snapshot of a session.

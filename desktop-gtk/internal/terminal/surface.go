@@ -30,8 +30,9 @@ type SurfaceOptions struct {
 }
 
 type queuedOp struct {
-	replace bool
-	data    []byte
+	replace    bool
+	data       []byte
+	screenRows int // with replace: leading Data lines above this are history
 }
 type point struct{ row, col int }
 
@@ -48,6 +49,7 @@ type Surface struct {
 	screen                             [][]Cell
 	screenRows, screenCols             int
 	screenDirty                        bool
+	ingestedHistory                    int
 	cache                              *cairo.Surface
 	cacheCtx                           *cairo.Context
 	cacheW, cacheH                     int
@@ -126,9 +128,13 @@ func (s *Surface) Feed(data []byte) {
 	}
 	s.enqueue(queuedOp{data: append([]byte(nil), data...)})
 }
-func (s *Surface) ReplaceScreen(data string) {
-	rows, cols := s.engine.Size()
-	s.enqueue(queuedOp{replace: true, data: []byte(positionedFrame(data, rows, cols))})
+// ReplaceScreen applies a full capture blob: the tail screenRows lines are
+// the visible screen, everything above is scrollback history. History lines
+// the surface has not ingested yet are appended to the engine's scrollback so
+// wheel scrolling works in polling mode (Windows), where no line ever scrolls
+// off a reset-and-rewritten screen.
+func (s *Surface) ReplaceScreen(capture string, screenRows int) {
+	s.enqueue(queuedOp{replace: true, data: []byte(capture), screenRows: screenRows})
 }
 func (s *Surface) ResetSnapshot() { s.selectionStart = nil; s.selectionEnd = nil }
 
@@ -165,15 +171,7 @@ func (s *Surface) drain() {
 			s.engine.Feed(op.data)
 			continue
 		}
-		history := len(s.engine.Scrollback())
-		s.engine.Reset()
-		s.scrollOffset = 0
-		s.engine.Feed(op.data)
-		// A replacement is a full visible screen: it must never grow
-		// scrollback. Overflow from a resize race would push the old TUI's
-		// rows (e.g. nano) into history, where they resurface when the user
-		// scrolls up.
-		s.engine.TrimScrollback(history)
+		s.applyReplacement(string(op.data), op.screenRows)
 		// Selection coordinates refer to the replaced content and are
 		// meaningless against the new screen; keep them from rendering as a
 		// phantom highlight.
@@ -190,6 +188,102 @@ func (s *Surface) drain() {
 // screen (which would pollute scrollback). Extra leading rows are dropped —
 // captures may prepend history lines that do not belong on screen — and each
 // row is clipped to the grid width while preserving its escape sequences.
+// applyReplacement ingests a capture blob: history delta goes straight into
+// the engine's scrollback (deduplicated by line count across polls), then the
+// visible screen is rewritten with an absolute-positioned frame clamped to the
+// live grid so it can never overflow and pollute anything.
+func (s *Surface) applyReplacement(capture string, screenRows int) {
+	lines := strings.Split(strings.ReplaceAll(strings.ReplaceAll(capture, "\r\n", "\n"), "\r", "\n"), "\n")
+	if len(lines) > 1 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	historyCount := 0
+	if screenRows > 0 && len(lines) > screenRows {
+		historyCount = len(lines) - screenRows
+	}
+	_, cols := s.engine.Size()
+	if cols < 1 {
+		cols = 80
+	}
+	s.engine.Reset()
+	// A hard reset restores libvterm's built-in dark palette, wiping the
+	// custom fg/bg/ANSI colors — in a light UI theme every replacement frame
+	// would otherwise repaint the terminal dark again. Re-apply ours.
+	s.applyPalette()
+	if historyCount < s.ingestedHistory {
+		// History shrank (cleared or truncated): start over.
+		s.engine.ClearScrollback()
+		s.ingestedHistory = 0
+	}
+	if delta := lines[s.ingestedHistory:historyCount]; len(delta) > 0 {
+		newLines := make([][]Cell, 0, len(delta))
+		for _, line := range delta {
+			newLines = append(newLines, lineToCells(clipRowWidth(line, cols)))
+		}
+		s.engine.AppendHistory(newLines)
+		s.ingestedHistory = historyCount
+	}
+	screenLines := lines[historyCount:]
+	s.engine.Feed([]byte(positionedFrame(strings.Join(screenLines, "\n"), len(screenLines), cols)))
+}
+
+// lineToCells converts one captured row into cells, dropping escape sequences
+// (their colors are not reconstructed for scrollback).
+func lineToCells(s string) []Cell {
+	cells := make([]Cell, 0, len(s))
+	for i := 0; i < len(s); {
+		if s[i] == '\x1b' {
+			i += escapeSequenceLen(s[i:])
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			i++
+			continue
+		}
+		cells = append(cells, Cell{Text: string(r), Width: 1})
+		i += size
+	}
+	return cells
+}
+
+// escapeSequenceLen returns the byte length of the VT sequence at the start of
+// s (which begins with ESC): CSI through its final byte, OSC through BEL/ST,
+// or a two-byte escape.
+func escapeSequenceLen(s string) int {
+	if len(s) < 2 {
+		return len(s)
+	}
+	switch s[1] {
+	case '[':
+		j := 2
+		for j < len(s) {
+			c := s[j]
+			j++
+			if c >= 0x40 && c <= 0x7e {
+				break
+			}
+		}
+		return j
+	case ']':
+		j := 2
+		for j < len(s) {
+			if s[j] == '\a' {
+				j++
+				break
+			}
+			if s[j] == '\x1b' && j+1 < len(s) && s[j+1] == '\\' {
+				j += 2
+				break
+			}
+			j++
+		}
+		return j
+	default:
+		return 2
+	}
+}
+
 func positionedFrame(data string, maxRows, maxCols int) string {
 	data = strings.ReplaceAll(data, "\r\n", "\n")
 	data = strings.ReplaceAll(data, "\r", "\n")
@@ -479,6 +573,9 @@ func (s *Surface) draw(_ *gtk.DrawingArea, cr *cairo.Context, width, height int)
 	// engine damage; comparing against the last painted offset catches every
 	// path that moves it (wheel, keys that reset it, screen replacement).
 	rows, cols := s.engine.Size()
+	if maxOffset := len(s.engine.Scrollback()); s.scrollOffset > maxOffset {
+		s.scrollOffset = maxOffset
+	}
 	if s.screenDirty {
 		s.refreshScreen(rows, cols)
 	}

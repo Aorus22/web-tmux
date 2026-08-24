@@ -43,15 +43,16 @@ type Incoming struct {
 
 // Outgoing is a server → client WebSocket message.
 type Outgoing struct {
-	Type      string      `json:"type"`
-	RequestID string      `json:"requestId,omitempty"`
-	Session   string      `json:"session,omitempty"`
-	PaneID    string      `json:"paneId,omitempty"`
-	Data      string      `json:"data,omitempty"`
-	Replace   bool        `json:"replace,omitempty"`
-	Message   string      `json:"message,omitempty"`
-	Seq       uint64      `json:"seq,omitempty"`
-	Snapshot  interface{} `json:"snapshot,omitempty"`
+	Type       string      `json:"type"`
+	RequestID  string      `json:"requestId,omitempty"`
+	Session    string      `json:"session,omitempty"`
+	PaneID     string      `json:"paneId,omitempty"`
+	Data       string      `json:"data,omitempty"`
+	Replace    bool        `json:"replace,omitempty"`
+	ScreenRows int         `json:"screenRows,omitempty"` // with Replace: Data lines above this are history
+	Message    string      `json:"message,omitempty"`
+	Seq        uint64      `json:"seq,omitempty"`
+	Snapshot   interface{} `json:"snapshot,omitempty"`
 }
 
 // Message types (client → server).

@@ -132,12 +132,12 @@ func (h *WSHandler) dispatch(ctx context.Context, c *Client, in Incoming) {
 			fail(errString("paneId required"))
 			return
 		}
-		data, err := h.svc.CapturePane(ctx, session, in.PaneID)
+		data, screenRows, err := h.svc.CapturePane(ctx, session, in.PaneID)
 		if err != nil {
 			fail(err)
 			return
 		}
-		c.Send(Outgoing{Type: EvTerminalSnapshot, PaneID: in.PaneID, Data: data})
+		c.Send(Outgoing{Type: EvTerminalSnapshot, PaneID: in.PaneID, Data: data, Replace: true, ScreenRows: screenRows})
 
 	case MsgPaneSelect:
 		failOr(fail, h.svc.SelectPane(ctx, session, in.PaneID), ok)
