@@ -20,12 +20,17 @@ func (a *App) showSettings() {
 	if a.window == nil {
 		return
 	}
-	a.window.SetSettingsPage(a.buildSettingsPage())
+	for _, view := range a.views {
+		view.SetLayoutActive(false)
+	}
 	a.window.ShowSettings()
 }
 
 func (a *App) buildSettingsPage() gtk.Widgetter {
 	page := adw.NewPreferencesPage()
+	page.SetHExpand(true)
+	page.SetVExpand(true)
+	page.SetSizeRequest(1, 1)
 
 	appearance := adw.NewPreferencesGroup()
 	appearance.SetTitle("Appearance")

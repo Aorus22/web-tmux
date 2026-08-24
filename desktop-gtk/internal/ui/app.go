@@ -63,6 +63,7 @@ func (a *App) Run(parent context.Context) int {
 func (a *App) onActivate() {
 	a.settings = config.Load(a.cfg.UserDataDir)
 	ApplyTheme(a.settings.UITheme)
+	settingsPage := a.buildSettingsPage()
 	a.window = NewMainWindow(a.adwApp, a.cfg.Name, a.cfg.Version, WindowCallbacks{
 		Open:       a.open,
 		CloseTab:   a.closeTab,
@@ -70,7 +71,7 @@ func (a *App) onActivate() {
 		NewSession: a.showNewSessionDialog,
 		Palette:    a.showCommandPalette,
 		Settings:   a.showSettings,
-	})
+	}, settingsPage)
 	a.window.AdwWin.ConnectCloseRequest(func() bool { a.adwApp.Quit(); return false })
 	a.registerShortcuts()
 	a.window.Present()
@@ -141,6 +142,7 @@ func (a *App) open(session, windowID, paneID string) {
 		v.Start(a.client, a.port)
 	}
 	a.active = session
+	v.SetLayoutActive(true)
 	a.window.ShowSession(session)
 	a.window.UpdateSessionTabs(a.sessionNames(), session)
 	v.FocusTarget(windowID, paneID)

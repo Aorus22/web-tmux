@@ -25,7 +25,7 @@ type MainWindow struct {
 	treeTargets  []treeTarget
 	sessionTabs  *gtk.Box
 	windowTabs   *gtk.Box
-	stack        *gtk.Stack
+	stack        *adw.ViewStack
 	settingsPage gtk.Widgetter
 	chrome       []gtk.Widgetter
 	status       *gtk.Label
@@ -33,7 +33,7 @@ type MainWindow struct {
 	active       string
 }
 
-func NewMainWindow(app *adw.Application, name, version string, callbacks WindowCallbacks) *MainWindow {
+func NewMainWindow(app *adw.Application, name, version string, callbacks WindowCallbacks, settingsPage gtk.Widgetter) *MainWindow {
 	w := &MainWindow{callbacks: callbacks}
 	w.AdwWin = adw.NewApplicationWindow((*gtk.Application)(&app.Application))
 	w.AdwWin.SetTitle(fmt.Sprintf("%s — v%s", name, version))
@@ -61,9 +61,17 @@ func NewMainWindow(app *adw.Application, name, version string, callbacks WindowC
 	})
 	scroll := gtk.NewScrolledWindow()
 	scroll.SetMinContentWidth(230)
+	scroll.SetVExpand(true)
+	scroll.SetHExpand(true)
+	// The tree can contain hundreds of rows. Its natural content height must
+	// never become the application's minimum window height; the viewport is
+	// the thing that expands and the rows belong inside its scrollbar.
+	scroll.SetPropagateNaturalHeight(false)
 	scroll.SetChild(w.sidebar)
 
 	side := gtk.NewBox(gtk.OrientationVertical, 0)
+	side.SetVExpand(true)
+	side.SetHExpand(true)
 	side.AddCSSClass("sidebar-pane")
 	side.Append(sidebarHeading("SESSIONS"))
 	side.Append(scroll)
@@ -102,12 +110,22 @@ func NewMainWindow(app *adw.Application, name, version string, callbacks WindowC
 		tools.Append(b)
 	}
 
-	w.stack = gtk.NewStack()
+	// Keep all top-level pages in an Adwaita ViewStack, just like wa-bot. The
+	// stack owns both the terminal workspace and the permanent PreferencesPage;
+	// switching pages therefore never adds/removes a large child from the
+	// window's layout tree.
+	w.stack = adw.NewViewStack()
 	w.stack.SetHExpand(true)
 	w.stack.SetVExpand(true)
-	w.stack.SetTransitionType(gtk.StackTransitionTypeCrossfade)
+	w.stack.SetSizeRequest(1, 1)
+	w.stack.SetEnableTransitions(true)
+	w.stack.SetTransitionDuration(160)
 	empty := emptyPage("Open a tmux session", "Choose a session from the sidebar, or create a new one.")
 	w.stack.AddNamed(empty, "__empty")
+	if settingsPage != nil {
+		w.settingsPage = settingsPage
+		w.stack.AddNamed(settingsPage, "__settings")
+	}
 	w.stack.SetVisibleChildName("__empty")
 
 	w.status = gtk.NewLabel("Starting backend…")
@@ -116,24 +134,35 @@ func NewMainWindow(app *adw.Application, name, version string, callbacks WindowC
 	w.status.SetEllipsize(3)
 
 	content := gtk.NewBox(gtk.OrientationVertical, 0)
+	content.SetHExpand(true)
+	content.SetVExpand(true)
+	content.SetSizeRequest(1, 1)
 	content.AddCSSClass("content-pane")
 	content.Append(w.sessionTabs)
 	content.Append(w.windowTabs)
 	content.Append(tools)
-	content.Append(w.stack)
+	stackBin := adw.NewBin()
+	stackBin.SetHExpand(true)
+	stackBin.SetVExpand(true)
+	stackBin.SetSizeRequest(1, 1)
+	stackBin.SetChild(w.stack)
+	content.Append(stackBin)
 	content.Append(w.status)
 	w.chrome = []gtk.Widgetter{w.sessionTabs, w.windowTabs, tools, w.status}
 
-	paned := gtk.NewPaned(gtk.OrientationHorizontal)
-	paned.SetStartChild(side)
-	paned.SetEndChild(content)
-	paned.SetPosition(240)
-	paned.SetResizeStartChild(false)
-	paned.SetShrinkStartChild(false)
-	paned.SetResizeEndChild(true)
+	split := adw.NewOverlaySplitView()
+	split.SetHExpand(true)
+	split.SetVExpand(true)
+	split.SetSidebar(side)
+	split.SetContent(content)
+	split.SetMinSidebarWidth(240)
+	split.SetMaxSidebarWidth(320)
 
 	w.toastOverlay = adw.NewToastOverlay()
-	w.toastOverlay.SetChild(paned)
+	w.toastOverlay.SetHExpand(true)
+	w.toastOverlay.SetVExpand(true)
+	w.toastOverlay.SetSizeRequest(1, 1)
+	w.toastOverlay.SetChild(split)
 	toolbarView.SetContent(w.toastOverlay)
 	w.AdwWin.SetContent(toolbarView)
 	return w
@@ -146,18 +175,6 @@ func (w *MainWindow) Toast(message string) {
 	w.toastOverlay.AddToast(toast)
 }
 func (w *MainWindow) SetStatus(status string) { w.status.SetText(status) }
-
-// SetSettingsPage installs the settings view in the main stack. Replacing the
-// widget keeps the page lifecycle simple while ensuring it is never a dialog.
-func (w *MainWindow) SetSettingsPage(widget gtk.Widgetter) {
-	if w.settingsPage != nil {
-		w.stack.Remove(w.settingsPage)
-	}
-	w.settingsPage = widget
-	if widget != nil {
-		w.stack.AddNamed(widget, "__settings")
-	}
-}
 
 func (w *MainWindow) ShowSettings() {
 	if w.settingsPage != nil {

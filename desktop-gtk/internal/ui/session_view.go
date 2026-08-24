@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/diamondburned/gotk4/pkg/glib/v2"
@@ -34,35 +35,42 @@ type dividerWidget struct {
 }
 
 type SessionView struct {
-	ctx        context.Context
-	session    string
-	settings   config.Settings
-	send       func(protocol.Incoming)
-	toast      func(string)
-	onSnapshot func(*protocol.Snapshot)
-	root       *gtk.Overlay
-	fixed      *gtk.Fixed
-	empty      *gtk.Box
-	state      *gtk.Label
-	client     *ws.Client
-	snapshot   *protocol.Snapshot
-	panes      map[string]*PaneWidget
-	pending    map[string]pendingTerminal
-	dividers   []dividerWidget
-	lastW      int
-	lastH      int
-	closed     bool
+	ctx          context.Context
+	session      string
+	settings     config.Settings
+	send         func(protocol.Incoming)
+	toast        func(string)
+	onSnapshot   func(*protocol.Snapshot)
+	root         *gtk.Overlay
+	grid         *gtk.Grid
+	empty        *gtk.Box
+	state        *gtk.Label
+	client       *ws.Client
+	snapshot     *protocol.Snapshot
+	panes        map[string]*PaneWidget
+	pending      map[string]pendingTerminal
+	dividers     []dividerWidget
+	lastW        int
+	lastH        int
+	layoutActive bool
+	closed       bool
 }
 
 func NewSessionView(ctx context.Context, session string, settings config.Settings, send func(protocol.Incoming), toast func(string), onSnapshot func(*protocol.Snapshot)) *SessionView {
-	v := &SessionView{ctx: ctx, session: session, settings: settings, send: send, toast: toast, onSnapshot: onSnapshot, panes: map[string]*PaneWidget{}, pending: map[string]pendingTerminal{}}
-	v.fixed = gtk.NewFixed()
-	v.fixed.SetHExpand(true)
-	v.fixed.SetVExpand(true)
-	v.fixed.SetOverflow(gtk.OverflowHidden)
-	v.fixed.AddCSSClass("terminal-workspace")
+	v := &SessionView{ctx: ctx, session: session, settings: settings, send: send, toast: toast, onSnapshot: onSnapshot, panes: map[string]*PaneWidget{}, pending: map[string]pendingTerminal{}, layoutActive: true}
+	v.grid = gtk.NewGrid()
+	v.grid.SetHExpand(true)
+	v.grid.SetVExpand(true)
+	v.grid.SetSizeRequest(1, 1)
+	v.grid.SetColumnHomogeneous(true)
+	v.grid.SetRowHomogeneous(true)
+	v.grid.SetOverflow(gtk.OverflowHidden)
+	v.grid.AddCSSClass("terminal-workspace")
 	v.root = gtk.NewOverlay()
-	v.root.SetChild(v.fixed)
+	v.root.SetSizeRequest(1, 1)
+	v.root.SetHExpand(true)
+	v.root.SetVExpand(true)
+	v.root.SetChild(v.grid)
 	v.empty = gtk.NewBox(gtk.OrientationVertical, 8)
 	v.empty.SetHAlign(gtk.AlignCenter)
 	v.empty.SetVAlign(gtk.AlignCenter)
@@ -75,7 +83,13 @@ func NewSessionView(ctx context.Context, session string, settings config.Setting
 		if v.closed {
 			return false
 		}
-		w, h := v.fixed.AllocatedWidth(), v.fixed.AllocatedHeight()
+		w, h := v.grid.AllocatedWidth(), v.grid.AllocatedHeight()
+		if !v.layoutActive {
+			// While the terminal page is hidden, do not feed its allocation back
+			// into pane geometry or send resize events to tmux.
+			v.lastW, v.lastH = w, h
+			return true
+		}
 		if w != v.lastW || h != v.lastH {
 			v.lastW, v.lastH = w, h
 			v.layout()
@@ -84,6 +98,26 @@ func NewSessionView(ctx context.Context, session string, settings config.Setting
 		return true
 	})
 	return v
+}
+
+// SetLayoutActive controls whether pane geometry is updated while this page is
+// hidden behind Settings. The terminal workspace uses a proportional Grid, so
+// its children never feed the current window allocation back as a minimum size.
+func (v *SessionView) SetLayoutActive(active bool) {
+	if v.closed || v.layoutActive == active {
+		return
+	}
+	v.layoutActive = active
+	if !active {
+		for _, divider := range v.dividers {
+			v.grid.Remove(divider.widget)
+		}
+		v.dividers = nil
+		return
+	}
+	// Restore the current rectangles immediately when the page becomes
+	// visible again. The timer will correct them after GTK allocates the page.
+	v.layout()
 }
 
 func (v *SessionView) Widget() gtk.Widgetter        { return v.root }
@@ -286,7 +320,7 @@ func (v *SessionView) reconcilePanes() {
 	}
 	for id, widget := range v.panes {
 		if _, ok := wanted[id]; !ok {
-			v.fixed.Remove(widget.frame)
+			v.grid.Remove(widget.frame)
 			widget.surface.Dispose()
 			delete(v.panes, id)
 		}
@@ -296,7 +330,7 @@ func (v *SessionView) reconcilePanes() {
 		if widget == nil {
 			widget = v.newPane(pane)
 			v.panes[pane.ID] = widget
-			v.fixed.Put(widget.frame, 0, 0)
+			v.grid.Attach(widget.frame, 0, 0, 1, 1)
 			if pending, ok := v.pending[pane.ID]; ok {
 				if pending.replace {
 					widget.surface.ReplaceScreen(pending.data)
@@ -356,11 +390,11 @@ func (v *SessionView) newPane(pane protocol.Pane) *PaneWidget {
 }
 
 func (v *SessionView) layout() {
-	if v.snapshot == nil || v.lastW <= 0 || v.lastH <= 0 {
+	if !v.layoutActive || v.snapshot == nil || v.lastW <= 0 || v.lastH <= 0 {
 		return
 	}
 	for _, d := range v.dividers {
-		v.fixed.Remove(d.widget)
+		v.grid.Remove(d.widget)
 	}
 	v.dividers = nil
 	window := v.activeWindow()
@@ -373,8 +407,7 @@ func (v *SessionView) layout() {
 		r := geometry.PixelRect(pane, v.lastW, v.lastH, window.Width, window.Height)
 		rects[pane.ID] = r
 		if widget := v.panes[pane.ID]; widget != nil {
-			v.fixed.Move(widget.frame, float64(r.Left), float64(r.Top))
-			widget.frame.SetSizeRequest(max(1, r.Width), max(1, r.Height))
+			setGridRect(v.grid, widget.frame, r, v.lastW, v.lastH)
 		}
 	}
 	if len(panes) <= 1 || panes[0].Zoomed {
@@ -385,6 +418,46 @@ func (v *SessionView) layout() {
 	}
 }
 
+const (
+	terminalGridColumns = 120
+	terminalGridRows    = 80
+)
+
+func setGridRect(grid *gtk.Grid, widget gtk.Widgetter, rect geometry.Rect, width, height int) {
+	if width <= 0 || height <= 0 {
+		return
+	}
+	column, columnSpan := gridRange(rect.Left, rect.Width, width, terminalGridColumns)
+	row, rowSpan := gridRange(rect.Top, rect.Height, height, terminalGridRows)
+	layoutChild := gtk.BaseLayoutManager(grid.LayoutManager()).LayoutChild(widget)
+	child, ok := layoutChild.(*gtk.GridLayoutChild)
+	if !ok {
+		return
+	}
+	child.SetColumn(column)
+	child.SetRow(row)
+	child.SetColumnSpan(columnSpan)
+	child.SetRowSpan(rowSpan)
+}
+
+func gridRange(offset, size, total, units int) (start, span int) {
+	start = int(math.Round(float64(offset) * float64(units) / float64(total)))
+	end := int(math.Round(float64(offset+size) * float64(units) / float64(total)))
+	if start < 0 {
+		start = 0
+	}
+	if start >= units {
+		start = units - 1
+	}
+	if end <= start {
+		end = start + 1
+	}
+	if end > units {
+		end = units
+	}
+	return start, max(1, end-start)
+}
+
 func (v *SessionView) addDivider(divider geometry.Divider) {
 	handle := gtk.NewBox(gtk.OrientationHorizontal, 0)
 	handle.AddCSSClass("pane-divider")
@@ -393,8 +466,10 @@ func (v *SessionView) addDivider(divider geometry.Divider) {
 	} else {
 		handle.SetCursorFromName("row-resize")
 	}
-	handle.SetSizeRequest(max(1, divider.Rect.Width), max(1, divider.Rect.Height))
-	v.fixed.Put(handle, float64(divider.Rect.Left), float64(divider.Rect.Top))
+	handle.SetHExpand(true)
+	handle.SetVExpand(true)
+	v.grid.Attach(handle, 0, 0, 1, 1)
+	setGridRect(v.grid, handle, divider.Rect, v.lastW, v.lastH)
 	gesture := gtk.NewGestureDrag()
 	last := 0
 	gesture.ConnectDragBegin(func(_, _ float64) { last = 0 })
