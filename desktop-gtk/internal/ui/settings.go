@@ -131,21 +131,43 @@ func (a *App) buildSettingsPage() gtk.Widgetter {
 	})
 	terminalGroup.Add(scrollbackRow)
 
-	tmuxBinary := gtk.NewEntry()
-	tmuxBinary.SetText(a.settings.TmuxBinary)
-	tmuxBinary.SetPlaceholderText(`C:\path\to\tmux.exe or tmux`)
-	tmuxBinary.SetWidthChars(28)
-	tmuxBinary.SetVAlign(gtk.AlignCenter)
-	tmuxApply := gtk.NewButtonWithLabel("Apply")
-	tmuxApply.SetVAlign(gtk.AlignCenter)
+	// The tmux installation is picked with the OS file chooser instead of a
+	// free-form entry, so the saved path is always a real executable.
 	tmuxRow := adw.NewActionRow()
 	tmuxRow.SetTitle("tmux binary")
-	tmuxRow.SetSubtitle("Select the exact tmux installation that owns your sessions")
-	tmuxRow.AddSuffix(tmuxBinary)
-	tmuxRow.AddSuffix(tmuxApply)
-	tmuxRow.SetActivatableWidget(tmuxBinary)
-	tmuxApply.ConnectClicked(func() { a.applyTmuxBinary(tmuxBinary.Text()) })
-	tmuxBinary.ConnectActivate(func() { a.applyTmuxBinary(tmuxBinary.Text()) })
+	tmuxRow.SetSubtitle(binarySubtitle(a.settings.TmuxBinary))
+	browse := gtk.NewButtonWithLabel("Browse…")
+	browse.SetVAlign(gtk.AlignCenter)
+	tmuxRow.AddSuffix(browse)
+	reset := iconButton("view-refresh-symbolic", "Back to PATH lookup", func() {
+		a.applyTmuxBinary("")
+		tmuxRow.SetSubtitle(binarySubtitle(""))
+	})
+	tmuxRow.AddSuffix(reset)
+	tmuxRow.SetActivatableWidget(browse)
+	browse.ConnectClicked(func() {
+		if a.window == nil {
+			return
+		}
+		parent := (*gtk.Window)(&a.window.AdwWin.Window)
+		chooser := gtk.NewFileChooserNative("Select tmux.exe", parent, gtk.FileChooserActionOpen, "Select", "Cancel")
+		chooser.ConnectResponse(func(response int) {
+			if response != int(gtk.ResponseAccept) {
+				return
+			}
+			file := chooser.File()
+			if file == nil {
+				return
+			}
+			path := file.Path()
+			if strings.TrimSpace(path) == "" {
+				return
+			}
+			tmuxRow.SetSubtitle(path)
+			a.applyTmuxBinary(path)
+		})
+		chooser.Show()
+	})
 	terminalGroup.Add(tmuxRow)
 
 	page.Add(terminalGroup)
@@ -202,6 +224,16 @@ func settingsInfoRow(title, subtitle string) *adw.ActionRow {
 	row.SetTitle(title)
 	row.SetSubtitle(subtitle)
 	return row
+}
+
+// binarySubtitle describes the active tmux executable: the pinned path, or a
+// note that the backend falls back to PATH lookup.
+func binarySubtitle(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "Looked up from PATH — browse to pin a specific tmux.exe"
+	}
+	return path
 }
 
 func (a *App) applySettings(s config.Settings) {

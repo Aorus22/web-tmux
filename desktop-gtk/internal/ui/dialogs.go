@@ -16,7 +16,7 @@ func (a *App) showNewSessionDialog() {
 	if a.window == nil {
 		return
 	}
-	dialog := a.dialog("New tmux session", 500, 300)
+	dialog := a.dialog("New tmux session", 500, -1)
 	name := formEntry("Session name", "")
 	cwd := formEntry("Working directory (optional)", "")
 	command := formEntry("Initial command (optional)", "")
@@ -43,9 +43,12 @@ func (a *App) showNewSessionDialog() {
 			return
 		}
 		go func() {
-			ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
+			ctx, cancel := context.WithTimeout(a.ctx, 35*time.Second)
 			defer cancel()
-			if err := a.client.CreateSession(ctx, session, strings.TrimSpace(cwd.Text()), strings.TrimSpace(command.Text())); err != nil {
+			err := a.client.CreateSession(ctx, session, strings.TrimSpace(cwd.Text()), strings.TrimSpace(command.Text()))
+			if err != nil && !a.waitForSession(session, 20*time.Second) {
+				// Real failure (bad name, tmux error): the session never showed
+				// up even after waiting out the slow first-server boot.
 				a.idle(func() { a.toast(err.Error()) })
 				return
 			}
@@ -233,7 +236,7 @@ func (a *App) toggleTUIScroll() {
 }
 
 func (a *App) prompt(title, label, initial string, accepted func(string)) {
-	dialog := a.dialog(title, 480, 190)
+	dialog := a.dialog(title, 480, -1)
 	entry := formEntry(label, "")
 	entry.SetText(initial)
 	dialog.ContentArea().Append(formRow(label, entry))
@@ -262,7 +265,7 @@ func (a *App) confirmIf(enabled bool, title, body string, confirmed func()) {
 		confirmed()
 		return
 	}
-	dialog := a.dialog(title, 460, 200)
+	dialog := a.dialog(title, 460, -1)
 	label := gtk.NewLabel(body)
 	label.SetWrap(true)
 	label.SetHAlign(gtk.AlignStart)

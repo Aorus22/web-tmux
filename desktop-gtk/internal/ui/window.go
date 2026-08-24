@@ -118,7 +118,7 @@ func NewMainWindow(app *adw.Application, name, version string, callbacks WindowC
 	w.stack.SetSizeRequest(1, 1)
 	w.stack.SetEnableTransitions(true)
 	w.stack.SetTransitionDuration(160)
-	empty := emptyPage("Open a tmux session", "Choose a session from the sidebar, or create a new one.")
+	empty := emptyPage("Welcome to Tmux GUI", "Create a tmux session, or pick one from the sidebar.", callbacks.NewSession)
 	w.stack.AddNamed(empty, "__empty")
 	if settingsPage != nil {
 		w.settingsPage = settingsPage
@@ -147,6 +147,9 @@ func NewMainWindow(app *adw.Application, name, version string, callbacks WindowC
 	content.Append(stackBin)
 	content.Append(w.status)
 	w.chrome = []gtk.Widgetter{w.sessionTabs, w.windowTabs, tools, w.status}
+	// The window boots into the onboarding page, which is shown without any
+	// tab bars or layout buttons; they only belong to an open session view.
+	w.setChromeVisible(false)
 
 	split := adw.NewOverlaySplitView()
 	split.SetHExpand(true)
@@ -242,7 +245,9 @@ func (w *MainWindow) ShowSession(name string) {
 }
 func (w *MainWindow) ShowEmpty() {
 	w.active = ""
-	w.setChromeVisible(true)
+	// Closing the last tab lands on the onboarding page: no tab bars, no
+	// layout toolbar — just the welcome content.
+	w.setChromeVisible(false)
 	w.stack.SetVisibleChildName("__empty")
 	w.UpdateWindowTabs(nil, "")
 }
@@ -309,12 +314,13 @@ func sidebarHeading(text string) *gtk.Label {
 	return l
 }
 
-func emptyPage(title, subtitle string) gtk.Widgetter {
-	box := gtk.NewBox(gtk.OrientationVertical, 8)
+func emptyPage(title, subtitle string, newSession func()) gtk.Widgetter {
+	box := gtk.NewBox(gtk.OrientationVertical, 10)
 	box.SetHAlign(gtk.AlignCenter)
 	box.SetVAlign(gtk.AlignCenter)
 	icon := gtk.NewImageFromIconName("utilities-terminal-symbolic")
 	icon.SetPixelSize(64)
+	icon.SetHAlign(gtk.AlignCenter)
 	box.Append(icon)
 	t := gtk.NewLabel(title)
 	t.AddCSSClass("empty-title")
@@ -322,6 +328,13 @@ func emptyPage(title, subtitle string) gtk.Widgetter {
 	s := gtk.NewLabel(subtitle)
 	s.AddCSSClass("dim-label")
 	box.Append(s)
+	button := gtk.NewButtonWithLabel("New session")
+	button.AddCSSClass("suggested-action")
+	button.AddCSSClass("pill")
+	button.SetHAlign(gtk.AlignCenter)
+	button.SetMarginTop(8)
+	button.ConnectClicked(newSession)
+	box.Append(button)
 	return box
 }
 

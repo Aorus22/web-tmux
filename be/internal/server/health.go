@@ -132,7 +132,10 @@ func (h *HealthHandler) HandleSessionCreate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	// With zero sessions this one-shot `tmux new-session` also boots the whole
+	// tmux server, which is slow on Windows. Give it room: killing the context
+	// early fails the request even though tmux finishes creating the session.
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if err := h.svc.CreateSession(ctx, req.Name, req.Cwd, req.InitialCommand); err != nil {
 		if strings.Contains(err.Error(), "duplicate") {

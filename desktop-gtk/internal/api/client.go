@@ -18,7 +18,10 @@ type Client struct {
 }
 
 func New(port int) *Client {
-	return &Client{base: fmt.Sprintf("http://127.0.0.1:%d", port), http: &http.Client{Timeout: 10 * time.Second}}
+	// Ceiling only: every call binds its own, shorter context deadline. It has
+	// to exceed create-session's 35s budget because the first session also
+	// boots the tmux server, which is slow on Windows.
+	return &Client{base: fmt.Sprintf("http://127.0.0.1:%d", port), http: &http.Client{Timeout: 40 * time.Second}}
 }
 
 func (c *Client) get(ctx context.Context, path string, out any) error {

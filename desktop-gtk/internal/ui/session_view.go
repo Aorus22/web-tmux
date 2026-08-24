@@ -388,6 +388,7 @@ func (v *SessionView) newPane(pane protocol.Pane) *PaneWidget {
 	if err != nil {
 		panic(err)
 	}
+	gtk.BaseWidget(surface.Widget()).AddCSSClass("pane-terminal")
 	frame.Append(surface.Widget())
 	return &PaneWidget{pane: pane, frame: frame, header: header, surface: surface}
 }

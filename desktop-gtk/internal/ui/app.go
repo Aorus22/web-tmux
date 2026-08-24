@@ -116,6 +116,7 @@ func (a *App) pollTree() {
 			a.idle(func() {
 				a.tree = tree
 				a.window.UpdateTree(tree)
+				a.pruneOrphanViews()
 			})
 		}
 		select {
@@ -186,6 +187,54 @@ func (a *App) sessionNames() []string {
 		}
 	}
 	return names
+}
+
+// pruneOrphanViews closes GUI tabs whose tmux session disappeared — killed
+// from the command palette or outside the app. Without this the workspace
+// keeps rendering a dead terminal page while the sidebar is already empty.
+// Deleting from a.views during the range is safe in Go.
+func (a *App) pruneOrphanViews() {
+	for name := range a.views {
+		live := false
+		for _, node := range a.tree.Sessions {
+			if node.Session.Name == name {
+				live = true
+				break
+			}
+		}
+		if !live {
+			a.closeTab(name)
+		}
+	}
+}
+
+// waitForSession polls the tree until the named session exists. Creating the
+// first session boots the tmux server in a one-shot command, which can outlive
+// the HTTP deadline on Windows even though tmux finishes the job — so the
+// caller verifies through polling instead of trusting the response.
+func (a *App) waitForSession(name string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if a.ctx.Err() != nil || a.client == nil {
+			return false
+		}
+		ctx, cancel := context.WithTimeout(a.ctx, 2*time.Second)
+		tree, err := a.client.Tree(ctx)
+		cancel()
+		if err == nil {
+			a.idle(func() {
+				a.tree = tree
+				a.window.UpdateTree(tree)
+			})
+			for _, node := range tree.Sessions {
+				if node.Session.Name == name {
+					return true
+				}
+			}
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+	return false
 }
 
 func (a *App) send(session string, msg protocol.Incoming) {

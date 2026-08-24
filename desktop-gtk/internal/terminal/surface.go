@@ -48,6 +48,11 @@ type Surface struct {
 	screen                             [][]Cell
 	screenRows, screenCols             int
 	screenDirty                        bool
+	cache                              *cairo.Surface
+	cacheCtx                           *cairo.Context
+	cacheW, cacheH                     int
+	contentDirty                       bool
+	drawnOffset                        int
 	tuiScroll                          bool
 	onResize                           func(int, int)
 	onActivate                         func()
@@ -76,7 +81,7 @@ func NewSurface(opts SurfaceOptions) (*Surface, error) {
 	if opts.Palette == (Palette{}) {
 		opts.Palette = DefaultPalette()
 	}
-	s := &Surface{paneID: opts.PaneID, palette: opts.Palette, fontFamily: opts.FontFamily, fontSize: opts.FontSize, lineHeight: opts.LineHeight, tuiScroll: opts.TUIScroll, onResize: opts.OnResize, onActivate: opts.OnActivate, blinkOn: true, screenDirty: true}
+	s := &Surface{paneID: opts.PaneID, palette: opts.Palette, fontFamily: opts.FontFamily, fontSize: opts.FontSize, lineHeight: opts.LineHeight, tuiScroll: opts.TUIScroll, onResize: opts.OnResize, onActivate: opts.OnActivate, blinkOn: true, screenDirty: true, contentDirty: true}
 	s.recalculateCellSize()
 	eng, err := NewEngine(24, 80, opts.Scrollback, func(b []byte) {
 		if opts.OnInput != nil {
@@ -122,7 +127,8 @@ func (s *Surface) Feed(data []byte) {
 	s.enqueue(queuedOp{data: append([]byte(nil), data...)})
 }
 func (s *Surface) ReplaceScreen(data string) {
-	s.enqueue(queuedOp{replace: true, data: []byte(positionedFrame(data))})
+	rows, cols := s.engine.Size()
+	s.enqueue(queuedOp{replace: true, data: []byte(positionedFrame(data, rows, cols))})
 }
 func (s *Surface) ResetSnapshot() { s.selectionStart = nil; s.selectionEnd = nil }
 
@@ -155,17 +161,36 @@ func (s *Surface) drain() {
 	s.drainScheduled = false
 	s.queueMu.Unlock()
 	for _, op := range ops {
-		if op.replace {
-			s.engine.Reset()
-			s.scrollOffset = 0
+		if !op.replace {
+			s.engine.Feed(op.data)
+			continue
 		}
+		history := len(s.engine.Scrollback())
+		s.engine.Reset()
+		s.scrollOffset = 0
 		s.engine.Feed(op.data)
+		// A replacement is a full visible screen: it must never grow
+		// scrollback. Overflow from a resize race would push the old TUI's
+		// rows (e.g. nano) into history, where they resurface when the user
+		// scrolls up.
+		s.engine.TrimScrollback(history)
+		// Selection coordinates refer to the replaced content and are
+		// meaningless against the new screen; keep them from rendering as a
+		// phantom highlight.
+		s.selectionStart = nil
+		s.selectionEnd = nil
 	}
 	s.screenDirty = true
+	s.contentDirty = true
 	s.area.QueueDraw()
 }
 
-func positionedFrame(data string) string {
+// positionedFrame turns captured pane text into an absolute-positioned VT
+// frame sized to the live grid, so it can never overflow and scroll the
+// screen (which would pollute scrollback). Extra leading rows are dropped —
+// captures may prepend history lines that do not belong on screen — and each
+// row is clipped to the grid width while preserving its escape sequences.
+func positionedFrame(data string, maxRows, maxCols int) string {
 	data = strings.ReplaceAll(data, "\r\n", "\n")
 	data = strings.ReplaceAll(data, "\r", "\n")
 	rows := strings.Split(data, "\n")
@@ -175,6 +200,12 @@ func positionedFrame(data string) string {
 	if len(rows) > 1 && rows[len(rows)-1] == "" {
 		rows = rows[:len(rows)-1]
 	}
+	if maxRows > 0 && len(rows) > maxRows {
+		rows = rows[len(rows)-maxRows:]
+	}
+	if maxCols < 1 {
+		maxCols = 80
+	}
 	var b strings.Builder
 	// A replacement is a complete frame, not a stream append. Clear both the
 	// visible screen and each line before writing so shorter rows cannot leave
@@ -182,8 +213,9 @@ func positionedFrame(data string) string {
 	b.WriteString("\x1b[?25l\x1b[2J\x1b[H")
 	cursorRow, cursorCol := -1, 0
 	for i, row := range rows {
-		fmt.Fprintf(&b, "\x1b[%d;1H\x1b[2K%s", i+1, row)
-		visible := visibleText(row)
+		clipped := clipRowWidth(row, maxCols)
+		fmt.Fprintf(&b, "\x1b[%d;1H\x1b[2K%s", i+1, clipped)
+		visible := visibleText(clipped)
 		trimmed := strings.TrimRight(visible, " \t")
 		if strings.TrimSpace(trimmed) != "" {
 			cursorRow, cursorCol = i, displayWidth(trimmed)
@@ -200,6 +232,63 @@ func positionedFrame(data string) string {
 	}
 	b.WriteString("\x1b[?25h")
 	return b.String()
+}
+
+// clipRowWidth truncates one capture row to maxCols display columns, copying
+// escape sequences through untouched (they carry no width).
+func clipRowWidth(s string, maxCols int) string {
+	var out strings.Builder
+	width := 0
+	for i := 0; i < len(s); {
+		if s[i] == '\x1b' {
+			j := i + 1
+			if j >= len(s) {
+				break
+			}
+			switch s[j] {
+			case '[': // CSI: consume through the final byte.
+				j++
+				for j < len(s) {
+					c := s[j]
+					j++
+					if c >= 0x40 && c <= 0x7e {
+						break
+					}
+				}
+			case ']': // OSC: consume through BEL or ST.
+				j++
+				for j < len(s) {
+					if s[j] == '\a' {
+						j++
+						break
+					}
+					if s[j] == '\x1b' && j+1 < len(s) && s[j+1] == '\\' {
+						j += 2
+						break
+					}
+					j++
+				}
+			default:
+				j++
+			}
+			out.WriteString(s[i:j])
+			i = j
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			i++
+			continue
+		}
+		w := 1
+		if width+w > maxCols {
+			break
+		}
+		out.WriteRune(r)
+		width += w
+		i += size
+	}
+	return out.String()
 }
 
 func visibleText(s string) string {
@@ -276,6 +365,7 @@ func (s *Surface) SetFont(family string, size, lineHeight float64) {
 	}
 	s.fontMetricsReady = false
 	s.fontDesc = [4]*pango.FontDescription{}
+	s.contentDirty = true
 	s.recalculateCellSize()
 	w := s.area.AllocatedWidth()
 	h := s.area.AllocatedHeight()
@@ -289,6 +379,7 @@ func (s *Surface) SetPalette(p Palette) {
 	// cell is read. Invalidate the cached screen so an interface theme change
 	// recolors existing terminal output immediately.
 	s.screenDirty = true
+	s.contentDirty = true
 	s.area.QueueDraw()
 }
 func (s *Surface) applyPalette() {
@@ -351,6 +442,7 @@ func (s *Surface) resize(width, height int) {
 	}
 	s.engine.Resize(rows, cols)
 	s.screenDirty = true
+	s.contentDirty = true
 	if s.onResize != nil {
 		s.onResize(cols, rows)
 	}
@@ -362,10 +454,13 @@ func (s *Surface) queueDraw() {
 	}
 }
 
+// draw blits a cached raster of the terminal content and only re-rasterizes
+// when the content actually changed. Full-screen Pango layout work used to run
+// on every expose — including the twice-per-second cursor blink timer — which
+// made typing feel sluggish. Blink, selection and focus now cost one blit.
 func (s *Surface) draw(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
-	rows, cols := s.engine.Size()
-	if s.screenDirty || s.screenRows != rows || s.screenCols != cols {
-		s.refreshScreen(rows, cols)
+	if width <= 0 || height <= 0 {
+		return
 	}
 	if !s.fontMetricsReady {
 		if s.ensureFontMetrics(cr) {
@@ -373,8 +468,40 @@ func (s *Surface) draw(_ *gtk.DrawingArea, cr *cairo.Context, width, height int)
 			s.resize(width, height)
 		}
 	}
+	if s.cache == nil || s.cacheW != width || s.cacheH != height {
+		s.disposeCache()
+		s.cache = cairo.CreateImageSurface(cairo.FormatARGB32, width, height)
+		s.cacheCtx = cairo.Create(s.cache)
+		s.cacheW, s.cacheH = width, height
+		s.contentDirty = true
+	}
+	// A scroll offset change swaps which global rows are visible without any
+	// engine damage; comparing against the last painted offset catches every
+	// path that moves it (wheel, keys that reset it, screen replacement).
+	rows, cols := s.engine.Size()
+	if s.screenDirty {
+		s.refreshScreen(rows, cols)
+	}
+	if s.scrollOffset != s.drawnOffset {
+		s.contentDirty = true
+	}
+	if s.contentDirty {
+		s.renderContent()
+		s.drawnOffset = s.scrollOffset
+		s.contentDirty = false
+	}
+	cr.SetSourceSurface(s.cache, 0, 0)
+	cr.Paint()
+	s.drawOverlays(cr)
+}
+
+// renderContent rasterizes the visible viewport into the offscreen cache:
+// background fill, cell backgrounds, batched text runs and decorations.
+func (s *Surface) renderContent() {
+	cr := s.cacheCtx
 	source(cr, s.palette.Background)
 	cr.Paint()
+	rows, cols := s.engine.Size()
 	history := s.engine.Scrollback()
 	total := len(history) + rows
 	end := total - s.scrollOffset
@@ -389,18 +516,12 @@ func (s *Surface) draw(_ *gtk.DrawingArea, cr *cairo.Context, width, height int)
 			continue
 		}
 		y := float64(vr) * s.cellH
-		// Paint backgrounds first. This remains per-cell because selection and
-		// reverse-video can change the fill without forcing expensive text
-		// layout work.
 		for col := 0; col < cols && col < len(line); col++ {
 			cell := line[col]
 			if cell.Width == 0 {
 				continue
 			}
 			_, bg := cellColors(cell)
-			if s.selected(global, col) {
-				bg = blend(bg, s.palette.Cursor, 0.45)
-			}
 			source(cr, bg)
 			x := float64(col) * s.cellW
 			cr.Rectangle(x, y, s.cellW*float64(max(1, cell.Width)), s.cellH)
@@ -479,6 +600,49 @@ func (s *Surface) draw(_ *gtk.DrawingArea, cr *cairo.Context, width, height int)
 			}
 		}
 	}
+}
+
+// drawOverlays paints the transient layers on top of the cached content:
+// the selection tint and the blinking cursor block.
+func (s *Surface) drawOverlays(cr *cairo.Context) {
+	rows, cols := s.engine.Size()
+	history := s.engine.Scrollback()
+	total := len(history) + rows
+	end := total - s.scrollOffset
+	if end < rows {
+		end = rows
+	}
+	start := end - rows
+	// Selection tint: blending the cell background toward the cursor color at
+	// 45% equals overlaying the cursor color at 45% alpha, so the whole
+	// selection becomes one translucent rectangle per row.
+	if s.selectionStart != nil && s.selectionEnd != nil {
+		a, b := ordered(*s.selectionStart, *s.selectionEnd)
+		// A zero-width selection (plain click) paints nothing.
+		if a.row != b.row || a.col != b.col {
+			sourceAlpha(cr, s.palette.Cursor, .45)
+			for vr := 0; vr < rows; vr++ {
+				global := start + vr
+				if global < a.row || global > b.row {
+					continue
+				}
+				c0, c1 := 0, cols-1
+				if global == a.row {
+					c0 = max(0, min(a.col, cols-1))
+				}
+				if global == b.row {
+					c1 = max(0, min(b.col, cols-1))
+				}
+				if c1 < c0 {
+					continue
+				}
+				x := float64(c0) * s.cellW
+				w := float64(c1-c0+1) * s.cellW
+				cr.Rectangle(x, float64(vr)*s.cellH, w, s.cellH)
+				cr.Fill()
+			}
+		}
+	}
 	if s.scrollOffset == 0 && s.blinkOn {
 		cursor := s.engine.Cursor()
 		if cursor.Visible && cursor.Row >= 0 && cursor.Row < rows && cursor.Col >= 0 && cursor.Col < cols {
@@ -496,8 +660,18 @@ func (s *Surface) draw(_ *gtk.DrawingArea, cr *cairo.Context, width, height int)
 			cr.Fill()
 		}
 	}
-	_ = width
-	_ = height
+}
+
+func (s *Surface) disposeCache() {
+	if s.cacheCtx != nil {
+		s.cacheCtx.Close()
+		s.cacheCtx = nil
+	}
+	if s.cache != nil {
+		s.cache.Close()
+		s.cache = nil
+	}
+	s.cacheW, s.cacheH = 0, 0
 }
 
 func cellColors(cell Cell) (fg, bg RGB) {
@@ -615,9 +789,6 @@ func source(cr *cairo.Context, c RGB) {
 func sourceAlpha(cr *cairo.Context, c RGB, a float64) {
 	cr.SetSourceRGBA(float64(c.R)/255, float64(c.G)/255, float64(c.B)/255, a)
 }
-func blend(a, b RGB, t float64) RGB {
-	return RGB{uint8(float64(a.R)*(1-t) + float64(b.R)*t), uint8(float64(a.G)*(1-t) + float64(b.G)*t), uint8(float64(a.B)*(1-t) + float64(b.B)*t)}
-}
 
 func (s *Surface) installKeyboard() {
 	keys := gtk.NewEventControllerKey()
@@ -730,11 +901,17 @@ func (s *Surface) installPointer() {
 		if s.onActivate != nil {
 			s.onActivate()
 		}
+		// Any primary click dismisses an existing selection, including in
+		// mouse-mode apps where the press is forwarded instead of starting a
+		// new one — otherwise a stale highlight lingers on screen.
+		s.selectionStart = nil
+		s.selectionEnd = nil
 		row, col := s.coords(x, y)
 		mods := modsFromGDK(click.CurrentEventState())
 		if s.engine.MouseMode() > 0 && !click.CurrentEventState().Has(gdk.ShiftMask) {
 			s.engine.MouseMove(row, col, mods)
 			s.engine.MouseButton(1, true, mods)
+			s.area.QueueDraw()
 			return
 		}
 		p := s.globalPoint(row, col)
@@ -913,5 +1090,6 @@ func (s *Surface) Dispose() {
 	}
 	s.disposed = true
 	s.queueMu.Unlock()
+	s.disposeCache()
 	s.engine.Close()
 }

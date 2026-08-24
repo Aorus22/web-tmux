@@ -57,6 +57,7 @@ type Monitor struct {
 	pending   []*PendingCommand // FIFO correlation (PRD §28)
 	subs      map[chan MonitorEvent]struct{}
 	captures  map[string]string // last visible capture per pane (Windows)
+	activity  map[string]time.Time // last typed input per pane (Windows fast poll)
 	seq       uint64
 	reconnect bool
 	lastErr   error
@@ -90,6 +91,7 @@ func NewMonitor(session string, socket Socket, exec *Executor, log *slog.Logger,
 		scrollback: scrollback,
 		subs:       make(map[chan MonitorEvent]struct{}),
 		captures:   make(map[string]string),
+		activity:   make(map[string]time.Time),
 		resyncCh:   make(chan struct{}, 1),
 		ctx:        ctx,
 		cancel:     cancel,
@@ -208,15 +210,28 @@ func (m *Monitor) ResizeTerminal(cols, rows int) error {
 	return ctrl.Resize(cols, rows)
 }
 
-// SendInput batches raw terminal bytes to a pane (PRD §22).
+// SendInput batches raw terminal bytes to a pane (PRD §22). The pane is also
+// marked active so the Windows poller captures it at the fast cadence and
+// echoed keystrokes show up immediately.
 func (m *Monitor) SendInput(paneID string, data []byte) {
 	// Batcher is created per-start below; guarded by mu.
 	m.mu.Lock()
 	batcher := m.batcher
+	if m.activity != nil && paneID != "" {
+		m.activity[paneID] = time.Now()
+	}
 	m.mu.Unlock()
 	if batcher != nil {
 		batcher.Write(paneID, data)
 	}
+}
+
+// recentInput reports whether paneID received typed input within window.
+func (m *Monitor) recentInput(paneID string, window time.Duration) bool {
+	m.mu.Lock()
+	last, ok := m.activity[paneID]
+	m.mu.Unlock()
+	return ok && time.Since(last) <= window
 }
 
 // Stop terminates the control connection gracefully and stops the loop.
@@ -306,26 +321,64 @@ func (m *Monitor) run() {
 // runWindowsPolling supplies the asynchronous behavior that -C would provide
 // on Unix. The native Windows tmux port supports normal commands and
 // capture-pane, but not control-mode notifications.
+//
+// Every capture spawns a tmux process, so each pane gets its own cadence: a
+// pane that received typed input recently is captured fast so echoed
+// keystrokes appear immediately; idle panes fall back to the slow background
+// cadence.
 func (m *Monitor) runWindowsPolling() {
-	ticker := time.NewTicker(250 * time.Millisecond)
+	const (
+		fastCadence   = 50 * time.Millisecond
+		idleCadence   = 250 * time.Millisecond
+		activeWindow  = 750 * time.Millisecond
+		schedulerStep = 25 * time.Millisecond
+	)
+	lastCapture := make(map[string]time.Time)
+	topologyDue := time.Now()
+	ticker := time.NewTicker(schedulerStep)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
 		case <-m.resyncCh:
-			m.pollWindows()
-		case <-ticker.C:
-			m.pollWindows()
+			m.refreshTopology()
+			topologyDue = time.Now().Add(idleCadence)
+			clear(lastCapture)
+		case now := <-ticker.C:
+			if !now.Before(topologyDue) {
+				m.refreshTopology()
+				topologyDue = now.Add(idleCadence)
+			}
+			panes := m.Snapshot().Panes
+			live := make(map[string]struct{}, len(panes))
+			for _, pane := range panes {
+				live[pane.ID] = struct{}{}
+				cadence := idleCadence
+				if m.recentInput(pane.ID, activeWindow) {
+					cadence = fastCadence
+				}
+				if last, ok := lastCapture[pane.ID]; ok && now.Sub(last) < cadence {
+					continue
+				}
+				lastCapture[pane.ID] = now
+				m.captureVisiblePane(pane.ID)
+			}
+			for id := range lastCapture {
+				if _, ok := live[id]; !ok {
+					delete(lastCapture, id)
+					m.mu.Lock()
+					delete(m.captures, id)
+					m.mu.Unlock()
+				}
+			}
 		}
 	}
 }
 
-// pollWindows refreshes topology and sends a full visible-screen replacement
-// only when a pane changed. The realtime layer marks these frames as Replace
-// so the frontend can serialize screen replacement separately from Linux's
-// incremental PTY output.
-func (m *Monitor) pollWindows() {
+// refreshTopology diffs and broadcasts the session snapshot without touching
+// pane captures.
+func (m *Monitor) refreshTopology() {
 	previous := m.Snapshot()
 	if err := m.refreshSnapshot(); err != nil {
 		m.log.Debug("Windows tmux poll failed", "err", err)
@@ -335,34 +388,30 @@ func (m *Monitor) pollWindows() {
 	if !reflect.DeepEqual(previous, current) {
 		m.broadcast(MonitorEvent{Type: EvState, Snapshot: current})
 	}
+}
 
-	panes := current.Panes
-	seen := make(map[string]struct{}, len(panes))
+// captureVisiblePane replaces the client's screen for one pane when its
+// visible content changed since the previous poll.
+func (m *Monitor) captureVisiblePane(paneID string) {
 	ctx, cancel := context.WithTimeout(m.ctx, 2*time.Second)
 	defer cancel()
-	for _, pane := range panes {
-		seen[pane.ID] = struct{}{}
-		data, err := m.reader.CapturePaneScreen(ctx, pane.ID)
-		if err != nil {
-			continue
-		}
-		previousCapture, exists := m.captures[pane.ID]
-		m.captures[pane.ID] = data
-		// The initial terminal.capture request supplies the first screen and
-		// scrollback. Do not immediately overwrite it with the first poll.
-		if exists && previousCapture != data {
-			m.broadcast(MonitorEvent{
-				Type:    EvOutput,
-				PaneID:  pane.ID,
-				Data:    []byte(data),
-				Replace: true,
-			})
-		}
+	data, err := m.reader.CapturePaneScreen(ctx, paneID)
+	if err != nil {
+		return
 	}
-	for paneID := range m.captures {
-		if _, ok := seen[paneID]; !ok {
-			delete(m.captures, paneID)
-		}
+	m.mu.Lock()
+	previousCapture, exists := m.captures[paneID]
+	m.captures[paneID] = data
+	m.mu.Unlock()
+	// The initial terminal.capture request supplies the first screen and
+	// scrollback. Do not immediately overwrite it with the first poll.
+	if exists && previousCapture != data {
+		m.broadcast(MonitorEvent{
+			Type:    EvOutput,
+			PaneID:  paneID,
+			Data:    []byte(data),
+			Replace: true,
+		})
 	}
 }
 

@@ -104,6 +104,17 @@ func (e *Engine) Cursor() Cursor {
 }
 func (e *Engine) Scrollback() [][]Cell { return e.scrollback }
 
+// TrimScrollback keeps at most n history lines. Replacement frames must never
+// grow history; this undoes any lines a synthetic frame pushed.
+func (e *Engine) TrimScrollback(n int) {
+	if n < 0 {
+		n = 0
+	}
+	if len(e.scrollback) > n {
+		e.scrollback = e.scrollback[:n]
+	}
+}
+
 func (e *Engine) SetPalette(fg, bg RGB, palette [16]RGB) {
 	C.vt_bridge_set_default_colors(e.bridge, C.uint8_t(fg.R), C.uint8_t(fg.G), C.uint8_t(fg.B), C.uint8_t(bg.R), C.uint8_t(bg.G), C.uint8_t(bg.B))
 	for i, c := range palette {
