@@ -44,6 +44,10 @@ type Surface struct {
 	fontSize, lineHeight, cellW, cellH float64
 	fontAscent, fontDescent            float64
 	fontMetricsReady                   bool
+	fontDesc                           [4]*pango.FontDescription
+	screen                             [][]Cell
+	screenRows, screenCols             int
+	screenDirty                        bool
 	tuiScroll                          bool
 	onResize                           func(int, int)
 	onActivate                         func()
@@ -61,7 +65,7 @@ type Surface struct {
 
 func NewSurface(opts SurfaceOptions) (*Surface, error) {
 	if opts.FontFamily == "" {
-		opts.FontFamily = "JetBrains Mono, Menlo, Consolas, monospace"
+		opts.FontFamily = "Cascadia Mono, Cascadia Code, JetBrains Mono, Fira Code, Iosevka, Consolas, monospace"
 	}
 	if opts.FontSize <= 0 {
 		opts.FontSize = 14
@@ -72,13 +76,16 @@ func NewSurface(opts SurfaceOptions) (*Surface, error) {
 	if opts.Palette == (Palette{}) {
 		opts.Palette = DefaultPalette()
 	}
-	s := &Surface{paneID: opts.PaneID, palette: opts.Palette, fontFamily: opts.FontFamily, fontSize: opts.FontSize, lineHeight: opts.LineHeight, tuiScroll: opts.TUIScroll, onResize: opts.OnResize, onActivate: opts.OnActivate, blinkOn: true}
+	s := &Surface{paneID: opts.PaneID, palette: opts.Palette, fontFamily: opts.FontFamily, fontSize: opts.FontSize, lineHeight: opts.LineHeight, tuiScroll: opts.TUIScroll, onResize: opts.OnResize, onActivate: opts.OnActivate, blinkOn: true, screenDirty: true}
 	s.recalculateCellSize()
 	eng, err := NewEngine(24, 80, opts.Scrollback, func(b []byte) {
 		if opts.OnInput != nil {
 			opts.OnInput(b)
 		}
-	}, func() { s.queueDraw() })
+	}, func() {
+		s.screenDirty = true
+		s.queueDraw()
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -154,6 +161,7 @@ func (s *Surface) drain() {
 		}
 		s.engine.Feed(op.data)
 	}
+	s.screenDirty = true
 	s.area.QueueDraw()
 }
 
@@ -267,13 +275,22 @@ func (s *Surface) SetFont(family string, size, lineHeight float64) {
 		s.lineHeight = lineHeight
 	}
 	s.fontMetricsReady = false
+	s.fontDesc = [4]*pango.FontDescription{}
 	s.recalculateCellSize()
 	w := s.area.AllocatedWidth()
 	h := s.area.AllocatedHeight()
 	s.resize(w, h)
 	s.area.QueueDraw()
 }
-func (s *Surface) SetPalette(p Palette) { s.palette = p; s.applyPalette(); s.area.QueueDraw() }
+func (s *Surface) SetPalette(p Palette) {
+	s.palette = p
+	s.applyPalette()
+	// libvterm stores indexed colors in its cells and resolves them when the
+	// cell is read. Invalidate the cached screen so an interface theme change
+	// recolors existing terminal output immediately.
+	s.screenDirty = true
+	s.area.QueueDraw()
+}
 func (s *Surface) applyPalette() {
 	if s.engine != nil {
 		s.engine.SetPalette(s.palette.Foreground, s.palette.Background, s.palette.ANSI)
@@ -333,6 +350,7 @@ func (s *Surface) resize(width, height int) {
 		return
 	}
 	s.engine.Resize(rows, cols)
+	s.screenDirty = true
 	if s.onResize != nil {
 		s.onResize(cols, rows)
 	}
@@ -345,6 +363,10 @@ func (s *Surface) queueDraw() {
 }
 
 func (s *Surface) draw(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
+	rows, cols := s.engine.Size()
+	if s.screenDirty || s.screenRows != rows || s.screenCols != cols {
+		s.refreshScreen(rows, cols)
+	}
 	if !s.fontMetricsReady {
 		if s.ensureFontMetrics(cr) {
 			// Recompute the vterm grid using measured metrics before reading cells.
@@ -353,7 +375,6 @@ func (s *Surface) draw(_ *gtk.DrawingArea, cr *cairo.Context, width, height int)
 	}
 	source(cr, s.palette.Background)
 	cr.Paint()
-	rows, cols := s.engine.Size()
 	history := s.engine.Scrollback()
 	total := len(history) + rows
 	end := total - s.scrollOffset
@@ -364,52 +385,96 @@ func (s *Surface) draw(_ *gtk.DrawingArea, cr *cairo.Context, width, height int)
 	for vr := 0; vr < rows; vr++ {
 		global := start + vr
 		line := s.lineAt(global, history, rows, cols)
+		if len(line) == 0 {
+			continue
+		}
+		y := float64(vr) * s.cellH
+		// Paint backgrounds first. This remains per-cell because selection and
+		// reverse-video can change the fill without forcing expensive text
+		// layout work.
 		for col := 0; col < cols && col < len(line); col++ {
 			cell := line[col]
 			if cell.Width == 0 {
 				continue
 			}
-			x := float64(col) * s.cellW
-			y := float64(vr) * s.cellH
-			fg, bg := cell.Foreground, cell.Background
-			if cell.Reverse {
-				fg, bg = bg, fg
-			}
+			_, bg := cellColors(cell)
 			if s.selected(global, col) {
 				bg = blend(bg, s.palette.Cursor, 0.45)
 			}
 			source(cr, bg)
+			x := float64(col) * s.cellW
 			cr.Rectangle(x, y, s.cellW*float64(max(1, cell.Width)), s.cellH)
 			cr.Fill()
-			if cell.Conceal || cell.Text == "" || (cell.Blink && !s.blinkOn) {
+		}
+
+		// Pango layout creation was the main source of terminal lag: the old
+		// renderer allocated one layout and font description for every cell on
+		// every redraw. Draw contiguous cells with the same style as one run.
+		for col := 0; col < cols && col < len(line); {
+			cell := line[col]
+			if cell.Width == 0 || cell.Conceal || cell.Text == "" || (cell.Blink && !s.blinkOn) {
+				col++
 				continue
 			}
+			fg, _ := cellColors(cell)
+			text := strings.Builder{}
+			endCol := col
+			runWidth := 0
+			for endCol < cols && endCol < len(line) {
+				runCell := line[endCol]
+				if runCell.Width == 0 || runCell.Conceal || runCell.Text == "" || (runCell.Blink && !s.blinkOn) {
+					break
+				}
+				runFG, _ := cellColors(runCell)
+				if runFG != fg || runCell.Bold != cell.Bold || runCell.Italic != cell.Italic {
+					break
+				}
+				text.WriteString(runCell.Text)
+				runWidth += max(1, runCell.Width)
+				endCol++
+			}
+			if endCol == col {
+				col++
+				continue
+			}
+			x := float64(col) * s.cellW
+			width := float64(max(1, runWidth)) * s.cellW
 			source(cr, fg)
-			desc := s.fontDescription(cell.Bold, cell.Italic)
 			layout := pangocairo.CreateLayout(cr)
-			layout.SetFontDescription(desc)
+			layout.SetFontDescription(s.fontDescription(cell.Bold, cell.Italic))
 			layout.SetWidth(-1)
 			layout.SetSingleParagraphMode(true)
-			layout.SetText(cell.Text)
-			// Clip each glyph to its terminal cell. This prevents a fallback glyph
-			// with a different advance from painting into the next cell.
+			layout.SetText(text.String())
 			cr.Save()
-			cr.Rectangle(x, y, s.cellW*float64(max(1, cell.Width)), s.cellH)
+			cr.Rectangle(x, y, width, s.cellH)
 			cr.Clip()
 			textHeight := s.fontAscent + s.fontDescent
 			cr.MoveTo(x, y+math.Max(0, (s.cellH-textHeight)/2))
 			pangocairo.ShowLayout(cr, layout)
 			cr.Restore()
+			col = endCol
+		}
+
+		// Decorations are cheap line primitives and stay per-cell.
+		for col := 0; col < cols && col < len(line); col++ {
+			cell := line[col]
+			if cell.Width == 0 || cell.Conceal || cell.Text == "" || (cell.Blink && !s.blinkOn) {
+				continue
+			}
+			fg, _ := cellColors(cell)
+			x := float64(col) * s.cellW
+			w := s.cellW * float64(max(1, cell.Width))
+			source(cr, fg)
 			if cell.Underline > 0 {
 				cr.SetLineWidth(1)
 				cr.MoveTo(x, y+s.cellH-2)
-				cr.LineTo(x+s.cellW*float64(max(1, cell.Width)), y+s.cellH-2)
+				cr.LineTo(x+w, y+s.cellH-2)
 				cr.Stroke()
 			}
 			if cell.Strike {
 				cr.SetLineWidth(1)
 				cr.MoveTo(x, y+s.cellH*.55)
-				cr.LineTo(x+s.cellW*float64(max(1, cell.Width)), y+s.cellH*.55)
+				cr.LineTo(x+w, y+s.cellH*.55)
 				cr.Stroke()
 			}
 		}
@@ -435,16 +500,59 @@ func (s *Surface) draw(_ *gtk.DrawingArea, cr *cairo.Context, width, height int)
 	_ = height
 }
 
+func cellColors(cell Cell) (fg, bg RGB) {
+	fg, bg = cell.Foreground, cell.Background
+	if cell.Reverse {
+		fg, bg = bg, fg
+	}
+	return fg, bg
+}
+
+func (s *Surface) refreshScreen(rows, cols int) {
+	if rows <= 0 || cols <= 0 {
+		return
+	}
+	if len(s.screen) != rows {
+		s.screen = make([][]Cell, rows)
+	}
+	for row := 0; row < rows; row++ {
+		if len(s.screen[row]) != cols {
+			s.screen[row] = make([]Cell, cols)
+		}
+		for col := 0; col < cols; col++ {
+			cell, ok := s.engine.Cell(row, col)
+			if ok {
+				s.screen[row][col] = cell
+			} else {
+				s.screen[row][col] = Cell{}
+			}
+		}
+	}
+	s.screenRows, s.screenCols = rows, cols
+	s.screenDirty = false
+}
+
 func (s *Surface) fontDescription(bold, italic bool) *pango.FontDescription {
+	index := 0
+	if bold {
+		index |= 1
+	}
+	if italic {
+		index |= 2
+	}
+	if desc := s.fontDesc[index]; desc != nil {
+		return desc
+	}
 	d := pango.NewFontDescription()
 	d.SetFamily(s.fontFamily)
-	d.SetAbsoluteSize(s.fontSize * pango.SCALE)
+	d.SetSize(int(s.fontSize * pango.SCALE))
 	if bold {
 		d.SetWeight(pango.WeightBold)
 	}
 	if italic {
 		d.SetStyle(pango.StyleItalic)
 	}
+	s.fontDesc[index] = d
 	return d
 }
 
@@ -492,16 +600,13 @@ func (s *Surface) lineAt(global int, history [][]Cell, rows, cols int) []Cell {
 		return history[global]
 	}
 	row := global - len(history)
-	line := make([]Cell, cols)
 	if row < 0 || row >= rows {
-		return line
+		return nil
 	}
-	for col := 0; col < cols; col++ {
-		if c, ok := s.engine.Cell(row, col); ok {
-			line[col] = c
-		}
+	if row < len(s.screen) && len(s.screen[row]) == cols {
+		return s.screen[row]
 	}
-	return line
+	return nil
 }
 
 func source(cr *cairo.Context, c RGB) {

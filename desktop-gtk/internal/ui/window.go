@@ -96,12 +96,10 @@ func NewMainWindow(app *adw.Application, name, version string, callbacks WindowC
 	w.windowTabs = gtk.NewBox(gtk.OrientationHorizontal, 4)
 	w.windowTabs.AddCSSClass("tmux-tabbar")
 
+	// Split/zoom/new-window controls live on each pane header and the window
+	// tab row, like the web UI. The global toolbar only keeps tmux layouts.
 	tools := gtk.NewBox(gtk.OrientationHorizontal, 4)
 	tools.AddCSSClass("tmux-toolbar")
-	tools.Append(iconButton("window-new-symbolic", "New window (Ctrl+N)", func() { callbacks.Command(protocol.WindowCreate, "") }))
-	tools.Append(iconButton("view-split-left-right-symbolic", "Split left/right (Ctrl+D)", func() { callbacks.Command(protocol.PaneSplit, "vertical") }))
-	tools.Append(iconButton("view-split-top-bottom-symbolic", "Split top/bottom (Ctrl+Shift+D)", func() { callbacks.Command(protocol.PaneSplit, "horizontal") }))
-	tools.Append(iconButton("view-fullscreen-symbolic", "Zoom active pane", func() { callbacks.Command(protocol.PaneZoom, "") }))
 	for _, layout := range []struct{ label, value string }{{"Even H", "even-horizontal"}, {"Even V", "even-vertical"}, {"Main H", "main-horizontal"}, {"Main V", "main-vertical"}, {"Tiled", "tiled"}} {
 		l := layout
 		b := gtk.NewButtonWithLabel(l.label)
@@ -286,6 +284,9 @@ func (w *MainWindow) UpdateWindowTabs(snapshot *protocol.Snapshot, requested str
 		button.ConnectClicked(func() { w.callbacks.Open(w.active, win.ID, "") })
 		w.windowTabs.Append(button)
 	}
+	// The "+" trails the tab list so a new window always opens to the right of
+	// the existing ones, matching the web WindowTabs row.
+	w.windowTabs.Append(iconButton("list-add-symbolic", "New window (Ctrl+N)", func() { w.callbacks.Command(protocol.WindowCreate, "") }))
 }
 
 func iconButton(icon, tooltip string, clicked func()) *gtk.Button {

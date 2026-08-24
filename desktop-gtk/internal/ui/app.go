@@ -136,7 +136,7 @@ func (a *App) open(session, windowID, paneID string) {
 			if a.active == session {
 				a.window.UpdateWindowTabs(snapshot, "")
 			}
-		})
+		}, a.confirmIf)
 		a.views[session] = v
 		a.window.AddSession(session, v.Widget())
 		v.Start(a.client, a.port)

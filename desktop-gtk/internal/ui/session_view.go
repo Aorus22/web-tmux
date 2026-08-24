@@ -41,6 +41,7 @@ type SessionView struct {
 	send         func(protocol.Incoming)
 	toast        func(string)
 	onSnapshot   func(*protocol.Snapshot)
+	confirm      func(enabled bool, title, body string, fn func())
 	root         *gtk.Overlay
 	grid         *gtk.Grid
 	empty        *gtk.Box
@@ -56,8 +57,8 @@ type SessionView struct {
 	closed       bool
 }
 
-func NewSessionView(ctx context.Context, session string, settings config.Settings, send func(protocol.Incoming), toast func(string), onSnapshot func(*protocol.Snapshot)) *SessionView {
-	v := &SessionView{ctx: ctx, session: session, settings: settings, send: send, toast: toast, onSnapshot: onSnapshot, panes: map[string]*PaneWidget{}, pending: map[string]pendingTerminal{}, layoutActive: true}
+func NewSessionView(ctx context.Context, session string, settings config.Settings, send func(protocol.Incoming), toast func(string), onSnapshot func(*protocol.Snapshot), confirm func(enabled bool, title, body string, fn func())) *SessionView {
+	v := &SessionView{ctx: ctx, session: session, settings: settings, send: send, toast: toast, onSnapshot: onSnapshot, confirm: confirm, panes: map[string]*PaneWidget{}, pending: map[string]pendingTerminal{}, layoutActive: true}
 	v.grid = gtk.NewGrid()
 	v.grid.SetHExpand(true)
 	v.grid.SetVExpand(true)
@@ -174,13 +175,6 @@ func (v *SessionView) ToggleTUIScroll() bool {
 func (v *SessionView) ApplySettings(settings config.Settings) {
 	v.settings = settings
 	palette := PaletteForTheme(FindTheme(settings.UITheme))
-	if settings.TerminalTheme != nil {
-		if terminalTheme := findTerminalTheme(*settings.TerminalTheme); terminalTheme != nil {
-			t := *FindTheme(settings.UITheme)
-			t.TerminalTheme = terminalTheme.Name
-			palette = PaletteForTheme(&t)
-		}
-	}
 	for id, pane := range v.panes {
 		pane.surface.SetFont(settings.FontFamily, settings.FontSize, settings.LineHeight)
 		pane.surface.SetPalette(palette)
@@ -354,7 +348,7 @@ func (v *SessionView) newPane(pane protocol.Pane) *PaneWidget {
 	frame := gtk.NewBox(gtk.OrientationVertical, 0)
 	frame.AddCSSClass("pane-frame")
 	frame.SetOverflow(gtk.OverflowHidden)
-	headerBox := gtk.NewBox(gtk.OrientationHorizontal, 4)
+	headerBox := gtk.NewBox(gtk.OrientationHorizontal, 2)
 	headerBox.AddCSSClass("pane-header")
 	header := gtk.NewLabel(paneTitle(pane))
 	header.SetHAlign(gtk.AlignStart)
@@ -362,17 +356,26 @@ func (v *SessionView) newPane(pane protocol.Pane) *PaneWidget {
 	header.SetEllipsize(3)
 	header.AddCSSClass("pane-title")
 	headerBox.Append(header)
-	zoom := iconButton("view-fullscreen-symbolic", "Zoom pane", func() { v.send(protocol.Incoming{Type: protocol.PaneZoom, PaneID: pane.ID}) })
-	headerBox.Append(zoom)
+	// Per-pane controls mirror the web PaneHeader: split right/down, zoom and
+	// kill act on THIS pane, not on whichever pane currently has focus.
+	headerBox.Append(iconButton("view-split-left-right-symbolic", "Split right", func() {
+		v.send(protocol.Incoming{Type: protocol.PaneSplit, PaneID: pane.ID, Direction: "horizontal"})
+	}))
+	headerBox.Append(iconButton("view-split-top-bottom-symbolic", "Split down", func() {
+		v.send(protocol.Incoming{Type: protocol.PaneSplit, PaneID: pane.ID, Direction: "vertical"})
+	}))
+	headerBox.Append(iconButton("view-fullscreen-symbolic", "Zoom pane", func() {
+		v.send(protocol.Incoming{Type: protocol.PaneZoom, PaneID: pane.ID})
+	}))
+	kill := iconButton("window-close-symbolic", "Kill pane", func() {
+		v.confirm(v.settings.ConfirmKillPane, "Kill pane?", "The process in this pane will be terminated.", func() {
+			v.send(protocol.Incoming{Type: protocol.PaneKill, PaneID: pane.ID})
+		})
+	})
+	kill.AddCSSClass("kill-pane")
+	headerBox.Append(kill)
 	frame.Append(headerBox)
 	palette := PaletteForTheme(FindTheme(v.settings.UITheme))
-	if v.settings.TerminalTheme != nil {
-		if terminalTheme := findTerminalTheme(*v.settings.TerminalTheme); terminalTheme != nil {
-			t := *FindTheme(v.settings.UITheme)
-			t.TerminalTheme = terminalTheme.Name
-			palette = PaletteForTheme(&t)
-		}
-	}
 	surface, err := terminal.NewSurface(terminal.SurfaceOptions{
 		PaneID: pane.ID, FontFamily: v.settings.FontFamily, FontSize: v.settings.FontSize,
 		LineHeight: v.settings.LineHeight, Scrollback: v.settings.ScrollbackLines, Palette: palette,

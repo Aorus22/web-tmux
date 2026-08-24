@@ -129,8 +129,10 @@ func (a *App) paletteCommands() []paletteCommand {
 	commands := []paletteCommand{
 		{"New session", "Create a tmux session · Ctrl+Shift+N", a.showNewSessionDialog},
 		{"New window", "Create a window · Ctrl+N", func() { a.runToolbarCommand(protocol.WindowCreate, "") }},
-		{"Split pane left/right", "Create a vertical divider · Ctrl+D", func() { a.runToolbarCommand(protocol.PaneSplit, "vertical") }},
-		{"Split pane top/bottom", "Create a horizontal divider · Ctrl+Shift+D", func() { a.runToolbarCommand(protocol.PaneSplit, "horizontal") }},
+		// Backend semantics: "horizontal" = side by side (tmux -h),
+		// "vertical" = stacked (tmux -v).
+		{"Split pane right", "Create a vertical divider · Ctrl+D", func() { a.runToolbarCommand(protocol.PaneSplit, "horizontal") }},
+		{"Split pane down", "Create a horizontal divider · Ctrl+Shift+D", func() { a.runToolbarCommand(protocol.PaneSplit, "vertical") }},
 		{"Zoom pane", "Toggle the active pane", func() { a.runToolbarCommand(protocol.PaneZoom, "") }},
 		{"Break pane", "Move active pane to a new window", func() { a.runToolbarCommand(protocol.PaneBreak, "") }},
 		{"Break active pane", "Move it into a named window", func() { a.runToolbarCommand(protocol.WindowBreakActive, "") }},

@@ -69,6 +69,11 @@ func PaletteForTheme(theme *ThemePreset) terminal.Palette {
 	p := terminal.DefaultPalette()
 	tt := findTerminalTheme(theme.TerminalTheme)
 	if tt == nil {
+		// Keep the terminal in lockstep with the app even if a generated theme
+		// has no dedicated ANSI preset.
+		p.Foreground = terminal.ParseHex(theme.Colors.Foreground)
+		p.Background = terminal.ParseHex(theme.Colors.Background)
+		p.Cursor = terminal.ParseHex(theme.Colors.Primary)
 		return p
 	}
 	c := tt.Colors

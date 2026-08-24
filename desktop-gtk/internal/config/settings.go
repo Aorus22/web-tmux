@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+const DefaultFontFamily = "Cascadia Mono, Cascadia Code, JetBrains Mono, Fira Code, Iosevka, Consolas, monospace"
 
 type Settings struct {
 	TmuxBinary         string          `json:"tmuxBinary"`
 	UITheme            string          `json:"uiTheme"`
-	TerminalTheme      *string         `json:"terminalTheme,omitempty"`
 	FontFamily         string          `json:"fontFamily"`
 	FontSize           float64         `json:"fontSize"`
 	LineHeight         float64         `json:"lineHeight"`
@@ -22,7 +24,7 @@ type Settings struct {
 
 func Defaults() Settings {
 	return Settings{
-		UITheme: "default-dark", FontFamily: "JetBrains Mono, Menlo, Consolas, monospace",
+		UITheme: "default-dark", FontFamily: DefaultFontFamily,
 		FontSize: 14, LineHeight: 1.35, ScrollbackLines: 2000,
 		TUIScrollPanes: map[string]bool{}, ConfirmKillPane: true,
 		ConfirmKillWindow: true, ConfirmKillSession: true,
@@ -38,7 +40,7 @@ func Load(dir string) Settings {
 	if s.UITheme == "" {
 		s.UITheme = "default-dark"
 	}
-	if s.FontFamily == "" {
+	if s.FontFamily == "" || strings.EqualFold(strings.TrimSpace(s.FontFamily), "JetBrains Mono, Menlo, Consolas, monospace") {
 		s.FontFamily = Defaults().FontFamily
 	}
 	if s.FontSize <= 0 {

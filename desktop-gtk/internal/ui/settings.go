@@ -69,45 +69,15 @@ func (a *App) buildSettingsPage() gtk.Widgetter {
 
 	page.Add(appearance)
 
+	// The app and the terminal share one theme on purpose: the UI preset's
+	// TerminalTheme mapping recolors both chrome and ANSI palette together.
 	terminalGroup := adw.NewPreferencesGroup()
 	terminalGroup.SetTitle("Terminal")
-	terminalGroup.SetDescription("Terminal colors and tmux connection settings.")
-
-	termLabels := make([]string, len(TerminalThemes)+1)
-	termLabels[0] = "Follow interface theme"
-	selectedTerminal := 0
-	for i, terminalTheme := range TerminalThemes {
-		termLabels[i+1] = terminalTheme.Label
-		if a.settings.TerminalTheme != nil && terminalTheme.Name == *a.settings.TerminalTheme {
-			selectedTerminal = i + 1
-		}
-	}
-	termDropDown := gtk.NewDropDownFromStrings(termLabels)
-	termDropDown.SetSelected(uint(selectedTerminal))
-	termDropDown.SetVAlign(gtk.AlignCenter)
-	termRow := adw.NewActionRow()
-	termRow.SetTitle("Terminal colors")
-	termRow.SetSubtitle("Use a dedicated terminal palette or follow the UI theme")
-	termRow.AddSuffix(termDropDown)
-	termRow.SetActivatableWidget(termDropDown)
-	termDropDown.Object.NotifyProperty("selected", func() {
-		idx := int(termDropDown.Selected())
-		s := a.settings
-		if idx == 0 {
-			s.TerminalTheme = nil
-		} else if idx-1 >= 0 && idx-1 < len(TerminalThemes) {
-			name := TerminalThemes[idx-1].Name
-			s.TerminalTheme = &name
-		} else {
-			return
-		}
-		a.applySettings(s)
-	})
-	terminalGroup.Add(termRow)
+	terminalGroup.SetDescription("Fonts and tmux connection settings. Terminal colors follow the color theme.")
 
 	font := gtk.NewEntry()
 	font.SetText(a.settings.FontFamily)
-	font.SetPlaceholderText("JetBrains Mono, Menlo, Consolas, monospace")
+	font.SetPlaceholderText(config.DefaultFontFamily)
 	font.SetWidthChars(26)
 	font.SetVAlign(gtk.AlignCenter)
 	fontRow := adw.NewActionRow()
