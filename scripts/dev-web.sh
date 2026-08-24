@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Development: Go backend on :14101 + Vite dev server on :14102 (proxies /api)
+# Development: Go backend on :4090 + Vite dev server on :14102 (proxies /api)
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -12,13 +12,13 @@ touch "$ROOT/be/internal/web/dist/.gitkeep"
 
 (
   cd "$ROOT/be"
-  go run ./cmd/server &
+  TMUXGUI_PORT=4090 go run ./cmd/server &
 )
 BE_PID=$!
 
 (
   cd "$ROOT/fe"
-  npm run dev -- --port 14102
+  TMUXGUI_DEV_BACKEND_PORT=4090 npm run dev -- --port 14102
 ) &
 FE_PID=$!
 

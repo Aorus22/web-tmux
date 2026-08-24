@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"tmux-gui/desktop-gtk/internal/backend"
+	"tmux-gui/desktop-gtk/internal/config"
 	"tmux-gui/desktop-gtk/internal/ui"
 )
 
@@ -48,6 +49,7 @@ func main() {
 		ports = immediatePort(*port)
 	} else {
 		manager = backend.NewManager(*backendPath, *userDataDir)
+		manager.SetTmuxBinary(config.Load(*userDataDir).TmuxBinary)
 		if err := manager.Start(ctx); err != nil {
 			log.Fatalf("start backend: %v", err)
 		}
@@ -96,7 +98,16 @@ func defaultBackendPath() string {
 		suffix = ".exe"
 	}
 	if exe, err := os.Executable(); err == nil {
-		return filepath.Join(filepath.Dir(exe), "tmux-gui-server"+suffix)
+		// A development build follows the wa-bot layout: the GTK binary is in
+		// compiled/ while make be leaves the backend in the repository root.
+		// Keep the sibling path for portable bundles, then fall back to the
+		// repository-level backend for compiled binaries.
+		dir := filepath.Dir(exe)
+		sibling := filepath.Join(dir, "tmux-gui-server"+suffix)
+		if _, statErr := os.Stat(sibling); statErr == nil {
+			return sibling
+		}
+		return filepath.Join(dir, "..", "tmux-gui-server"+suffix)
 	}
 	return "tmux-gui-server" + suffix
 }

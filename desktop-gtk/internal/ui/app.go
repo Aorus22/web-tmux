@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -90,6 +91,14 @@ func (a *App) awaitBackend() {
 	if err != nil {
 		a.idle(func() { a.window.SetStatus("Backend belum siap: " + err.Error()) })
 		return
+	}
+	if path := strings.TrimSpace(a.settings.TmuxBinary); path != "" {
+		selected, selectErr := a.client.SetTmuxBinary(ctx, path)
+		if selectErr != nil {
+			a.idle(func() { a.window.SetStatus("tmux binary tidak valid: " + selectErr.Error()) })
+			return
+		}
+		info = selected
 	}
 	a.idle(func() { a.window.SetStatus("Connected · tmux " + info.Version) })
 	a.pollTree()

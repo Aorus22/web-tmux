@@ -34,7 +34,7 @@ tmux-gui/
 make dev-web
 ```
 
-- Go backend: http://127.0.0.1:14101
+- Go backend: http://127.0.0.1:4090
 - Vite dev server (proxies `/api`): http://127.0.0.1:14102
 
 ## Development (desktop)
@@ -48,10 +48,32 @@ make dev-desktop
 ```bash
 make build
 ./dist/tmux-gui-server
-# -> http://127.0.0.1:14101
+# -> http://127.0.0.1:4090
 ```
 
 The React build is embedded into the Go binary; a single executable serves everything.
+
+The individual build commands mirror the desktop workflow:
+
+```bash
+make fe               # frontend -> be/internal/web/dist
+make be               # backend -> tmux-gui-server[.exe]
+make desktop-gtk      # native GTK binary -> compiled/tmux-gui-desktop[.exe]
+make desktop-electron # Electron package
+```
+
+On Windows, source the MSYS2 environment before running the native GTK binary:
+
+```powershell
+. .\desktop-gtk\environment.ps1
+.\compiled\tmux-gui-desktop.exe
+```
+
+The web and GTK Settings pages have a `tmux binary (Windows)` field. Set it
+to the exact executable that owns your sessions (for example
+`C:\\msys64\\usr\\bin\\tmux.exe` or the WinGet `tmux.exe`). The backend
+validates the selection with `tmux -V` and uses it for all later commands;
+leaving it empty restores PATH lookup.
 
 ## Desktop build (Electron)
 
@@ -70,11 +92,11 @@ It shares the same Go REST/WebSocket backend and can run beside the web or
 Electron frontend.
 
 ```bash
-# Linux: AppImage (if linuxdeploy is installed) + .deb
-make build-gtk
+# Native GTK binary
+make desktop-gtk
 
 # Windows portable ZIP (MSYS2 MINGW64 GTK runtime)
-make build-gtk-windows
+make package-gtk-windows
 ```
 
 ## Configuration (backend)
@@ -82,7 +104,7 @@ make build-gtk-windows
 | Env | Default | Purpose |
 |---|---|---|
 | `TMUXGUI_HOST` | `127.0.0.1` | Bind host |
-| `TMUXGUI_PORT` | `14101` | Bind port (`0` = dynamic, used by Electron) |
+| `TMUXGUI_PORT` | `4090` | Bind port (`0` = dynamic, used by Electron) |
 | `TMUXGUI_TMUX_SOCKET` | *(user default)* | tmux socket name (`-L`) or path (`-S`) |
 | `TMUXGUI_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `TMUXGUI_SCROLLBACK_LINES` | `2000` | `capture-pane` history lines |

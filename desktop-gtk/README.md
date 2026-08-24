@@ -19,10 +19,26 @@ On Windows, install the MSYS2 MINGW64 packages `mingw-w64-x86_64-gtk4`,
 ./desktop-gtk/scripts/dev-windows.ps1
 ```
 
-## Release artifacts
+## Build binary
 
 ```bash
-# Windows portable ZIP
+# Windows (matches the wa-bot workflow)
+pwsh ./desktop-gtk/scripts/build-gtk.ps1
+# -> compiled/tmux-gui-desktop.exe
+
+# Run from PowerShell after injecting the MSYS2 runtime.
+. .\desktop-gtk\environment.ps1
+.\compiled\tmux-gui-desktop.exe
+
+# Linux
+make desktop-gtk
+# -> compiled/tmux-gui-desktop
+```
+
+## Optional portable packages
+
+```bash
+# Windows portable ZIP with GTK runtime DLLs
 pwsh ./desktop-gtk/scripts/build-windows.ps1
 
 # Linux AppImage (when linuxdeploy is installed) and .deb
@@ -32,3 +48,7 @@ pwsh ./desktop-gtk/scripts/build-windows.ps1
 The native frontend starts `tmux-gui-server` as a localhost sidecar, stores
 settings under the platform config directory, and can also attach to an
 already-running server with `--no-backend --port <port>`.
+
+In Settings, set `tmux binary (Windows)` to the same `tmux.exe` used by your
+existing sessions. This avoids mixing the MSYS2 and WinGet tmux servers. The
+path is validated with `tmux -V` and applied without restarting GTK.

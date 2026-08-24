@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Desktop development: Electron spawns Go backend (:14101) and loads Vite (:14102)
+# Desktop development: Electron spawns Go backend (:9001) and loads Vite (:14102)
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -11,7 +11,7 @@ touch "$ROOT/be/internal/web/dist/.gitkeep"
 
 (
   cd "$ROOT/fe"
-  npm run dev -- --port 14102
+  TMUXGUI_DEV_BACKEND_PORT=9001 npm run dev -- --port 14102
 ) &
 FE_PID=$!
 

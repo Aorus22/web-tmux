@@ -19,6 +19,7 @@ import (
 type Manager struct {
 	path      string
 	userData  string
+	tmuxBin   string
 	cmd       *exec.Cmd
 	portCh    chan int
 	errCh     chan error
@@ -31,6 +32,10 @@ type Manager struct {
 func NewManager(path, userData string) *Manager {
 	return &Manager{path: path, userData: userData, portCh: make(chan int, 1), errCh: make(chan error, 1), stoppedCh: make(chan struct{})}
 }
+
+// SetTmuxBinary selects the executable inherited by the backend sidecar.
+// The backend API can change it later without restarting the GTK process.
+func (m *Manager) SetTmuxBinary(path string) { m.tmuxBin = strings.TrimSpace(path) }
 
 func (m *Manager) Port() <-chan int     { return m.portCh }
 func (m *Manager) Errors() <-chan error { return m.errCh }
@@ -52,7 +57,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 	cmd := exec.CommandContext(ctx, backendPath)
 	cmd.Dir = m.userData
-	cmd.Env = backendEnv()
+	cmd.Env = backendEnv(m.tmuxBin)
 	applyPlatformSysProcAttr(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -135,19 +140,15 @@ func (m *Manager) Stop(ctx context.Context) error {
 	}
 }
 
-func backendEnv() []string {
+func backendEnv(tmuxBin string) []string {
 	env := os.Environ()
 	env = setEnv(env, "TMUXGUI_HOST", "127.0.0.1")
 	env = setEnv(env, "TMUXGUI_PORT", "0")
 	env = removeEnv(env, "TMUX")
 	env = removeEnv(env, "TMUX_PANE")
-	if runtime.GOOS == "windows" && os.Getenv("TMUXGUI_TMUX_BIN") == "" {
-		if local := os.Getenv("LOCALAPPDATA"); local != "" {
-			candidate := filepath.Join(local, "Microsoft", "WinGet", "Links", "tmux.exe")
-			if _, err := os.Stat(candidate); err == nil {
-				env = setEnv(env, "TMUXGUI_TMUX_BIN", candidate)
-			}
-		}
+	env = removeEnv(env, "TMUXGUI_TMUX_BIN")
+	if tmuxBin != "" {
+		env = setEnv(env, "TMUXGUI_TMUX_BIN", tmuxBin)
 	}
 	return env
 }

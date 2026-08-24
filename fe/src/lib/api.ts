@@ -53,6 +53,9 @@ export const api = {
 
   tmuxInfo: () => get<TmuxInfo>('/api/tmux/info'),
 
+  setTmuxBinary: (path: string) =>
+    post<TmuxInfo>('/api/tmux/binary', { path }),
+
   tree: async () => {
     const tree = await get<TmuxTree>('/api/sessions')
     // Older/native backends may encode empty slices as null. Keep the UI

@@ -26,6 +26,8 @@ type MainWindow struct {
 	sessionTabs  *gtk.Box
 	windowTabs   *gtk.Box
 	stack        *gtk.Stack
+	settingsPage gtk.Widgetter
+	chrome       []gtk.Widgetter
 	status       *gtk.Label
 	callbacks    WindowCallbacks
 	active       string
@@ -62,6 +64,7 @@ func NewMainWindow(app *adw.Application, name, version string, callbacks WindowC
 	scroll.SetChild(w.sidebar)
 
 	side := gtk.NewBox(gtk.OrientationVertical, 0)
+	side.AddCSSClass("sidebar-pane")
 	side.Append(sidebarHeading("SESSIONS"))
 	side.Append(scroll)
 	newSession := gtk.NewButtonWithLabel("New session")
@@ -71,6 +74,14 @@ func NewMainWindow(app *adw.Application, name, version string, callbacks WindowC
 	newSession.SetMarginBottom(10)
 	newSession.ConnectClicked(callbacks.NewSession)
 	side.Append(newSession)
+	settingsButton := gtk.NewButtonWithLabel("Settings")
+	settingsButton.SetIconName("preferences-system-symbolic")
+	settingsButton.SetTooltipText("Open settings")
+	settingsButton.SetMarginStart(10)
+	settingsButton.SetMarginEnd(10)
+	settingsButton.SetMarginBottom(10)
+	settingsButton.ConnectClicked(callbacks.Settings)
+	side.Append(settingsButton)
 
 	w.sessionTabs = gtk.NewBox(gtk.OrientationHorizontal, 4)
 	w.sessionTabs.AddCSSClass("tmux-tabbar")
@@ -105,11 +116,13 @@ func NewMainWindow(app *adw.Application, name, version string, callbacks WindowC
 	w.status.SetEllipsize(3)
 
 	content := gtk.NewBox(gtk.OrientationVertical, 0)
+	content.AddCSSClass("content-pane")
 	content.Append(w.sessionTabs)
 	content.Append(w.windowTabs)
 	content.Append(tools)
 	content.Append(w.stack)
 	content.Append(w.status)
+	w.chrome = []gtk.Widgetter{w.sessionTabs, w.windowTabs, tools, w.status}
 
 	paned := gtk.NewPaned(gtk.OrientationHorizontal)
 	paned.SetStartChild(side)
@@ -133,6 +146,31 @@ func (w *MainWindow) Toast(message string) {
 	w.toastOverlay.AddToast(toast)
 }
 func (w *MainWindow) SetStatus(status string) { w.status.SetText(status) }
+
+// SetSettingsPage installs the settings view in the main stack. Replacing the
+// widget keeps the page lifecycle simple while ensuring it is never a dialog.
+func (w *MainWindow) SetSettingsPage(widget gtk.Widgetter) {
+	if w.settingsPage != nil {
+		w.stack.Remove(w.settingsPage)
+	}
+	w.settingsPage = widget
+	if widget != nil {
+		w.stack.AddNamed(widget, "__settings")
+	}
+}
+
+func (w *MainWindow) ShowSettings() {
+	if w.settingsPage != nil {
+		w.setChromeVisible(false)
+		w.stack.SetVisibleChildName("__settings")
+	}
+}
+
+func (w *MainWindow) setChromeVisible(visible bool) {
+	for _, widget := range w.chrome {
+		gtk.BaseWidget(widget).SetVisible(visible)
+	}
+}
 
 func (w *MainWindow) UpdateTree(tree protocol.Tree) {
 	w.sidebar.RemoveAll()
@@ -182,9 +220,14 @@ func (w *MainWindow) appendTreeRow(icon, title, subtitle string, target treeTarg
 
 func (w *MainWindow) AddSession(name string, widget gtk.Widgetter)    { w.stack.AddNamed(widget, name) }
 func (w *MainWindow) RemoveSession(name string, widget gtk.Widgetter) { w.stack.Remove(widget) }
-func (w *MainWindow) ShowSession(name string)                         { w.active = name; w.stack.SetVisibleChildName(name) }
+func (w *MainWindow) ShowSession(name string) {
+	w.active = name
+	w.setChromeVisible(true)
+	w.stack.SetVisibleChildName(name)
+}
 func (w *MainWindow) ShowEmpty() {
 	w.active = ""
+	w.setChromeVisible(true)
 	w.stack.SetVisibleChildName("__empty")
 	w.UpdateWindowTabs(nil, "")
 }

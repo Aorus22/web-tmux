@@ -58,6 +58,7 @@ type Tree struct {
 type TmuxInfo struct {
 	Version string `json:"version"`
 	OK      bool   `json:"ok"`
+	Binary  string `json:"binary"`
 }
 
 type Incoming struct {

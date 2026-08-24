@@ -51,6 +51,34 @@ func (h *HealthHandler) HandleInfo(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"version": version,
 		"ok":      err == nil,
+		"binary":  tmux.BinaryPath(),
+	})
+}
+
+type tmuxBinaryRequest struct {
+	Path string `json:"path"`
+}
+
+// HandleBinary changes the executable used by subsequent tmux commands. The
+// backend is normally localhost-only, and validation executes only `tmux -V`.
+func (h *HealthHandler) HandleBinary(w http.ResponseWriter, r *http.Request) {
+	var req tmuxBinaryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
+		return
+	}
+	if err := tmux.SetBinary(req.Path); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	version, err := h.svc.TmuxVersion(ctx)
+	h.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"binary":  tmux.BinaryPath(),
+		"version": version,
+		"ok":      err == nil,
 	})
 }
 

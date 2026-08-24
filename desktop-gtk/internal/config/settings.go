@@ -7,6 +7,7 @@ import (
 )
 
 type Settings struct {
+	TmuxBinary         string          `json:"tmuxBinary"`
 	UITheme            string          `json:"uiTheme"`
 	TerminalTheme      *string         `json:"terminalTheme,omitempty"`
 	FontFamily         string          `json:"fontFamily"`

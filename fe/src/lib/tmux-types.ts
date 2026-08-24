@@ -69,4 +69,5 @@ export interface HealthResponse {
 export interface TmuxInfo {
   version: string
   ok: boolean
+  binary: string
 }

@@ -35,6 +35,7 @@ export default function App() {
   const backendPort = useAppStore((s) => s.backendPort)
   const setPaletteOpen = useAppStore((s) => s.setPaletteOpen)
   const uiTheme = useSettingsStore((s) => s.uiTheme)
+  const tmuxBinary = useSettingsStore((s) => s.tmuxBinary)
 
   const snapshots = useTmuxStore((s) => s.snapshots)
   const transports = useTmuxStore((s) => s.transports)
@@ -103,13 +104,27 @@ export default function App() {
     set('--sidebar-border', c.border)
     set('--sidebar-ring', c.ring)
 
-    root.classList.toggle('dark', !isLightUiTheme(preset))
+    const light = isLightUiTheme(preset)
+    root.classList.toggle('dark', !light)
+    root.dataset.theme = preset.name
+    root.style.colorScheme = light ? 'light' : 'dark'
   }, [uiTheme])
 
   // Sidebar tree: polled 1.5s fallback refresh (PRD §25). tmux is the source
   // of truth; polling only refreshes metadata, never terminal output.
   // Desktop: disabled until the backend sidecar port is known (IPC).
   const backendKnown = !isDesktop || backendPort > 0
+
+  // Apply a persisted executable choice once the backend is reachable. The
+  // backend validates it with `tmux -V`; an empty value restores PATH lookup.
+  const binaryAppliedRef = useRef(false)
+  useEffect(() => {
+    if (!backendKnown || binaryAppliedRef.current) return
+    binaryAppliedRef.current = true
+    void api.setTmuxBinary(tmuxBinary.trim()).catch(() => {
+      // The settings page surfaces validation errors when the user edits it.
+    })
+  }, [backendKnown, tmuxBinary])
   const { data: tree, refetch, isPending } = useQuery({
     queryKey: ['tree'],
     queryFn: api.tree,
@@ -179,7 +194,7 @@ export default function App() {
     <div className="flex h-full w-full flex-col bg-background text-foreground">
       <AppTitleBar />
       <div className="flex min-h-0 flex-1">
-        {hasSessions && (
+        {(hasSessions || showingPage) && (
           <AppSidebar
             tree={emptyTree}
             activeSession={activeSession}
@@ -202,6 +217,8 @@ export default function App() {
               <Loader2 className="size-5 animate-spin text-muted-foreground" />
               <p className="text-xs text-muted-foreground">Loading…</p>
             </div>
+          ) : showingPage ? (
+            <SettingsPage />
           ) : !tmuxInstalled ? (
             <ErrorState onRetry={refetch} />
           ) : !hasSessions ? (
@@ -226,7 +243,6 @@ export default function App() {
                     />
                   </div>
                 ))}
-                {showingPage && <SettingsPage />}
                 {!activeSession && !showingPage && (
                   <SelectSessionView tree={emptyTree} />
                 )}

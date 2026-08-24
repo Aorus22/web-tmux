@@ -41,6 +41,35 @@ func (c *Client) Info(ctx context.Context) (protocol.TmuxInfo, error) {
 	var v protocol.TmuxInfo
 	return v, c.get(ctx, "/api/tmux/info", &v)
 }
+
+func (c *Client) SetTmuxBinary(ctx context.Context, path string) (protocol.TmuxInfo, error) {
+	b, _ := json.Marshal(map[string]string{"path": path})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/api/tmux/binary", bytes.NewReader(b))
+	if err != nil {
+		return protocol.TmuxInfo{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := c.http.Do(req)
+	if err != nil {
+		return protocol.TmuxInfo{}, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode/100 != 2 {
+		var e struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(res.Body).Decode(&e)
+		if e.Error != "" {
+			return protocol.TmuxInfo{}, fmt.Errorf("%s", e.Error)
+		}
+		return protocol.TmuxInfo{}, fmt.Errorf("/api/tmux/binary: %s", res.Status)
+	}
+	var v protocol.TmuxInfo
+	if err := json.NewDecoder(res.Body).Decode(&v); err != nil {
+		return protocol.TmuxInfo{}, err
+	}
+	return v, nil
+}
 func (c *Client) Tree(ctx context.Context) (protocol.Tree, error) {
 	var v protocol.Tree
 	err := c.get(ctx, "/api/sessions", &v)

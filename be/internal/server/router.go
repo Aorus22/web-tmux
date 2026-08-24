@@ -14,6 +14,7 @@ import (
 //
 //	GET  /api/health       — liveness + tmux presence
 //	GET  /api/tmux/info    — tmux version/config info
+//	POST /api/tmux/binary  — select the tmux executable for this process
 //	GET  /api/sessions     — full session/window/pane tree (sidebar polling)
 //	GET  /api/sessions/{name}/snapshot — one session snapshot
 //	POST /api/sessions     — create a session (works with zero sessions)
@@ -25,6 +26,7 @@ func NewRouter(cfg *config.Config, svc *tmux.Service, hub *realtime.Hub, log *sl
 	health := &HealthHandler{svc: svc, log: log.With("component", "health")}
 	mux.HandleFunc("GET /api/health", health.Handle)
 	mux.HandleFunc("GET /api/tmux/info", health.HandleInfo)
+	mux.HandleFunc("POST /api/tmux/binary", health.HandleBinary)
 	mux.HandleFunc("GET /api/sessions", health.HandleTree)
 	mux.HandleFunc("GET /api/sessions/{name}/snapshot", health.HandleSessionSnapshot)
 	mux.HandleFunc("POST /api/sessions", health.HandleSessionCreate)

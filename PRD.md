@@ -274,7 +274,7 @@ Vite :14102
 
    ▼
 
-Go :14101
+Go :4090
 
    │
 
@@ -3306,7 +3306,7 @@ Default:
 
 TMUXGUI_HOST=127.0.0.1
 
-TMUXGUI_PORT=14101
+TMUXGUI_PORT=4090
 
 TMUXGUI_SCROLLBACK_LINES=2000
 
@@ -4296,7 +4296,7 @@ Proxy:
 
 ```text
 
-/api → http://127.0.0.1:14101
+/api → http://127.0.0.1:4090
 
 ```
 
@@ -4514,7 +4514,7 @@ Flow:
 
 Electron
 
-├── spawn Go :14101
+├── spawn Go :9001
 
 └── load Vite :14102
 
@@ -4604,7 +4604,7 @@ Kemudian:
 
 ```text
 
-http://127.0.0.1:14101
+http://127.0.0.1:4090
 
 ```
 

@@ -5,6 +5,9 @@ dist/
 # Go
 be/tmux-gui-server
 be/bin/
+tmux-gui-server
+tmux-gui-server.exe
+compiled/
 
 # Frontend build output (embedded into backend)
 be/internal/web/dist/*

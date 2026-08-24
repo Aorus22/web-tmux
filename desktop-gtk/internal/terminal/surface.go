@@ -174,7 +174,6 @@ func positionedFrame(data string) string {
 	b.WriteString("\x1b[?25l\x1b[2J\x1b[H")
 	cursorRow, cursorCol := -1, 0
 	for i, row := range rows {
-		row = strings.TrimRight(row, " \t")
 		fmt.Fprintf(&b, "\x1b[%d;1H\x1b[2K%s", i+1, row)
 		visible := visibleText(row)
 		trimmed := strings.TrimRight(visible, " \t")

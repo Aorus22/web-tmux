@@ -5,6 +5,8 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
 export interface Settings {
+  // Explicit tmux executable. Empty means use the backend's PATH resolver.
+  tmuxBinary: string
   // Selected UI theme preset name (see features/settings/data/ui-themes.ts).
   // Unknown/missing values fall back to the default dark theme.
   uiTheme: string
@@ -29,6 +31,7 @@ interface SettingsState extends Settings {
 }
 
 const DEFAULTS: Settings = {
+  tmuxBinary: '',
   uiTheme: 'default-dark',
   terminalTheme: null,
   fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace',

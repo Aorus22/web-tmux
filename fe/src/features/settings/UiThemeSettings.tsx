@@ -4,8 +4,15 @@
 // terminal follows the selected theme automatically (see resolvedTerminalTheme).
 
 import { useState } from 'react'
+import { Paintbrush } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { uiThemes, isLightUiTheme } from './data/ui-themes'
 import { ThemeCard } from './ThemeCard'
 
@@ -23,40 +30,53 @@ export function UiThemeSettings() {
   })
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium">Theme</span>
-        <Tabs value={filter} onValueChange={(v) => setFilter(v as Filter)}>
-          <TabsList className="h-7">
-            <TabsTrigger value="all" className="h-full px-2 text-xs">
-              All
-            </TabsTrigger>
-            <TabsTrigger value="dark" className="h-full px-2 text-xs">
-              Dark
-            </TabsTrigger>
-            <TabsTrigger value="light" className="h-full px-2 text-xs">
-              Light
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+    <section className="space-y-4">
+      <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+        Appearance
+      </h2>
+      <div className="overflow-hidden rounded-lg border bg-card divide-y">
+        <div className="flex items-center justify-between gap-3 px-4 py-3">
+          <div className="flex items-center gap-3">
+            <Paintbrush className="size-4 text-muted-foreground" />
+            <div className="flex flex-col">
+              <span className="text-sm font-medium">Theme mode</span>
+              <span className="text-xs text-muted-foreground">
+                Filter by dark or light appearance
+              </span>
+            </div>
+          </div>
+          <Select value={filter} onValueChange={(v) => setFilter(v as Filter)}>
+            <SelectTrigger className="h-8 w-[110px] text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All themes</SelectItem>
+              <SelectItem value="dark">Dark</SelectItem>
+              <SelectItem value="light">Light</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-4 px-4 py-4">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-sm font-medium">Color theme</span>
+            <span className="text-xs text-muted-foreground">
+              {themes.length} themes available
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {themes.map((t) => (
+              <ThemeCard
+                key={t.name}
+                label={t.label}
+                background={t.colors.background}
+                accents={[t.colors.primary, t.colors.accent, t.colors.destructive]}
+                selected={uiTheme === t.name}
+                onSelect={() => set({ uiTheme: t.name })}
+              />
+            ))}
+          </div>
+        </div>
       </div>
-
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
-        {themes.map((t) => (
-          <ThemeCard
-            key={t.name}
-            label={t.label}
-            background={t.colors.background}
-            accents={[
-              t.colors.primary,
-              t.colors.accent,
-              t.colors.destructive,
-            ]}
-            selected={uiTheme === t.name}
-            onSelect={() => set({ uiTheme: t.name })}
-          />
-        ))}
-      </div>
-    </div>
+    </section>
   )
 }

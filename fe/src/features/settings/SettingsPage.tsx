@@ -3,21 +3,32 @@
 
 import { UiThemeSettings } from './UiThemeSettings'
 import { TerminalSettings } from './TerminalSettings'
+import { TerminalSquare } from 'lucide-react'
 
 export function SettingsPage() {
   return (
-    <div className="flex h-full flex-col items-center overflow-y-auto">
-      <div className="mx-auto w-full max-w-2xl space-y-6 px-6 py-6">
-        <div className="border-b pb-4">
-          <h2 className="text-lg font-semibold">Settings</h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">UI and terminal preferences.</p>
-        </div>
-
+    <div className="flex min-h-full flex-col items-center overflow-y-auto bg-background p-4 pt-10 text-foreground md:p-8 md:pt-12">
+      <div className="w-full max-w-2xl space-y-8 pb-12">
+        <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
         <UiThemeSettings />
 
-        <div className="border-t pt-5">
-          <TerminalSettings />
-        </div>
+        <section className="space-y-4">
+          <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+            Terminal
+          </h2>
+          <div className="overflow-hidden rounded-lg border bg-card px-4 py-4">
+            <div className="mb-4 flex items-center gap-3">
+              <TerminalSquare className="size-4 text-muted-foreground" />
+              <div className="flex flex-col">
+                <span className="text-sm font-medium">Terminal preferences</span>
+                <span className="text-xs text-muted-foreground">
+                  The selected theme is applied to every pane and app surface.
+                </span>
+              </div>
+            </div>
+            <TerminalSettings />
+          </div>
+        </section>
       </div>
     </div>
   )

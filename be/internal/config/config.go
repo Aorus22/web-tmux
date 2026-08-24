@@ -37,7 +37,7 @@ func getenvInt(key string, fallback int) (int, error) {
 
 // Load reads configuration from the environment.
 func Load() (*Config, error) {
-	port, err := getenvInt("TMUXGUI_PORT", 14101)
+	port, err := getenvInt("TMUXGUI_PORT", 4090)
 	if err != nil {
 		return nil, err
 	}

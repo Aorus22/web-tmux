@@ -5,13 +5,44 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { api } from '@/lib/api'
+import { useState } from 'react'
 
 export function TerminalSettings() {
   const settings = useSettingsStore()
   const set = useSettingsStore((s) => s.set)
+  const [binaryStatus, setBinaryStatus] = useState('')
+
+  const applyBinary = async () => {
+    setBinaryStatus('Checking…')
+    try {
+      const info = await api.setTmuxBinary(settings.tmuxBinary.trim())
+      setBinaryStatus(`Using ${info.binary} (${info.version})`)
+    } catch (error) {
+      setBinaryStatus(error instanceof Error ? error.message : 'tmux binary is invalid')
+    }
+  }
 
   return (
     <div className="space-y-4">
+      <div className="space-y-1.5">
+        <Label htmlFor="ts-tmux-binary">tmux binary (Windows)</Label>
+        <Input
+          id="ts-tmux-binary"
+          value={settings.tmuxBinary}
+          placeholder="C:\\path\\to\\tmux.exe (empty = PATH)"
+          onChange={(e) => set({ tmuxBinary: e.target.value })}
+          onBlur={() => void applyBinary()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void applyBinary()
+          }}
+        />
+        <p className="text-xs text-muted-foreground">
+          Choose the same tmux installation that contains your sessions. You can
+          paste a full path or use <code>tmux</code> for PATH lookup.
+        </p>
+        {binaryStatus && <p className="text-xs text-muted-foreground">{binaryStatus}</p>}
+      </div>
       <div className="space-y-1.5">
         <Label htmlFor="ts-font-family">Font family</Label>
         <Input

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -24,6 +25,13 @@ type Executor struct {
 	socket Socket
 }
 
+func tmuxBinary() string {
+	if configured := strings.TrimSpace(os.Getenv("TMUXGUI_TMUX_BIN")); configured != "" {
+		return configured
+	}
+	return "tmux"
+}
+
 func NewExecutor(socket Socket) *Executor {
 	return &Executor{socket: socket}
 }
@@ -36,7 +44,7 @@ func (e *Executor) Run(ctx context.Context, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "tmux", cmdArgs...)
+	cmd := exec.CommandContext(ctx, tmuxBinary(), cmdArgs...)
 
 	// Allocate a PTY with a controlling terminal (Setsid + Setctty via
 	// pty.Start). This is what tmux needs, detached or not. creack/pty closes
