@@ -33,6 +33,9 @@ export interface WsOutgoing {
   paneId?: string
   data?: string
   replace?: boolean
+  // Number of visible screen rows in a capture blob; the remainder above them
+  // is scrollback history (absent for plain incremental output).
+  screenRows?: number
   message?: string
   seq?: number
   snapshot?: TmuxSnapshot

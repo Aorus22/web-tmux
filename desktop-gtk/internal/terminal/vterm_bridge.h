@@ -7,6 +7,15 @@
 
 typedef struct VTBridge VTBridge;
 
+/* Accumulated repaint damage in vterm coordinates (rows/cols, end-exclusive,
+ * matching VTermRect). valid == 0 means nothing changed; full == 1 means the
+ * whole viewport must be repainted (scroll, resize, clear). */
+typedef struct {
+  int valid;
+  int full;
+  int r0, c0, r1, c1;
+} VTDamage;
+
 typedef struct {
   uint32_t chars[VTERM_MAX_CHARS_PER_CELL];
   int width;
@@ -39,6 +48,7 @@ void vt_bridge_set_default_colors(VTBridge *bridge, uint8_t fr, uint8_t fg, uint
                                   uint8_t br, uint8_t bg, uint8_t bb);
 void vt_bridge_set_palette(VTBridge *bridge, int index, uint8_t r, uint8_t g, uint8_t b);
 void vt_bridge_cell_from_array(VTBridge *bridge, const void *cells, int index, VTCell *cell);
+void vt_bridge_take_damage(VTBridge *bridge, VTDamage *damage);
 
 #endif
 

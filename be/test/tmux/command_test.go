@@ -40,7 +40,8 @@ func TestCommandSplitDirections(t *testing.T) {
 
 func TestSendHexCommand(t *testing.T) {
 	// send-keys -t %2 -H 68 65 6c 6c 6f → "hello" as per-byte hex args.
-	// tmux 3.7 requires each hex byte as its own argument.
+	// tmux 3.7 requires each hex byte as its own argument; a single
+	// concatenated hex string is silently ignored.
 	c := tmux.CmdSendHex("%2", "68656c6c6f")
 	line := c.Line()
 	if !strings.Contains(line, `"-t" "%2" "-H" "68" "65" "6c" "6c" "6f"`) {

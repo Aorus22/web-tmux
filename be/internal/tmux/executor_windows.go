@@ -9,7 +9,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 // Executor runs one-shot tmux commands on Windows.
@@ -93,17 +96,70 @@ func (e *Executor) Run(ctx context.Context, args ...string) (string, error) {
 // runtime sees them, which turns every format query into a literal string.
 // Passing a shell-quoted command line through bash preserves those tokens and
 // still keeps user-controlled arguments data (not shell syntax).
+//
+// The resolved Windows binary path is passed through explicitly (never bare
+// `tmux`): bash's own PATH may shadow it — e.g. a Linux tmux under
+// /usr/local/bin reachable via WSL interop — which would silently retarget
+// every command, including the spawned server, to a different tmux.
+//
+// When the one-time direct-spawn probe succeeds, tmux.exe is executed
+// directly and the bash wrapper is skipped entirely — wrapping doubles the
+// process creation cost of every command.
 func tmuxCommand(ctx context.Context, binary string, args []string) *exec.Cmd {
-	if bash := msysBash(binary); bash != "" {
+	var cmd *exec.Cmd
+	if bash := msysBash(binary); bash != "" && !directSpawnSupported(binary) {
 		parts := make([]string, 0, len(args)+1)
-		parts = append(parts, "tmux")
+		parts = append(parts, shellQuote(filepath.ToSlash(binary)))
 		for _, arg := range args {
 			parts = append(parts, shellQuote(arg))
 		}
 		script := "exec " + strings.Join(parts, " ")
-		return exec.CommandContext(ctx, bash, "--noprofile", "--norc", "-c", script)
+		cmd = exec.CommandContext(ctx, bash, "--noprofile", "--norc", "-c", script)
+	} else {
+		cmd = exec.CommandContext(ctx, binary, args...)
 	}
-	return exec.CommandContext(ctx, binary, args...)
+	// Never flash a console window for background tmux/bash spawns.
+	cmd.SysProcAttr = &windows.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
+	return cmd
+}
+
+// Direct-spawn probe state: resolved once per process, safe for concurrent use.
+var (
+	spawnProbeOnce sync.Once
+	directSpawnOK  bool
+)
+
+// directSpawnSupported reports whether tmux.exe can be executed directly,
+// without the MSYS2 bash wrapper. It runs two one-time startup probes with a
+// short timeout and caches the result:
+//
+//  1. `<tmux> -V` — is the binary directly executable at all?
+//  2. `<tmux> '#{…}'` — do braces survive a direct spawn? Launching an MSYS2
+//     tmux.exe natively strips braces from arguments (#{session_name} becomes
+//     #session_name), which silently breaks every format query. An invalid
+//     command name is rejected client-side without touching a server, and the
+//     error echoes it back, making it a cheap preservation check.
+//
+// If either probe fails, callers keep the bash wrapper path so environments
+// that genuinely need it are unaffected.
+func directSpawnSupported(binary string) bool {
+	spawnProbeOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		// Build the commands directly (not via tmuxCommand) to avoid
+		// re-entering this probe.
+		version := exec.CommandContext(ctx, binary, "-V")
+		version.SysProcAttr = &windows.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
+		if err := version.Run(); err != nil {
+			return // not directly executable; keep the bash wrapper
+		}
+		const probeArg = "#{webtmux-direct-spawn-probe}"
+		braces := exec.CommandContext(ctx, binary, probeArg)
+		braces.SysProcAttr = &windows.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
+		out, _ := braces.CombinedOutput()
+		directSpawnOK = strings.Contains(string(out), probeArg)
+	})
+	return directSpawnOK
 }
 
 func msysBash(binary string) string {

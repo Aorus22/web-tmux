@@ -2,9 +2,11 @@ package tmux
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"reflect"
 	"runtime"
 	"sync"
@@ -51,18 +53,20 @@ type Monitor struct {
 	log        *slog.Logger
 	scrollback int
 
-	mu        sync.Mutex
-	control   *Control
-	batcher   *InputBatcher
-	snapshot  *Snapshot
-	pending   []*PendingCommand // FIFO correlation (PRD §28)
-	subs      map[chan MonitorEvent]struct{}
-	captures  map[string]string // last visible capture per pane (Windows)
-	activity  map[string]time.Time // last typed input per pane (Windows fast poll)
-	seq       uint64
-	reconnect bool
-	lastErr   error
-	resyncCh  chan struct{}
+	mu             sync.Mutex
+	control        *Control
+	batcher        *InputBatcher
+	snapshot       *Snapshot
+	pending        []*PendingCommand // FIFO correlation (PRD §28)
+	subs           map[chan MonitorEvent]struct{}
+	captures       map[string]string      // last visible capture per pane (Windows)
+	activity       map[string]time.Time   // last typed input per pane (Windows fast poll)
+	streams        map[string]*PipeStream // active pipe-pane streams per pane (Windows)
+	pendingStreams map[string]bool        // streams currently arming
+	seq            uint64
+	reconnect      bool
+	lastErr        error
+	resyncCh       chan struct{}
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -83,21 +87,23 @@ type PendingCommand struct {
 func NewMonitor(session string, socket Socket, exec *Executor, log *slog.Logger, scrollback int) *Monitor {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Monitor{
-		session:    session,
-		socket:     socket,
-		exec:       exec,
-		reader:     NewSnapshotReader(exec),
-		parser:     NewParser(),
-		log:        log.With("session", session),
-		scrollback: scrollback,
-		subs:       make(map[chan MonitorEvent]struct{}),
-		captures:   make(map[string]string),
-		activity:   make(map[string]time.Time),
-		resyncCh:   make(chan struct{}, 1),
-		ctx:        ctx,
-		cancel:     cancel,
-		done:       make(chan struct{}),
-		swapCh:     make(chan struct{}),
+		session:        session,
+		socket:         socket,
+		exec:           exec,
+		reader:         NewSnapshotReader(exec),
+		parser:         NewParser(),
+		log:            log.With("session", session),
+		scrollback:     scrollback,
+		subs:           make(map[chan MonitorEvent]struct{}),
+		captures:       make(map[string]string),
+		activity:       make(map[string]time.Time),
+		streams:        make(map[string]*PipeStream),
+		pendingStreams: make(map[string]bool),
+		resyncCh:       make(chan struct{}, 1),
+		ctx:            ctx,
+		cancel:         cancel,
+		done:           make(chan struct{}),
+		swapCh:         make(chan struct{}),
 	}
 }
 
@@ -171,6 +177,21 @@ func (m *Monitor) Resync() {
 // RunCommand sends a mutating command through control mode and correlates the
 // result with requestID (PRD §8, §28).
 func (m *Monitor) RunCommand(c Command, requestID string) error {
+	return m.runCommand(c, requestID, true)
+}
+
+// runCommandInput executes a non-structural command from the input path
+// (batched keystrokes). On Windows it skips the post-command resync hook:
+// every keystroke batch must not trigger a topology refresh nor invalidate
+// pane captures — the periodic topology tick remains the safety net for
+// structural changes. On Unix this is identical to RunCommand because the
+// synchronous-resync branch never fires (control mode reports completion
+// asynchronously via %end/%error).
+func (m *Monitor) runCommandInput(c Command) error {
+	return m.runCommand(c, "", false)
+}
+
+func (m *Monitor) runCommand(c Command, requestID string, resync bool) error {
 	m.mu.Lock()
 	if m.control == nil {
 		m.mu.Unlock()
@@ -185,7 +206,7 @@ func (m *Monitor) RunCommand(c Command, requestID string) error {
 	if err := ctrl.RunCommand(c); err != nil {
 		return err
 	}
-	if ctrl.IsSynchronous() {
+	if resync && ctrl.IsSynchronous() {
 		// There is no %end marker on native Windows. The next polling tick
 		// publishes the resulting snapshot and terminal contents.
 		m.Resync()
@@ -275,10 +296,13 @@ func (m *Monitor) run() {
 	defer m.wg.Done()
 	defer close(m.done)
 
-	// Input batcher lives per control connection.
-	batcher := NewInputBatcher(10*time.Millisecond, 4096, func(pane, hexData string) {
-		_ = m.RunCommand(cmdSendHex(pane, hexData), "")
-	})
+	// Input batcher lives per control connection. The 6ms cadence coalesces
+	// typing bursts; flushes go through the pane's pipe socket (zero spawns)
+	// when active and fall back to send-keys otherwise. The flush path skips
+	// the post-command resync (runCommandInput) so keystrokes never trigger a
+	// topology refresh. The 512-byte cap keeps the fallback's per-byte hex
+	// argv bounded (~512 args, well under Windows cmdline limits).
+	batcher := NewInputBatcher(6*time.Millisecond, 512, m.deliverInput)
 	m.mu.Lock()
 	m.batcher = batcher
 	m.mu.Unlock()
@@ -323,19 +347,29 @@ func (m *Monitor) run() {
 // on Unix. The native Windows tmux port supports normal commands and
 // capture-pane, but not control-mode notifications.
 //
-// Every capture spawns a tmux process, so each pane gets its own cadence: a
-// pane that received typed input recently is captured fast so echoed
-// keystrokes appear immediately; idle panes fall back to the slow background
-// cadence.
+// Live output comes from pipe-pane streams (stream.go): each pane's bytes are
+// teed to a log file the backend tails itself. Capture-polling demotes to the
+// initial snapshot plus a slow integrity poll that heals any frontend
+// divergence (e.g. after reconnect). Panes whose stream failed keep the old
+// fast/idle capture cadence as fallback.
 func (m *Monitor) runWindowsPolling() {
 	const (
-		fastCadence   = 50 * time.Millisecond
+		fastCadence   = 30 * time.Millisecond
 		idleCadence   = 250 * time.Millisecond
-		activeWindow  = 750 * time.Millisecond
+		activeWindow  = 1500 * time.Millisecond
 		schedulerStep = 25 * time.Millisecond
+		// Streamed panes skip capture rotation; this slow poll only compares
+		// captures and broadcasts when they diverge.
+		integrityCadence = 2 * time.Second
 	)
 	lastCapture := make(map[string]time.Time)
+	lastIntegrity := make(map[string]time.Time)
 	topologyDue := time.Now()
+	// Monitor lifetime == viewer lifetime (the hub starts it on the first WS
+	// client and stops it on the last), so stale logs from previous runs can
+	// be wiped now and everything disarmed on exit.
+	WipePipeDir()
+	defer m.teardownStreams()
 	ticker := time.NewTicker(schedulerStep)
 	defer ticker.Stop()
 	for {
@@ -361,6 +395,15 @@ func (m *Monitor) runWindowsPolling() {
 			live := make(map[string]struct{}, len(panes))
 			for _, pane := range panes {
 				live[pane.ID] = struct{}{}
+				if m.streamFor(pane.ID) != nil {
+					// Streamed pane: live bytes arrive via the pipe; only the
+					// slow integrity poll runs here.
+					if last, ok := lastIntegrity[pane.ID]; !ok || now.Sub(last) >= integrityCadence {
+						lastIntegrity[pane.ID] = now
+						m.captureVisiblePane(pane.ID, true)
+					}
+					continue
+				}
 				cadence := idleCadence
 				if m.recentInput(pane.ID, activeWindow) {
 					cadence = fastCadence
@@ -369,14 +412,17 @@ func (m *Monitor) runWindowsPolling() {
 					continue
 				}
 				lastCapture[pane.ID] = now
-				m.captureVisiblePane(pane.ID)
+				m.captureVisiblePane(pane.ID, false)
 			}
 			for id := range lastCapture {
 				if _, ok := live[id]; !ok {
 					delete(lastCapture, id)
-					m.mu.Lock()
-					delete(m.captures, id)
-					m.mu.Unlock()
+					m.disarmStream(id)
+				}
+			}
+			for id := range lastIntegrity {
+				if _, ok := live[id]; !ok {
+					delete(lastIntegrity, id)
 				}
 			}
 		}
@@ -384,7 +430,8 @@ func (m *Monitor) runWindowsPolling() {
 }
 
 // refreshTopology diffs and broadcasts the session snapshot without touching
-// pane captures.
+// pane captures. Newly discovered panes get a pipe stream armed lazily while
+// viewers are connected (the monitor itself only exists while they are).
 func (m *Monitor) refreshTopology() {
 	previous := m.Snapshot()
 	if err := m.refreshSnapshot(); err != nil {
@@ -395,12 +442,17 @@ func (m *Monitor) refreshTopology() {
 	if !reflect.DeepEqual(previous, current) {
 		m.broadcast(MonitorEvent{Type: EvState, Snapshot: current})
 	}
+	for _, pane := range current.Panes {
+		m.ensureStream(pane.ID)
+	}
 }
 
 // captureVisiblePane replaces the client's screen for one pane when its
 // visible content changed since the previous poll. The capture includes
 // scrollback history; ScreenRows tells the client where the live screen starts.
-func (m *Monitor) captureVisiblePane(paneID string) {
+// force broadcasts even on the first successful capture (stream bootstrap and
+// integrity healing always need a frame when content differs from nothing).
+func (m *Monitor) captureVisiblePane(paneID string, force bool) {
 	ctx, cancel := context.WithTimeout(m.ctx, 2*time.Second)
 	defer cancel()
 	data, err := m.reader.CapturePaneScreen(ctx, paneID, m.scrollback)
@@ -422,9 +474,10 @@ func (m *Monitor) captureVisiblePane(paneID string) {
 	previousCapture, exists := m.captures[paneID]
 	m.captures[paneID] = data
 	m.mu.Unlock()
-	// The initial terminal.capture request supplies the first screen and
-	// scrollback. Do not immediately overwrite it with the first poll.
-	if exists && previousCapture != data {
+	// Without force, the initial terminal.capture request supplies the first
+	// screen and scrollback; do not immediately overwrite it with the first
+	// poll.
+	if (force || exists) && previousCapture != data {
 		m.broadcast(MonitorEvent{
 			Type:       EvOutput,
 			PaneID:     paneID,
@@ -433,6 +486,138 @@ func (m *Monitor) captureVisiblePane(paneID string) {
 			ScreenRows: screenRows,
 		})
 	}
+}
+
+// --- pipe-pane streaming (native Windows) ---
+
+// streamingEnabled reports whether pipe-pane streaming applies. Native
+// Windows tmux has no control-mode notifications, so live output needs the
+// pipe; Unix control mode already delivers asynchronous updates and must stay
+// untouched.
+func (m *Monitor) streamingEnabled() bool {
+	m.mu.Lock()
+	ctrl := m.control
+	m.mu.Unlock()
+	return ctrl != nil && ctrl.IsSynchronous()
+}
+
+// ensureStream arms a pipe stream for paneID unless one exists or is already
+// being armed. Arming runs asynchronously: it spawns tmux processes and waits
+// for the log file, which must not stall the polling loop.
+func (m *Monitor) ensureStream(paneID string) {
+	if !m.streamingEnabled() {
+		return
+	}
+	m.mu.Lock()
+	if _, ok := m.streams[paneID]; ok {
+		m.mu.Unlock()
+		return
+	}
+	if m.pendingStreams[paneID] {
+		m.mu.Unlock()
+		return
+	}
+	m.pendingStreams[paneID] = true
+	m.mu.Unlock()
+	go m.armStream(paneID)
+}
+
+// armStream arms the pipe, sends the initial full frame through the existing
+// capture+screenRows path, then releases the chunk barrier so buffered output
+// replays in order before live delivery begins. On failure the pane silently
+// stays on the capture-polling fallback.
+func (m *Monitor) armStream(paneID string) {
+	defer func() {
+		m.mu.Lock()
+		delete(m.pendingStreams, paneID)
+		m.mu.Unlock()
+	}()
+
+	st := NewPipeStream(paneID,
+		func(args ...string) error {
+			// pipe-pane bookkeeping is not structural: skip the post-command
+			// resync hook (same rule as the input path).
+			return m.runCommand(cmd("pipe-pane", args...), "", false)
+		},
+		func(chunk []byte) {
+			// Normal incremental output event (replace=false): the shape the
+			// frontends already consume by default.
+			m.broadcast(MonitorEvent{Type: EvOutput, PaneID: paneID, Data: chunk})
+		},
+		func() { go m.captureVisiblePane(paneID, true) }, // barrier overflow → immediate integrity frame
+		func(err error) { go m.handleStreamFailure(paneID, err) },
+		m.log,
+	)
+	if err := st.Arm(); err != nil {
+		m.log.Warn("pipe-pane arm failed; pane stays on capture polling", "pane", paneID, "err", err)
+		return
+	}
+	m.mu.Lock()
+	m.streams[paneID] = st
+	m.mu.Unlock()
+
+	// Bootstrap ordering per pane: arm → buffer → initial replace frame →
+	// apply → flush buffer → live.
+	m.captureVisiblePane(paneID, true)
+	st.ApplySnapshot()
+}
+
+// handleStreamFailure drops a failed stream so the pane falls back to the
+// regular capture cadence. Runs off the reader goroutine because Disarm
+// blocks on that goroutine exiting.
+func (m *Monitor) handleStreamFailure(paneID string, err error) {
+	m.log.Warn("pipe-pane stream failed; pane falls back to capture polling", "pane", paneID, "err", err)
+	m.disarmStream(paneID)
+}
+
+// disarmStream stops and forgets a pane's stream (idempotent).
+func (m *Monitor) disarmStream(paneID string) {
+	m.mu.Lock()
+	st := m.streams[paneID]
+	delete(m.streams, paneID)
+	m.mu.Unlock()
+	if st != nil {
+		st.Disarm()
+	}
+	m.mu.Lock()
+	delete(m.captures, paneID)
+	m.mu.Unlock()
+}
+
+// deliverInput sends one raw input batch to a pane: over the pane's pipe
+// socket when active (zero process spawns), else the send-keys -H fallback
+// (hex-encoded, one argv element per byte — tmux 3.7 silently ignores a
+// concatenated hex blob). A failed pipe write is logged once by the stream;
+// the batch then goes out via the fallback so no keystrokes are lost.
+func (m *Monitor) deliverInput(paneID string, data []byte) {
+	if st := m.streamFor(paneID); st != nil {
+		if err := st.WriteInput(data); err == nil {
+			return
+		}
+	}
+	_ = m.runCommandInput(cmdSendHex(paneID, hex.EncodeToString(data)))
+}
+
+// streamFor returns the active stream for a pane, if any.
+func (m *Monitor) streamFor(paneID string) *PipeStream {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.streams[paneID]
+}
+
+// teardownStreams disarms every stream and removes the temp dir. Called when
+// the polling loop exits (last viewer disconnected → monitor stopped). The
+// directory removal only succeeds once no other session's monitor still owns
+// files there.
+func (m *Monitor) teardownStreams() {
+	m.mu.Lock()
+	streams := m.streams
+	m.streams = make(map[string]*PipeStream)
+	m.mu.Unlock()
+	for _, st := range streams {
+		st.Disarm()
+	}
+	_ = os.Remove(pipeDir())
 }
 
 func (m *Monitor) handleResyncOrRetry(attempt *int, backoff []time.Duration) {

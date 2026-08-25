@@ -16,7 +16,36 @@ struct VTBridge {
   int cursor_visible;
   int cursor_shape;
   int mouse_mode;
+  VTDamage damage;
 };
+
+static void damage_reset(VTBridge *bridge) {
+  bridge->damage.valid = 0;
+  bridge->damage.full = 0;
+}
+
+/* Union one vterm rect into the accumulated damage. A pending FULL stays FULL;
+ * two partial rects expand to cover both. */
+static void damage_union_rect(VTBridge *bridge, VTermRect rect) {
+  if (bridge->damage.full) return;
+  if (!bridge->damage.valid) {
+    bridge->damage.valid = 1;
+    bridge->damage.r0 = rect.start_row;
+    bridge->damage.c0 = rect.start_col;
+    bridge->damage.r1 = rect.end_row;
+    bridge->damage.c1 = rect.end_col;
+    return;
+  }
+  if (rect.start_row < bridge->damage.r0) bridge->damage.r0 = rect.start_row;
+  if (rect.start_col < bridge->damage.c0) bridge->damage.c0 = rect.start_col;
+  if (rect.end_row > bridge->damage.r1) bridge->damage.r1 = rect.end_row;
+  if (rect.end_col > bridge->damage.c1) bridge->damage.c1 = rect.end_col;
+}
+
+static void damage_mark_full(VTBridge *bridge) {
+  bridge->damage.valid = 1;
+  bridge->damage.full = 1;
+}
 
 static void output_cb(const char *data, size_t len, void *user) {
   VTBridge *bridge = user;
@@ -24,8 +53,8 @@ static void output_cb(const char *data, size_t len, void *user) {
 }
 
 static int damage_cb(VTermRect rect, void *user) {
-  (void)rect;
   VTBridge *bridge = user;
+  damage_union_rect(bridge, rect);
   goVTermDamage(bridge->handle);
   return 1;
 }
@@ -57,12 +86,15 @@ static int bell_cb(void *user) {
 static int resize_cb(int rows, int cols, void *user) {
   (void)rows; (void)cols;
   VTBridge *bridge = user;
+  damage_mark_full(bridge);
   goVTermDamage(bridge->handle);
   return 1;
 }
 
 static int sb_pushline_cb(int cols, const VTermScreenCell *cells, void *user) {
   VTBridge *bridge = user;
+  // A scroll shifts every viewport row, so the whole screen is stale.
+  damage_mark_full(bridge);
   return goVTermScrollbackPush(bridge->handle, (void *)cells, cols);
 }
 
@@ -73,6 +105,8 @@ static int sb_popline_cb(int cols, VTermScreenCell *cells, void *user) {
 
 static int sb_clear_cb(void *user) {
   VTBridge *bridge = user;
+  // Dropping history shifts which global row each viewport row shows.
+  damage_mark_full(bridge);
   goVTermScrollbackClear(bridge->handle);
   return 1;
 }
@@ -194,4 +228,10 @@ void vt_bridge_set_palette(VTBridge *bridge, int index, uint8_t r, uint8_t g, ui
   if (!bridge || index < 0 || index > 255) return;
   VTermColor color; vterm_color_rgb(&color,r,g,b);
   vterm_state_set_palette_color(bridge->state,index,&color);
+}
+
+void vt_bridge_take_damage(VTBridge *bridge, VTDamage *damage) {
+  if (!bridge) return;
+  if (damage) *damage = bridge->damage;
+  damage_reset(bridge);
 }

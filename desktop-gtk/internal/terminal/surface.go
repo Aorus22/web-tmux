@@ -54,6 +54,7 @@ type Surface struct {
 	cacheCtx                           *cairo.Context
 	cacheW, cacheH                     int
 	contentDirty                       bool
+	renderFull                         bool
 	drawnOffset                        int
 	tuiScroll                          bool
 	onResize                           func(int, int)
@@ -83,7 +84,7 @@ func NewSurface(opts SurfaceOptions) (*Surface, error) {
 	if opts.Palette == (Palette{}) {
 		opts.Palette = DefaultPalette()
 	}
-	s := &Surface{paneID: opts.PaneID, palette: opts.Palette, fontFamily: opts.FontFamily, fontSize: opts.FontSize, lineHeight: opts.LineHeight, tuiScroll: opts.TUIScroll, onResize: opts.OnResize, onActivate: opts.OnActivate, blinkOn: true, screenDirty: true, contentDirty: true}
+	s := &Surface{paneID: opts.PaneID, palette: opts.Palette, fontFamily: opts.FontFamily, fontSize: opts.FontSize, lineHeight: opts.LineHeight, tuiScroll: opts.TUIScroll, onResize: opts.OnResize, onActivate: opts.OnActivate, blinkOn: true, screenDirty: true, contentDirty: true, renderFull: true}
 	s.recalculateCellSize()
 	eng, err := NewEngine(24, 80, opts.Scrollback, func(b []byte) {
 		if opts.OnInput != nil {
@@ -128,6 +129,7 @@ func (s *Surface) Feed(data []byte) {
 	}
 	s.enqueue(queuedOp{data: append([]byte(nil), data...)})
 }
+
 // ReplaceScreen applies a full capture blob: the tail screenRows lines are
 // the visible screen, everything above is scrollback history. History lines
 // the surface has not ingested yet are appended to the engine's scrollback so
@@ -166,12 +168,14 @@ func (s *Surface) drain() {
 	s.ops = nil
 	s.drainScheduled = false
 	s.queueMu.Unlock()
+	replaced := false
 	for _, op := range ops {
 		if !op.replace {
 			s.engine.Feed(op.data)
 			continue
 		}
 		s.applyReplacement(string(op.data), op.screenRows)
+		replaced = true
 		// Selection coordinates refer to the replaced content and are
 		// meaningless against the new screen; keep them from rendering as a
 		// phantom highlight.
@@ -180,6 +184,11 @@ func (s *Surface) drain() {
 	}
 	s.screenDirty = true
 	s.contentDirty = true
+	if replaced {
+		// A replacement resets and rewrites the whole screen, so the damage
+		// libvterm reported for it is not meaningful as a partial region.
+		s.renderFull = true
+	}
 	s.area.QueueDraw()
 }
 
@@ -460,6 +469,7 @@ func (s *Surface) SetFont(family string, size, lineHeight float64) {
 	s.fontMetricsReady = false
 	s.fontDesc = [4]*pango.FontDescription{}
 	s.contentDirty = true
+	s.renderFull = true
 	s.recalculateCellSize()
 	w := s.area.AllocatedWidth()
 	h := s.area.AllocatedHeight()
@@ -474,6 +484,7 @@ func (s *Surface) SetPalette(p Palette) {
 	// recolors existing terminal output immediately.
 	s.screenDirty = true
 	s.contentDirty = true
+	s.renderFull = true
 	s.area.QueueDraw()
 }
 func (s *Surface) applyPalette() {
@@ -537,6 +548,7 @@ func (s *Surface) resize(width, height int) {
 	s.engine.Resize(rows, cols)
 	s.screenDirty = true
 	s.contentDirty = true
+	s.renderFull = true
 	if s.onResize != nil {
 		s.onResize(cols, rows)
 	}
@@ -549,9 +561,10 @@ func (s *Surface) queueDraw() {
 }
 
 // draw blits a cached raster of the terminal content and only re-rasterizes
-// when the content actually changed. Full-screen Pango layout work used to run
-// on every expose — including the twice-per-second cursor blink timer — which
-// made typing feel sluggish. Blink, selection and focus now cost one blit.
+// the rows libvterm reported as damaged. Full-screen Pango layout work used to
+// run on every expose — including the twice-per-second cursor blink timer —
+// which made typing feel sluggish. Blink, selection and focus now cost one
+// blit, and ordinary output only re-rasterizes its row band.
 func (s *Surface) draw(_ *gtk.DrawingArea, cr *cairo.Context, width, height int) {
 	if width <= 0 || height <= 0 {
 		return
@@ -568,6 +581,7 @@ func (s *Surface) draw(_ *gtk.DrawingArea, cr *cairo.Context, width, height int)
 		s.cacheCtx = cairo.Create(s.cache)
 		s.cacheW, s.cacheH = width, height
 		s.contentDirty = true
+		s.renderFull = true
 	}
 	// A scroll offset change swaps which global rows are visible without any
 	// engine damage; comparing against the last painted offset catches every
@@ -576,16 +590,42 @@ func (s *Surface) draw(_ *gtk.DrawingArea, cr *cairo.Context, width, height int)
 	if maxOffset := len(s.engine.Scrollback()); s.scrollOffset > maxOffset {
 		s.scrollOffset = maxOffset
 	}
+	// Consume the accumulated damage exactly once per expose so it can never
+	// pile up across frames, then decide between a band repaint and a full one.
+	damage := s.engine.TakeDamage()
+	band := damage.Valid && !damage.Full &&
+		damage.R1 > damage.R0 && damage.C1 > damage.C0 &&
+		damage.R0 >= 0 && damage.C0 >= 0 && damage.R1 <= rows && damage.C1 <= cols &&
+		len(s.screen) == rows
 	if s.screenDirty {
-		s.refreshScreen(rows, cols)
+		if band {
+			s.refreshScreenRows(damage.R0, damage.R1, cols)
+		} else {
+			s.refreshScreen(rows, cols)
+			band = false
+		}
 	}
 	if s.scrollOffset != s.drawnOffset {
 		s.contentDirty = true
+		s.renderFull = true
 	}
 	if s.contentDirty {
-		s.renderContent()
+		// Explicit full-refresh triggers (resize, font, palette, scroll,
+		// replacement frames) plus anything uncertain fall back to the whole
+		// viewport; a band covering most of it is not worth splitting either.
+		full := s.renderFull || !band || (damage.R1-damage.R0)*4 >= rows*3
+		if full {
+			s.renderContent()
+		} else {
+			// GTK4 dropped area-limited invalidation (QueueDrawArea exists
+			// only in v3), so scheduling stays whole-widget and the expose
+			// remains one cheap blit of the cache; the win is skipping Pango
+			// rasterization for every undamaged row.
+			s.renderRowBand(damage.R0, damage.R1)
+		}
 		s.drawnOffset = s.scrollOffset
 		s.contentDirty = false
+		s.renderFull = false
 	}
 	cr.SetSourceSurface(s.cache, 0, 0)
 	cr.Paint()
@@ -598,6 +638,26 @@ func (s *Surface) renderContent() {
 	cr := s.cacheCtx
 	source(cr, s.palette.Background)
 	cr.Paint()
+	rows, _ := s.engine.Size()
+	s.renderRows(cr, 0, rows)
+}
+
+// renderRowBand rasterizes only viewport rows [r0, r1) into the offscreen
+// cache, clearing just that horizontal strip first. It is the partial-repaint
+// counterpart of renderContent; the caller must have validated the range
+// against the current grid.
+func (s *Surface) renderRowBand(r0, r1 int) {
+	cr := s.cacheCtx
+	source(cr, s.palette.Background)
+	cr.Rectangle(0, float64(r0)*s.cellH, float64(s.cacheW), float64(r1-r0)*s.cellH)
+	cr.Fill()
+	s.renderRows(cr, r0, r1)
+}
+
+// renderRows rasterizes viewport rows [r0, r1) into the cache. Blink handling
+// stays in here (hidden blink cells are skipped), while the cursor block and
+// selection tint remain overlays drawn on every expose.
+func (s *Surface) renderRows(cr *cairo.Context, r0, r1 int) {
 	rows, cols := s.engine.Size()
 	history := s.engine.Scrollback()
 	total := len(history) + rows
@@ -606,7 +666,7 @@ func (s *Surface) renderContent() {
 		end = rows
 	}
 	start := end - rows
-	for vr := 0; vr < rows; vr++ {
+	for vr := r0; vr < r1; vr++ {
 		global := start + vr
 		line := s.lineAt(global, history, rows, cols)
 		if len(line) == 0 {
@@ -800,6 +860,29 @@ func (s *Surface) refreshScreen(rows, cols int) {
 		}
 	}
 	s.screenRows, s.screenCols = rows, cols
+	s.screenDirty = false
+}
+
+// refreshScreenRows re-reads only the viewport rows [r0, r1) from the engine
+// into the cell cache — the band-limited counterpart of refreshScreen. The
+// caller must have validated the range against the current grid.
+func (s *Surface) refreshScreenRows(r0, r1, cols int) {
+	if cols <= 0 || r0 < 0 || r1 > len(s.screen) || r0 >= r1 {
+		return
+	}
+	for row := r0; row < r1; row++ {
+		if len(s.screen[row]) != cols {
+			s.screen[row] = make([]Cell, cols)
+		}
+		for col := 0; col < cols; col++ {
+			cell, ok := s.engine.Cell(row, col)
+			if ok {
+				s.screen[row][col] = cell
+			} else {
+				s.screen[row][col] = Cell{}
+			}
+		}
+	}
 	s.screenDirty = false
 }
 

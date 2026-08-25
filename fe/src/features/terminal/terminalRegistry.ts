@@ -18,13 +18,55 @@ type Registered = {
   snapshotWritten?: boolean
   pendingScreen?: string
   writingScreen?: boolean
+  // How many capture-history (scrollback) lines have already been pushed to
+  // this xterm instance's scrollback. The backend sends history + screen rows
+  // together; only the delta above this counter is appended per frame so the
+  // cursor stays anchored to the clicked position instead of being shifted by
+  // replayed history.
+  ingestedHistory: number
 }
 
 const registry = new Map<string, Registered>()
 
+// applyCapture turns a captured blob into the single atomic write for one
+// frame. With valid screenRows it splits the blob into history lines + the
+// visible screen tail: any not-yet-ingested history lines are written first
+// (xterm pushes them into scrollback naturally), then a clear + home +
+// explicitly positioned repaint of the visible grid. Without screenRows it
+// reproduces the legacy absolute-write byte-for-byte.
+function applyCapture(r: Registered, data: string, screenRows?: number): string {
+  const rows = Number(screenRows)
+  const lines = data.replace(/\r\n?/g, '\n').split('\n')
+
+  // capture-pane includes trailing spaces up to the exact pane width. A
+  // full-width row can trigger xterm's auto-wrap before its CRLF is consumed,
+  // so replay each row at an explicit origin instead of relying on
+  // newline/wrap behavior.
+  const positioned = (rows_: string[]) => rows_.map((row, index) => `\x1b[${index + 1};1H${row}`).join('')
+
+  if (!Number.isFinite(rows) || rows <= 0) return `\x1b[2J\x1b[H${positioned(lines)}`
+
+  const split = Math.max(0, lines.length - rows)
+  const historyLines = lines.slice(0, split)
+  const screenLines = lines.slice(split)
+
+  let payload = ''
+  if (historyLines.length < r.ingestedHistory) {
+    // History shrank (rare): xterm.js has no scrollback-trim API, so reset the
+    // counter and accept the cosmetic edge; still write the screen precisely.
+    r.ingestedHistory = 0
+  } else {
+    const delta = historyLines.slice(r.ingestedHistory)
+    if (delta.length > 0) payload += `${delta.join('\r\n')}\r\n`
+    r.ingestedHistory = historyLines.length
+  }
+
+  return payload + `\x1b[2J\x1b[H${positioned(screenLines)}`
+}
+
 export const terminalRegistry = {
   register(paneId: string, term: Terminal, cols: number, rows: number) {
-    registry.set(paneId, { term, cols, rows, snapshotWritten: false })
+    registry.set(paneId, { term, cols, rows, snapshotWritten: false, ingestedHistory: 0 })
   },
 
   unregister(paneId: string) {
@@ -45,10 +87,10 @@ export const terminalRegistry = {
   // interleave an older frame with a newer one during resize. Keep only the
   // newest pending frame and start the next one after the previous write's
   // callback, making clear + write atomic at the frame level.
-  replaceScreen(paneId: string, data: string) {
+  replaceScreen(paneId: string, data: string, screenRows?: number) {
     const r = registry.get(paneId)
     if (!r) return
-    r.pendingScreen = data
+    r.pendingScreen = applyCapture(r, data, screenRows)
     if (r.writingScreen) return
     r.writingScreen = true
 
@@ -65,15 +107,9 @@ export const terminalRegistry = {
       // so writing the next frame from the previous cursor position shifts
       // rows/columns and produces artifacts such as `Se-`/`PadaPadanan`.
       // Keep clear + frame in one parser write so it cannot interleave.
-      // capture-pane includes trailing spaces up to the exact pane width. A
-      // full-width row can trigger xterm's auto-wrap before its CRLF is
-      // consumed, so replay each row at an explicit origin instead of relying
-      // on newline/wrap behavior.
-      const rows = next.replace(/\r\n?/g, '\n').split('\n')
-      const positioned = rows
-        .map((row, index) => `\x1b[${index + 1};1H${row}`)
-        .join('')
-      r.term.write(`\x1b[2J\x1b[H${positioned}`, () => queueMicrotask(flush))
+      // applyCapture has already normalized rows and baked the explicit
+      // per-row positioning into the payload, so write it as-is.
+      r.term.write(next, () => queueMicrotask(flush))
     }
     flush()
   },
@@ -82,11 +118,11 @@ export const terminalRegistry = {
   // terminal instance: the first snapshot clears stale pre-snapshot content
   // (e.g. the control-mode attach redraw) and replaces the buffer; later
   // duplicates are dropped so live output is never clobbered or doubled.
-  writeSnapshot(paneId: string, data: string) {
+  writeSnapshot(paneId: string, data: string, screenRows?: number) {
     const r = registry.get(paneId)
     if (!r || r.snapshotWritten) return
     r.snapshotWritten = true
-    terminalRegistry.replaceScreen(paneId, data)
+    terminalRegistry.replaceScreen(paneId, data, screenRows)
   },
 
   // invalidateSnapshot re-arms the snapshot guard so the next capture-pane

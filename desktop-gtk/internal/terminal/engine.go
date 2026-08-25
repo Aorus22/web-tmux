@@ -29,6 +29,17 @@ type Cursor struct {
 	Shape    int
 }
 
+// Damage describes the repaint region accumulated by libvterm since the last
+// TakeDamage call. Valid is false when nothing changed; Full marks a whole-
+// viewport invalidation (scroll, resize, clear). Otherwise R0/C0/R1/C1 bound
+// the dirty rows and columns in vterm coordinates with an exclusive end,
+// matching VTermRect.
+type Damage struct {
+	Valid          bool
+	Full           bool
+	R0, C0, R1, C1 int
+}
+
 type Engine struct {
 	bridge          *C.VTBridge
 	handle          cgo.Handle
@@ -101,6 +112,19 @@ func (e *Engine) Cursor() Cursor {
 	var r, c, v, s C.int
 	C.vt_bridge_cursor(e.bridge, &r, &c, &v, &s)
 	return Cursor{int(r), int(c), v != 0, int(s)}
+}
+
+// TakeDamage returns and clears the repaint damage libvterm accumulated since
+// the previous call, so it can never pile up across frames. Like every other
+// Engine method it must run on the GTK main thread; the engine keeps no lock
+// of its own.
+func (e *Engine) TakeDamage() Damage {
+	if e.bridge == nil {
+		return Damage{}
+	}
+	var d C.VTDamage
+	C.vt_bridge_take_damage(e.bridge, &d)
+	return Damage{Valid: d.valid != 0, Full: d.full != 0, R0: int(d.r0), C0: int(d.c0), R1: int(d.r1), C1: int(d.c1)}
 }
 func (e *Engine) Scrollback() [][]Cell { return e.scrollback }
 

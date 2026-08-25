@@ -1,20 +1,19 @@
 package tmux_test
 
 import (
-	"tmux-gui/be/internal/tmux"
-	"encoding/hex"
-	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"tmux-gui/be/internal/tmux"
 )
 
 func TestBatcherFlushesAfterInterval(t *testing.T) {
 	var mu sync.Mutex
 	var flushed []string
-	b := tmux.NewInputBatcher(20*time.Millisecond, 4096, func(pane, hexData string) {
+	b := tmux.NewInputBatcher(20*time.Millisecond, 4096, func(pane string, data []byte) {
 		mu.Lock()
-		flushed = append(flushed, pane+":"+hexData)
+		flushed = append(flushed, pane+":"+string(data))
 		mu.Unlock()
 	})
 	b.Start()
@@ -27,12 +26,8 @@ func TestBatcherFlushesAfterInterval(t *testing.T) {
 	if len(flushed) != 1 {
 		t.Fatalf("expected 1 flush, got %d: %v", len(flushed), flushed)
 	}
-	if !strings.HasPrefix(flushed[0], "%1:") {
-		t.Fatalf("pane id missing: %v", flushed[0])
-	}
-	got, _ := hex.DecodeString(strings.TrimPrefix(flushed[0], "%1:"))
-	if string(got) != "hello" {
-		t.Fatalf("hex round trip: %q", got)
+	if flushed[0] != "%1:hello" {
+		t.Fatalf("raw bytes round trip: %q", flushed[0])
 	}
 	b.Stop()
 }
@@ -40,38 +35,37 @@ func TestBatcherFlushesAfterInterval(t *testing.T) {
 func TestBatcherUTF8(t *testing.T) {
 	var mu sync.Mutex
 	var flushed string
-	b := tmux.NewInputBatcher(20*time.Millisecond, 4096, func(_pane, hexData string) {
+	b := tmux.NewInputBatcher(20*time.Millisecond, 4096, func(_pane string, data []byte) {
 		mu.Lock()
-		flushed = hexData
+		flushed = string(data)
 		mu.Unlock()
 	})
 	b.Start()
 	defer b.Stop()
 
-	// UTF-8 bytes survive hex round trip.
+	// UTF-8 bytes survive the batch untouched.
 	b.Write("%1", []byte("héllo✓"))
 	time.Sleep(60 * time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
-	got, _ := hex.DecodeString(flushed)
-	if string(got) != "héllo✓" {
-		t.Fatalf("UTF-8 round trip: %q", got)
+	if flushed != "héllo✓" {
+		t.Fatalf("UTF-8 round trip: %q", flushed)
 	}
 }
 
 func TestBatcherControlSequences(t *testing.T) {
 	var mu sync.Mutex
-	var flushed string
-	b := tmux.NewInputBatcher(20*time.Millisecond, 4096, func(_pane, hexData string) {
+	var flushed []byte
+	b := tmux.NewInputBatcher(20*time.Millisecond, 4096, func(_pane string, data []byte) {
 		mu.Lock()
-		flushed = hexData
+		flushed = data
 		mu.Unlock()
 	})
 	b.Start()
 	defer b.Stop()
 
-	// ESC, arrow keys, Ctrl+C — all raw bytes, hex-encoded, no shell quoting.
+	// ESC, arrow keys, Ctrl+C — all raw bytes, no shell quoting.
 	ctrlC := []byte{0x03}
 	arrow := []byte{0x1b, 0x5b, 0x41}
 	combined := append(append([]byte{}, ctrlC...), arrow...)
@@ -80,16 +74,15 @@ func TestBatcherControlSequences(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	got, _ := hex.DecodeString(flushed)
-	if string(got) != string(combined) {
-		t.Fatalf("control sequence round trip: %q", got)
+	if string(flushed) != string(combined) {
+		t.Fatalf("control sequence round trip: %q", flushed)
 	}
 }
 
 func TestBatcherMaxBytes(t *testing.T) {
 	var mu sync.Mutex
 	count := 0
-	b := tmux.NewInputBatcher(time.Hour, 16, func(_pane, _hex string) {
+	b := tmux.NewInputBatcher(time.Hour, 16, func(_pane string, _data []byte) {
 		mu.Lock()
 		count++
 		mu.Unlock()
@@ -113,9 +106,9 @@ func TestBatcherMaxBytes(t *testing.T) {
 func TestBatcherAggregatesRapidTyping(t *testing.T) {
 	var mu sync.Mutex
 	var flushes []string
-	b := tmux.NewInputBatcher(50*time.Millisecond, 4096, func(_pane, hexData string) {
+	b := tmux.NewInputBatcher(50*time.Millisecond, 4096, func(_pane string, data []byte) {
 		mu.Lock()
-		flushes = append(flushes, hexData)
+		flushes = append(flushes, string(data))
 		mu.Unlock()
 	})
 	b.Start()
@@ -133,16 +126,15 @@ func TestBatcherAggregatesRapidTyping(t *testing.T) {
 	if len(flushes) != 1 {
 		t.Fatalf("expected 1 aggregated flush, got %d", len(flushes))
 	}
-	got, _ := hex.DecodeString(flushes[0])
-	if string(got) != "aaaaa" {
-		t.Fatalf("aggregated content: %q", got)
+	if flushes[0] != "aaaaa" {
+		t.Fatalf("aggregated content: %q", flushes[0])
 	}
 }
 
 func TestBatcherStopFlushes(t *testing.T) {
 	var mu sync.Mutex
 	flushed := false
-	b := tmux.NewInputBatcher(time.Hour, 4096, func(_pane, _hex string) {
+	b := tmux.NewInputBatcher(time.Hour, 4096, func(_pane string, _data []byte) {
 		mu.Lock()
 		flushed = true
 		mu.Unlock()
@@ -155,5 +147,30 @@ func TestBatcherStopFlushes(t *testing.T) {
 	defer mu.Unlock()
 	if !flushed {
 		t.Fatal("Stop() must flush pending input")
+	}
+}
+
+// TestBatcherFlushPayloadIsRawBytes guards the Phase-3 contract: the flush
+// callback receives RAW bytes (hex encoding lives at the send-keys fallback
+// site in monitor.go, not here).
+func TestBatcherFlushPayloadIsRawBytes(t *testing.T) {
+	var mu sync.Mutex
+	var got []byte
+	b := tmux.NewInputBatcher(20*time.Millisecond, 4096, func(_pane string, data []byte) {
+		mu.Lock()
+		got = data
+		mu.Unlock()
+	})
+	b.Start()
+	defer b.Stop()
+
+	payload := []byte("raw payload \x01\x02")
+	b.Write("%1", payload)
+	time.Sleep(60 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if string(got) != string(payload) {
+		t.Fatalf("flush handler got %q, want %q", got, payload)
 	}
 }

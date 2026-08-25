@@ -1,15 +1,20 @@
 package tmux
 
 import (
-	"encoding/hex"
 	"sync"
 	"time"
 )
 
-// InputBatcher accumulates terminal input bytes per pane and flushes them as
-// a single `send-keys -H <hex>` command every ~10ms or when the buffer
-// exceeds 4KB (PRD §22). Hex encoding avoids every shell-quoting problem and
+// InputBatcher accumulates terminal input bytes per pane and delivers them as
+// one raw batch every ~6ms or when the buffer exceeds 512 bytes (PRD §22).
+// Delivery goes through the pane's pipe socket when its stream is active
+// (zero process spawns) and falls back to `send-keys -H` otherwise; hex
+// encoding at the fallback site avoids every shell-quoting problem and
 // handles UTF-8, control sequences, ESC, function keys and mouse escapes.
+// The low cap keeps the fallback's per-byte hex argv bounded (~512 argv
+// elements — well under Windows cmdline limits even after bash quoting).
+// Large pastes split across more flushes, which is acceptable: pastes are not
+// latency-critical, while typical keystroke bursts are only a few bytes.
 type InputBatcher struct {
 	interval time.Duration
 	maxBytes int
@@ -17,20 +22,20 @@ type InputBatcher struct {
 	mu      sync.Mutex
 	buffers map[string][]byte
 
-	// flush is invoked with the pane ID and the hex-encoded bytes.
-	flush func(paneID, hexData string)
+	// flush is invoked with the pane ID and the raw accumulated bytes.
+	flush func(paneID string, data []byte)
 
 	stopCh   chan struct{}
 	doneCh   chan struct{}
 	stopOnce sync.Once
 }
 
-func NewInputBatcher(interval time.Duration, maxBytes int, flush func(paneID, hexData string)) *InputBatcher {
+func NewInputBatcher(interval time.Duration, maxBytes int, flush func(paneID string, data []byte)) *InputBatcher {
 	if interval <= 0 {
-		interval = 10 * time.Millisecond
+		interval = 6 * time.Millisecond
 	}
 	if maxBytes <= 0 {
-		maxBytes = 4096
+		maxBytes = 512
 	}
 	return &InputBatcher{
 		interval: interval,
@@ -91,6 +96,6 @@ func (b *InputBatcher) flushAll() {
 		if len(buf) == 0 {
 			continue
 		}
-		b.flush(pane, hex.EncodeToString(buf))
+		b.flush(pane, buf)
 	}
 }
