@@ -50,8 +50,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: TBD
 
 - [x] 01-01-PLAN.md
-- [ ] 01-02-PLAN.md
-- [ ] 01-03-PLAN.md
+- [x] 01-02-PLAN.md
+- [x] 01-03-PLAN.md
 
 **UI hint**: yes
 
@@ -154,7 +154,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Workspace Foundation & Backend Sidecar | 1/3 | In Progress|  |
+| 1. Workspace Foundation & Backend Sidecar | 3/3 | In Progress|  |
 | 2. REST Client, Sidebar & Session Management | TBD | Not started | - |
 | 3. WebSocket Client & Multi-Session Tabs | TBD | Not started | - |
 | 4. Terminal Engine & Live Pane Rendering | TBD | Not started | - |
