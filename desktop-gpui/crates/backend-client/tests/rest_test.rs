@@ -90,7 +90,7 @@ async fn test_create_session_request() {
     let dup_client = RestClient::new(&dup_base_url);
     let err = dup_client.create_session(&req_minimal).await.unwrap_err();
     match err {
-        RestError::Api { status, message } => {
+        RestError::Api { status, message, .. } => {
             assert_eq!(status, 409);
             assert_eq!(message, "duplicate session: dev");
         }
