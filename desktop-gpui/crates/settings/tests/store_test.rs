@@ -96,8 +96,7 @@ fn atomic_save_leaves_no_temp_files_and_writes_file() {
 }
 
 #[test]
-fn window_state_clamping_and_guard_logic() {
-    let zero_state = WindowState {
+fn window_state_clamping_and_guard_logic() {    let zero_state = WindowState {
         x: Some(100),
         y: Some(150),
         width: Some(0),
@@ -116,4 +115,54 @@ fn window_state_clamping_and_guard_logic() {
     };
     assert!(min_coord_state.x.unwrap() <= -10000);
     assert!(min_coord_state.y.unwrap() <= -10000);
+}
+
+#[test]
+fn test_kill_confirm_defaults() {
+    let settings = DesktopSettings::default();
+    assert!(
+        settings.confirm_kill_session,
+        "fresh settings must confirm session kills"
+    );
+    assert!(
+        settings.confirm_kill_pane,
+        "fresh settings must confirm pane kills (Phase 5 reads this)"
+    );
+    assert!(
+        settings.confirm_kill_window,
+        "fresh settings must confirm window kills (Phase 5 reads this)"
+    );
+}
+
+#[test]
+fn test_kill_confirm_legacy_json() {
+    // Phase-1/2 shape: confirm keys absent -> all default true (FE parity).
+    let legacy = r#"{"theme":"dark","theme_preset":"default-dark"}"#;
+    let settings: DesktopSettings =
+        serde_json::from_str(legacy).expect("legacy JSON must parse");
+    assert!(
+        settings.confirm_kill_session,
+        "legacy settings without the keys must keep confirming session kills"
+    );
+    assert!(settings.confirm_kill_pane);
+    assert!(settings.confirm_kill_window);
+
+    // Explicit false survives a JSON round-trip...
+    let mut explicit = DesktopSettings::default();
+    explicit.confirm_kill_session = false;
+    let json = serde_json::to_string(&explicit).expect("serialize must succeed");
+    assert!(json.contains("confirm_kill_session"));
+    let back: DesktopSettings = serde_json::from_str(&json).expect("parse must succeed");
+    assert!(!back.confirm_kill_session);
+    assert!(back.confirm_kill_pane);
+    assert!(back.confirm_kill_window);
+
+    // ...and save/load preserves an explicit false through the atomic-write path.
+    let dir = tempdir().unwrap();
+    let base = dir.path();
+    explicit.save_to(base).expect("save_to must succeed");
+    let loaded = DesktopSettings::load_from(base).expect("load_from must succeed");
+    assert!(!loaded.confirm_kill_session);
+    assert!(loaded.confirm_kill_pane);
+    assert!(loaded.confirm_kill_window);
 }
