@@ -107,13 +107,56 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (populated by roadmap) | | |
+| SHELL-01 | Phase 3 | Pending |
+| SHELL-02 | Phase 1 | Pending |
+| SHELL-03 | Phase 2 | Pending |
+| SHELL-04 | Phase 6 | Pending |
+| SHELL-05 | Phase 6 | Pending |
+| SESS-01 | Phase 2 | Pending |
+| SESS-02 | Phase 3 | Pending |
+| SESS-03 | Phase 2 | Pending |
+| SESS-04 | Phase 3 | Pending |
+| SESS-05 | Phase 3 | Pending |
+| SESS-06 | Phase 2 | Pending |
+| PANE-01 | Phase 5 | Pending |
+| PANE-02 | Phase 5 | Pending |
+| PANE-03 | Phase 5 | Pending |
+| PANE-04 | Phase 5 | Pending |
+| PANE-05 | Phase 5 | Pending |
+| PANE-06 | Phase 5 | Pending |
+| PANE-07 | Phase 5 | Pending |
+| PANE-08 | Phase 5 | Pending |
+| TERM-01 | Phase 4 | Pending |
+| TERM-02 | Phase 4 | Pending |
+| TERM-03 | Phase 4 | Pending |
+| TERM-04 | Phase 4 | Pending |
+| TERM-05 | Phase 4 | Pending |
+| TERM-06 | Phase 4 | Pending |
+| TERM-07 | Phase 4 | Pending |
+| DLG-01 | Phase 6 | Pending |
+| DLG-02 | Phase 5 | Pending |
+| DLG-03 | Phase 6 | Pending |
+| SET-01 | Phase 6 | Pending |
+| SET-02 | Phase 6 | Pending |
+| SET-03 | Phase 6 | Pending |
+| SET-04 | Phase 6 | Pending |
+| SET-05 | Phase 1 | Pending |
+| THEME-01 | Phase 6 | Pending |
+| THEME-02 | Phase 6 | Pending |
+| THEME-03 | Phase 6 | Pending |
+| STATE-01 | Phase 1 | Pending |
+| STATE-02 | Phase 2 | Pending |
+| STATE-03 | Phase 7 | Pending |
+| STATE-04 | Phase 3 | Pending |
+| PKG-01 | Phase 1 | Pending |
+| PKG-02 | Phase 7 | Pending |
+| PKG-03 | Phase 7 | Pending |
 
 **Coverage:**
 - v1 requirements: 44 total
-- Mapped to phases: 0
-- Unmapped: 44 ⚠️
+- Mapped to phases: 44
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-09-06*
-*Last updated: 2026-09-06 after initial definition*
+*Last updated: 2026-09-06 after roadmap traceability mapping (v1.0: 44/44 requirements mapped)*
