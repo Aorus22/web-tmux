@@ -68,6 +68,10 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Empty (no sessions), Error (tmux missing), and SelectSession states each render matching the Electron equivalents
 
 **Plans**: TBD
+
+- [x] 02-01-PLAN.md
+- [x] 02-02-PLAN.md
+
 **UI hint**: yes
 
 ### Phase 3: WebSocket Client & Multi-Session Tabs
@@ -155,7 +159,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Workspace Foundation & Backend Sidecar | 3/3 | Complete    | 2026-09-06 |
-| 2. REST Client, Sidebar & Session Management | TBD | Not started | - |
+| 2. REST Client, Sidebar & Session Management | 2/2 | In Progress|  |
 | 3. WebSocket Client & Multi-Session Tabs | TBD | Not started | - |
 | 4. Terminal Engine & Live Pane Rendering | TBD | Not started | - |
 | 5. Pane Grid & Workspace Operations | TBD | Not started | - |
