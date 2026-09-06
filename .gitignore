@@ -39,3 +39,10 @@ mobile/
 
 # Electron FE bundle (served by Electron itself; rebuilt by build-desktop.sh)
 desktop/resources/fe-dist/
+
+# Rust / Desktop GPUI
+desktop-gpui/target/
+desktop-gpui/tools/fxc/*.exe
+desktop-gpui/test-support/
+*.bak
+
