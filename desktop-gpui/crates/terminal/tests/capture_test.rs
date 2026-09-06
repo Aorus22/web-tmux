@@ -94,7 +94,7 @@ fn test_apply_capture_unicode_crlf() {
 
     let mut ingested = 0usize;
     let feed = apply_capture(data, Some(screen_rows), &mut ingested);
-    let text = String::from_utf8(feed).expect("feed is valid UTF-8");
+    let text = String::from_utf8(feed.clone()).expect("feed is valid UTF-8");
     // Runes survive the split (char-boundary only, never byte-sliced).
     for rune in ["こんにちは世界", "こんばんは", "🎉🚀", "🖥️", "行"] {
         assert!(text.contains(rune), "feed must preserve {rune}");
