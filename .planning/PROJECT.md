@@ -85,9 +85,11 @@ exactly, porting the proven desktop-gpui architecture from web-term.
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Port web-term's desktop-gpui architecture (5-crate workspace, supervisor spawns backend) | Proven 1:1 GPUI port of a web UI on the exact same stack | — Pending |
-| Reuse the existing Go backend protocol unchanged | Frontend-only milestone; backend already serves Electron/GTK/web | — Pending |
-| Embed lucide SVG icons as GPUI assets | Icon parity with the Electron UI | — Pending |
+| Port web-term's desktop-gpui architecture (5-crate workspace, supervisor spawns backend) | Proven 1:1 GPUI port of a web UI on the exact same stack | ✓ Phase 1 — workspace + sidecar verified (16/16 tests) |
+| Reuse the existing Go backend protocol unchanged | Frontend-only milestone; backend already serves Electron/GTK/web | — Pending (REST/WS consumption starts Phase 2) |
+| Embed lucide SVG icons as GPUI assets | Icon parity with the Electron UI | — Pending (constants scaffolded Phase 1) |
+| Env-only sidecar spawn: empty argv + `TMUXGUI_PORT=0` env config (matches Go os.Getenv contract), TMUX/TMUX_PANE stripped | Go backend reads config exclusively via os.Getenv; avoids argv contract drift | ✓ Phase 1 |
+| Settings persisted atomically (NamedTempFile) with `.bak` corrupt recovery, isolated to `tmux-gui-desktop` dir | Prevents partial-write corruption and cross-frontend config collisions | ✓ Phase 1 |
 
 ## Evolution
 
@@ -107,4 +109,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-09-06 after milestone v1.0 start (brownfield bootstrap — no prior GSD history)*
+*Last updated: 2026-09-06 after Phase 1 (Workspace Foundation & Backend Sidecar)*
