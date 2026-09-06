@@ -15,6 +15,7 @@ thiserror = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
 flume = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
