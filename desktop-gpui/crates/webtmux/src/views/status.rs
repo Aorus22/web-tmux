@@ -34,6 +34,7 @@ pub fn redact_stderr_tail(text: &str) -> Vec<String> {
 pub fn render_status_page<V: 'static>(
     status: &BackendStatus,
     on_retry: impl Fn(&mut V, &MouseDownEvent, &mut Window, &mut Context<V>) + 'static + Clone,
+    on_quit: impl Fn(&mut V, &MouseDownEvent, &mut Window, &mut Context<V>) + 'static + Clone,
     cx: &mut Context<V>,
 ) -> AnyElement {
     match status {
@@ -73,6 +74,7 @@ pub fn render_status_page<V: 'static>(
             let redacted_lines = redact_stderr_tail(stderr_tail);
             let has_tail = !redacted_lines.is_empty() && redacted_lines.iter().any(|l| !l.trim().is_empty());
             let retry_handler = on_retry.clone();
+            let quit_handler = on_quit.clone();
 
             div()
                 .flex()
@@ -147,9 +149,9 @@ pub fn render_status_page<V: 'static>(
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(rgb(0xd4d4d4))
                                         .child("Quit")
-                                        .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
-                                            cx.quit();
-                                        }),
+                                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev, window, cx| {
+                                            quit_handler(this, ev, window, cx);
+                                        })),
                                 )
                                 .child(
                                     div()

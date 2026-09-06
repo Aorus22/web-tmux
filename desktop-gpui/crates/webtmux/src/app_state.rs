@@ -28,6 +28,7 @@ pub struct AppState {
     pub backend_status: BackendStatus,
     pub base_url: Option<String>,
     pub is_maximized: bool,
+    pub supervisor: std::sync::Arc<parking_lot::Mutex<Option<Supervisor>>>,
 }
 
 impl AppState {
@@ -39,6 +40,17 @@ impl AppState {
             backend_status: BackendStatus::Starting,
             base_url: None,
             is_maximized,
+            supervisor: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+        }
+    }
+
+    /// Stop any running supervisor and terminate child process.
+    pub fn stop_supervisor(&self) {
+        let sup_opt = self.supervisor.lock().take();
+        if let Some(mut sup) = sup_opt {
+            TOKIO_RT.spawn(async move {
+                let _ = sup.stop(std::time::Duration::from_millis(500)).await;
+            });
         }
     }
 
@@ -61,6 +73,7 @@ impl AppState {
 
         let view_weak = cx.entity().downgrade();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SupervisorEvent>();
+        let supervisor_arc = self.supervisor.clone();
 
         // Run supervisor inside Tokio runtime
         TOKIO_RT.spawn(async move {
@@ -79,6 +92,7 @@ impl AppState {
 
             match supervisor.spawn(spawn_opts).await {
                 Ok(info) => {
+                    *supervisor_arc.lock() = Some(supervisor);
                     let _ = tx.send(SupervisorEvent::Ready(info));
                 }
                 Err(e) => {
@@ -88,6 +102,7 @@ impl AppState {
                         }
                         other => (other.to_string(), String::new()),
                     };
+                    *supervisor_arc.lock() = Some(supervisor);
                     let _ = tx.send(SupervisorEvent::Failed { reason, stderr_tail });
                 }
             }
@@ -143,9 +158,17 @@ impl Render for AppState {
                 div()
                     .flex_1()
                     .size_full()
-                    .child(render_status_page(&status, |this, _, _window, cx| {
-                        this.start_supervisor(cx);
-                    }, cx)),
+                    .child(render_status_page(
+                        &status,
+                        |this, _, _window, cx| {
+                            this.start_supervisor(cx);
+                        },
+                        |this, _, _window, cx| {
+                            this.stop_supervisor();
+                            cx.quit();
+                        },
+                        cx,
+                    )),
             )
     }
 }
