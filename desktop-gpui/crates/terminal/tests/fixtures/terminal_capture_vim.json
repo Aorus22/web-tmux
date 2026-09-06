@@ -1,0 +1,5 @@
+{
+  "description": "vim session capture: 3 scrollback history lines + 4-row screen tail (Go capture-blob semantics: history lines above len - screenRows, screen tail at the end)",
+  "screen_rows": 4,
+  "data": "$ ls\nfile.txt  other.txt\n$ vim file.txt\nline one of file\nline two of file\n~\n\"file.txt\" 2L, 28C"
+}

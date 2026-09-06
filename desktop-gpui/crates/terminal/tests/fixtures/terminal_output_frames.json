@@ -1,0 +1,7 @@
+{
+  "description": "scripted shell byte stream: incremental chunks fed through Processor must yield the recorded grid text (TERM-01 parity)",
+  "cols": 80,
+  "rows": 24,
+  "chunks": ["hello ", "world", "\r\n$ vim file.txt\r\n", "line one\r\nline two"],
+  "expected_grid": ["hello world", "$ vim file.txt", "line one", "line two"]
+}

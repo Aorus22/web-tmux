@@ -1,0 +1,5 @@
+{
+  "description": "CJK + emoji blob with mixed CRLF/CR/LF line endings (Pitfall 3: char-boundary split only, never byte-slice)",
+  "screen_rows": 2,
+  "data": "hello world\r\nこんにちは世界\rこんばんは 🌙\nemoji 🎉🚀 test\nlast screen 行 1\nlast screen 行 2 🖥️"
+}
