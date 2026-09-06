@@ -1,0 +1,89 @@
+{
+  "sessions": [
+    {
+      "session": {
+        "name": "dev",
+        "windows": 2,
+        "attached": 1,
+        "createdAt": 1717200000,
+        "width": 120,
+        "height": 40
+      },
+      "windows": [
+        {
+          "window": {
+            "id": "@0",
+            "index": 1,
+            "name": "editor",
+            "active": true,
+            "panes": 2,
+            "width": 120,
+            "height": 40,
+            "layout": "bb62,120x40,0,0[120x20,0,0,0,120x19,0,21,1]"
+          },
+          "panes": [
+            {
+              "id": "%0",
+              "index": 0,
+              "windowId": "@0",
+              "active": true,
+              "zoomed": false,
+              "left": 0,
+              "top": 0,
+              "width": 120,
+              "height": 20,
+              "pid": 12345,
+              "currentCommand": "nvim",
+              "currentPath": "/home/user/project",
+              "title": "nvim"
+            },
+            {
+              "id": "%1",
+              "index": 1,
+              "windowId": "@0",
+              "active": false,
+              "zoomed": false,
+              "left": 0,
+              "top": 21,
+              "width": 120,
+              "height": 19,
+              "pid": 12346,
+              "currentCommand": "bash",
+              "currentPath": "/home/user/project",
+              "title": "bash"
+            }
+          ]
+        },
+        {
+          "window": {
+            "id": "@1",
+            "index": 2,
+            "name": "server",
+            "active": false,
+            "panes": 1,
+            "width": 120,
+            "height": 40,
+            "layout": "bb63,120x40,0,0,2"
+          },
+          "panes": [
+            {
+              "id": "%2",
+              "index": 0,
+              "windowId": "@1",
+              "active": true,
+              "zoomed": false,
+              "left": 0,
+              "top": 0,
+              "width": 120,
+              "height": 40,
+              "pid": 12347,
+              "currentCommand": "cargo",
+              "currentPath": "/home/user/project",
+              "title": "cargo watch"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
