@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/supervisor",
+    "crates/settings",
+    "crates/backend-client",
+    "crates/terminal",
+    "crates/webtmux",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["web-tmux contributors"]
+
+[workspace.dependencies]
+# Internal crates
+webtmux-supervisor = { path = "crates/supervisor" }
+webtmux-settings = { path = "crates/settings" }
+webtmux-backend-client = { path = "crates/backend-client" }
+webtmux-terminal = { path = "crates/terminal" }
+
+alacritty_terminal = "=0.25.1"
+flume = "=0.12.0"
+anyhow = "=1.0.104"
+tokio-tungstenite = { version = "=0.26.2", default-features = false, features = ["connect", "handshake"] }
+futures-util = "=0.3.32"
+
+# Exact pins — see .planning/phases/01-workspace-foundation-backend-sidecar/01-RESEARCH.md
+# gpui is pre-1.0 with real breaking-change churn; every core dep is pinned exactly
+# and Cargo.lock is committed (plan 01-01 Task 1).
+gpui = { package = "gpui-pre", version = "=0.3.3" }
+gpui-component = "=0.6.0"
+tokio = { version = "=1.53.1", features = [
+    "rt-multi-thread",
+    "process",
+    "macros",
+    "sync",
+    "time",
+    "net",
+] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+reqwest = { version = "=0.12.28", default-features = false, features = [
+    "json",
+    "multipart",
+    "rustls-tls",
+] }
+dirs = "=6.0.0"
+thiserror = "=2.0.20"
+parking_lot = "=0.12.5"
+rand = "=0.10.2"
+tempfile = "=3.27.0"
+libc = "=0.2.189"
+
+[profile.release]
+lto = "thin"

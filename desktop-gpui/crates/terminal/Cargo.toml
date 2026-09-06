@@ -1,0 +1,16 @@
+[package]
+name = "webtmux-terminal"
+description = "web-tmux terminal emulation engine (alacritty_terminal + GPUI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+gpui = { workspace = true }
+alacritty_terminal = { workspace = true }
+flume = { workspace = true }
+parking_lot = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
