@@ -300,12 +300,19 @@ pub fn render_select_session_view(app: &mut AppState, cx: &mut Context<AppState>
                                                     .border_1()
                                                     .border_color(border_color)
                                                     .bg(card_bg)
-                                                    .cursor_pointer()
-                                                    .hover(|s| s.bg(hover_bg))
-                                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _window, cx| {
-                                                        this.active_session = Some(name_for_click.clone());
-                                                        cx.notify();
-                                                    }))
+                                                     .cursor_pointer()
+                                                     .hover(|s| s.bg(hover_bg))
+                                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _window, cx| {
+                                                         // Picker opens-or-activates
+                                                         // the tab like a sidebar
+                                                         // row click does.
+                                                         let base = this.base_url.clone();
+                                                         this.open_session(&name_for_click);
+                                                         if let Some(base) = base {
+                                                             this.ensure_session_socket(&base, &name_for_click, cx);
+                                                         }
+                                                         cx.notify();
+                                                     }))
                                                     .child(
                                                         div()
                                                             .flex_1()

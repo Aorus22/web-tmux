@@ -4,11 +4,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use gpui::*;
 use gpui::prelude::FluentBuilder;
+use gpui_component::WindowExt as _;
+use tokio::sync::oneshot;
 use webtmux_backend_client::{
-    connect_session_with_pending, RestClient, SessionSnapshot, SessionWsHandle, SharedPending,
-    TransportState, TmuxTree, WsIncoming, WsOutgoing, EV_STATE_DELTA, EV_STATE_SNAPSHOT,
-    EV_SERVER_ERROR, EV_TERMINAL_OUTPUT, EV_TERMINAL_SNAPSHOT, EV_TMUX_DISCONNECTED,
-    EV_TMUX_RECONNECTING, MSG_WINDOW_SELECT,
+    connect_session, connect_session_with_pending, validate_session_name, RestClient,
+    CommandResult, SessionSnapshot, SessionWsHandle, SharedPending, TransportState, TmuxTree,
+    WsIncoming, WsOutgoing, EV_STATE_DELTA, EV_STATE_SNAPSHOT, EV_SERVER_ERROR,
+    EV_TERMINAL_OUTPUT, EV_TERMINAL_SNAPSHOT, EV_TMUX_DISCONNECTED, EV_TMUX_RECONNECTING,
+    MSG_SESSION_KILL, MSG_SESSION_RENAME, MSG_WINDOW_SELECT,
 };
 use webtmux_settings::DesktopSettings;
 use webtmux_supervisor::{BackendInfo, BackendStatus, SpawnOptions, Supervisor};
@@ -70,6 +73,17 @@ pub struct WindowTab {
     pub active: bool,
 }
 
+/// Kill transport route per D6 (see `AppState::kill_route`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KillRoute {
+    /// Victim's own socket is live — kill rides it (no explicit field).
+    Victim,
+    /// No victim socket — ride another live socket with explicit `session`.
+    ViaOther(String),
+    /// Zero live sockets — ephemeral one-shot (commits nothing).
+    Ephemeral,
+}
+
 /// Root Application State Entity.
 pub struct AppState {
     pub settings: DesktopSettings,
@@ -96,6 +110,19 @@ pub struct AppState {
     /// Settings placeholder page flag (SHELL-01, Phase-6-owned page): the gear
     /// sets `active_session = None` + this to true; tabs stay open underneath.
     pub showing_settings: bool,
+
+    /// DLG1 Rename Session dialog form entity, held alive while the modal is
+    /// open. Reset to `None` on dismiss; replaced on every (re)open.
+    pub rename_session_form:
+        Option<gpui::Entity<crate::views::rename_session_dialog::RenameSessionForm>>,
+    /// DLG1 Kill-confirm dialog form entity, held alive while the modal is
+    /// open. Reset to `None` on dismiss; replaced on every (re)open.
+    pub kill_session_form:
+        Option<gpui::Entity<crate::views::session_context_menu::KillSessionForm>>,
+    /// Rename pended while `ensure_session_socket(target)` connects (D5):
+    /// `(target, new_name, dialog window)`. Flushed on connect, dropped with
+    /// an inline error when the connect fails.
+    pub pending_rename: Option<(String, String, AnyWindowHandle)>,
 
     /// DLG1 Create Session dialog form entity, held alive while the modal is
     /// open. Reset to `None` on dismiss; replaced on every (re)open.
@@ -125,6 +152,9 @@ impl AppState {
             open_sessions: Vec::new(),
             sessions: HashMap::new(),
             showing_settings: false,
+            rename_session_form: None,
+            kill_session_form: None,
+            pending_rename: None,
         }
     }
 
@@ -491,6 +521,393 @@ impl AppState {
         let _ = handle.send_command(msg);
     }
 
+    /// Rename submit orchestration (SESS-04): `validate_session_name`
+    /// pre-flight (T-03-05), then `session.rename` on the TARGET session's own
+    /// socket (D5 FE-quirk correction — never the active socket for a
+    /// non-active target). When the target tab is not open,
+    /// `ensure_session_socket(target)` runs first and the rename pends until
+    /// the connect lands (`pending_rename`, flushed in `ensure_session_socket`).
+    pub fn submit_rename(
+        &mut self,
+        target: &str,
+        new_name: String,
+        window_handle: AnyWindowHandle,
+        cx: &mut Context<Self>,
+    ) {
+        let new_name = new_name.trim().to_string();
+        if let Err(e) = validate_session_name(&new_name) {
+            self.set_rename_error(Some(e.to_string()), cx);
+            self.set_rename_submitting(false, cx);
+            cx.notify();
+            return;
+        }
+        if new_name == target {
+            // Nothing to change — dismiss without touching the socket.
+            self.rename_session_form = None;
+            let _ = window_handle.update(cx, |_, window, cx| {
+                window.close_dialog(cx);
+            });
+            cx.notify();
+            return;
+        }
+        match self.send_rename_on_target(target, &new_name) {
+            Ok(rx) => self.await_rename_result(target.to_string(), new_name, window_handle, rx, cx),
+            Err(_) => {
+                let Some(base) = self.base_url.clone() else {
+                    self.set_rename_error(
+                        Some("Backend is not ready yet. Try again in a moment.".to_string()),
+                        cx,
+                    );
+                    self.set_rename_submitting(false, cx);
+                    cx.notify();
+                    return;
+                };
+                self.pending_rename = Some((target.to_string(), new_name, window_handle));
+                self.ensure_session_socket(&base, target, cx);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Sync half of rename: enqueue correlated `session.rename` (`newName` +
+    /// auto `requestId`) on the target's own socket. Err when the target has
+    /// no live socket (caller ensures first).
+    fn send_rename_on_target(
+        &self,
+        target: &str,
+        new_name: &str,
+    ) -> Result<oneshot::Receiver<CommandResult>, String> {
+        let handle = self
+            .sessions
+            .get(target)
+            .and_then(|e| e.handle.as_ref())
+            .ok_or_else(|| format!("session \"{target}\" is not connected"))?;
+        let msg = WsIncoming {
+            msg_type: MSG_SESSION_RENAME.to_string(),
+            new_name: Some(new_name.to_string()),
+            ..Default::default()
+        };
+        handle.send_command(msg).map_err(|e| e.to_string())
+    }
+
+    /// Await the correlated rename reply (10s forget-timeout, T-03-07):
+    /// success runs re-resolution (old→new migration with generation+1,
+    /// T-03-06) + reconnect + poll + dialog close; `command.error`/timeout
+    /// renders inline with the dialog open and the tab untouched.
+    fn await_rename_result(
+        &mut self,
+        target: String,
+        new_name: String,
+        window_handle: AnyWindowHandle,
+        rx: oneshot::Receiver<CommandResult>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(move |view_weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let cx_handle = cx.clone();
+            async move {
+                let outcome: Result<(), String> = match tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    rx,
+                )
+                .await
+                {
+                    Ok(Ok(cmd)) if cmd.ok => Ok(()),
+                    Ok(Ok(cmd)) => Err(cmd.message.unwrap_or_else(|| "Rename failed".to_string())),
+                    Ok(Err(_)) => Err("Rename request was cancelled".to_string()),
+                    Err(_) => Err("Rename request timed out".to_string()),
+                };
+                let _ = cx_handle.update(|cx: &mut App| {
+                    if let Some(entity) = view_weak.upgrade() {
+                        entity.update(cx, |this, cx| {
+                            match outcome {
+                                Ok(()) => {
+                                    if this.rename_session_entry(&target, &new_name) {
+                                        if let Some(base) = this.base_url.clone() {
+                                            this.ensure_session_socket(&base, &new_name, cx);
+                                        }
+                                        this.rename_session_form = None;
+                                        this.trigger_poll(cx);
+                                        let _ = window_handle.update(cx, |_, window, cx| {
+                                            window.close_dialog(cx);
+                                        });
+                                    } else {
+                                        this.set_rename_error(
+                                            Some(
+                                                "Could not apply rename — the session list changed."
+                                                    .to_string(),
+                                            ),
+                                            cx,
+                                        );
+                                        this.set_rename_submitting(false, cx);
+                                    }
+                                }
+                                Err(e) => {
+                                    this.set_rename_error(Some(e), cx);
+                                    this.set_rename_submitting(false, cx);
+                                }
+                            }
+                            cx.notify();
+                        });
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn set_rename_error(&mut self, message: Option<String>, cx: &mut Context<Self>) {
+        if let Some(form) = self.rename_session_form.clone() {
+            form.update(cx, |f, cx| {
+                f.error_message = message;
+                cx.notify();
+            });
+        }
+    }
+
+    fn set_rename_submitting(&mut self, submitting: bool, cx: &mut Context<Self>) {
+        if let Some(form) = self.rename_session_form.clone() {
+            form.update(cx, |f, cx| {
+                f.is_submitting = submitting;
+                cx.notify();
+            });
+        }
+    }
+
+    /// Kill transport route per D6.
+    pub fn kill_route(&self, target: &str) -> KillRoute {
+        if self
+            .sessions
+            .get(target)
+            .and_then(|e| e.handle.as_ref())
+            .is_some()
+        {
+            KillRoute::Victim
+        } else if let Some((name, _)) = self.sessions.iter().find(|(_, e)| e.handle.is_some()) {
+            KillRoute::ViaOther(name.clone())
+        } else {
+            KillRoute::Ephemeral
+        }
+    }
+
+    /// Sync half of kill: enqueue correlated `session.kill` on the victim
+    /// socket, or on another live socket with the explicit `session` field
+    /// (Go honors cross-session kill, `handler.go:186-193`). Err when zero
+    /// sockets are live (caller runs the ephemeral one-shot).
+    fn send_kill(
+        &self,
+        target: &str,
+        route: &KillRoute,
+    ) -> Result<oneshot::Receiver<CommandResult>, String> {
+        let (socket_name, explicit) = match route {
+            KillRoute::Victim => (target, None),
+            KillRoute::ViaOther(other) => (other.as_str(), Some(target.to_string())),
+            KillRoute::Ephemeral => return Err("no live socket".to_string()),
+        };
+        let handle = self
+            .sessions
+            .get(socket_name)
+            .and_then(|e| e.handle.as_ref())
+            .ok_or_else(|| "session socket is not connected".to_string())?;
+        let msg = WsIncoming {
+            msg_type: MSG_SESSION_KILL.to_string(),
+            session: explicit,
+            ..Default::default()
+        };
+        handle.send_command(msg).map_err(|e| e.to_string())
+    }
+
+    /// Kill entry point for both paths (SESS-05): the confirm dialog's Kill
+    /// button passes its window (closed on success); direct kills pass None.
+    pub fn execute_kill(
+        &mut self,
+        target: &str,
+        window_handle: Option<AnyWindowHandle>,
+        cx: &mut Context<Self>,
+    ) {
+        match self.kill_route(target) {
+            KillRoute::Ephemeral => self.execute_ephemeral_kill(target, window_handle, cx),
+            route => match self.send_kill(target, &route) {
+                Ok(rx) => self.await_kill_result(target.to_string(), window_handle, rx, cx),
+                Err(e) => {
+                    self.note_session_error(target, e.clone());
+                    self.set_kill_error(Some(e), cx);
+                    self.set_kill_submitting(false, cx);
+                    cx.notify();
+                }
+            },
+        }
+    }
+
+    /// Await the correlated kill reply (10s forget-timeout): success drops the
+    /// entry + neighbor activation + poll (+ dialog close when open); error
+    /// renders inline destructive with the dialog open and the tab untouched.
+    fn await_kill_result(
+        &mut self,
+        target: String,
+        window_handle: Option<AnyWindowHandle>,
+        rx: oneshot::Receiver<CommandResult>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(move |view_weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let cx_handle = cx.clone();
+            async move {
+                let outcome: Result<(), String> = match tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    rx,
+                )
+                .await
+                {
+                    Ok(Ok(cmd)) if cmd.ok => Ok(()),
+                    Ok(Ok(cmd)) => Err(cmd.message.unwrap_or_else(|| "Kill failed".to_string())),
+                    Ok(Err(_)) => Err("Kill request was cancelled".to_string()),
+                    Err(_) => Err("Kill request timed out".to_string()),
+                };
+                let _ = cx_handle.update(|cx: &mut App| {
+                    if let Some(entity) = view_weak.upgrade() {
+                        entity.update(cx, |this, cx| {
+                            match outcome {
+                                Ok(()) => {
+                                    this.finish_kill_success(&target);
+                                    this.kill_session_form = None;
+                                    this.trigger_poll(cx);
+                                    if let Some(wh) = window_handle {
+                                        let _ = wh.update(cx, |_, window, cx| {
+                                            window.close_dialog(cx);
+                                        });
+                                    }
+                                }
+                                Err(e) => {
+                                    this.note_session_error(&target, e.clone());
+                                    this.set_kill_error(Some(e), cx);
+                                    this.set_kill_submitting(false, cx);
+                                }
+                            }
+                            cx.notify();
+                        });
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Ephemeral one-shot kill (D6, zero live sockets): connect → kill →
+    /// close on `TOKIO_RT`, committing nothing locally — the bootstrap
+    /// snapshot is never forwarded so no phantom tab can appear. Tab-close
+    /// and poll still run on correlated success.
+    fn execute_ephemeral_kill(
+        &mut self,
+        target: &str,
+        window_handle: Option<AnyWindowHandle>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(base) = self.base_url.clone() else {
+            let e = "Backend is not ready yet. Try again in a moment.".to_string();
+            self.note_session_error(target, e.clone());
+            self.set_kill_error(Some(e), cx);
+            self.set_kill_submitting(false, cx);
+            cx.notify();
+            return;
+        };
+        let target_name = target.to_string();
+        cx.spawn(move |view_weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let cx_handle = cx.clone();
+            async move {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let (ephemeral_base, ephemeral_target) = (base.clone(), target_name.clone());
+                TOKIO_RT.spawn(async move {
+                    let outcome: Result<(), String> = async {
+                        let handle = connect_session(&ephemeral_base, &ephemeral_target, 0)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        let msg = WsIncoming {
+                            msg_type: MSG_SESSION_KILL.to_string(),
+                            session: Some(ephemeral_target.clone()),
+                            ..Default::default()
+                        };
+                        let waiter = handle.send_command(msg).map_err(|e| e.to_string())?;
+                        match tokio::time::timeout(std::time::Duration::from_secs(10), waiter)
+                            .await
+                        {
+                            Ok(Ok(cmd)) if cmd.ok => Ok(()),
+                            Ok(Ok(cmd)) => {
+                                Err(cmd.message.unwrap_or_else(|| "Kill failed".to_string()))
+                            }
+                            Ok(Err(_)) => Err("Kill request was cancelled".to_string()),
+                            Err(_) => Err("Kill request timed out".to_string()),
+                        }
+                        // `handle` drops here: one-shot torn down, bootstrap
+                        // committed nowhere (D6).
+                    }
+                    .await;
+                    let _ = tx.send(outcome);
+                });
+                let outcome = match rx.await {
+                    Ok(r) => r,
+                    Err(_) => return,
+                };
+                let _ = cx_handle.update(|cx: &mut App| {
+                    if let Some(entity) = view_weak.upgrade() {
+                        entity.update(cx, |this, cx| {
+                            match outcome {
+                                Ok(()) => {
+                                    this.finish_kill_success(&target_name);
+                                    this.kill_session_form = None;
+                                    this.trigger_poll(cx);
+                                    if let Some(wh) = window_handle {
+                                        let _ = wh.update(cx, |_, window, cx| {
+                                            window.close_dialog(cx);
+                                        });
+                                    }
+                                }
+                                Err(e) => {
+                                    this.note_session_error(&target_name, e.clone());
+                                    this.set_kill_error(Some(e), cx);
+                                    this.set_kill_submitting(false, cx);
+                                }
+                            }
+                            cx.notify();
+                        });
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Kill-success commit: drop the entry (even when its tab was never
+    /// open), neighbor activation via `close_session`, caller polls.
+    pub fn finish_kill_success(&mut self, target: &str) {
+        self.close_session(target);
+        self.sessions.remove(target);
+    }
+
+    /// Record a kill/rename transport error on the tab for later surfaces.
+    /// No-op when the entry is gone (the poll already shows the truth).
+    pub fn note_session_error(&mut self, target: &str, err: String) {
+        if let Some(entry) = self.sessions.get_mut(target) {
+            entry.last_error = Some(err);
+        }
+    }
+
+    fn set_kill_error(&mut self, message: Option<String>, cx: &mut Context<Self>) {
+        if let Some(form) = self.kill_session_form.clone() {
+            form.update(cx, |f, cx| {
+                f.error_message = message;
+                cx.notify();
+            });
+        }
+    }
+
+    fn set_kill_submitting(&mut self, submitting: bool, cx: &mut Context<Self>) {
+        if let Some(form) = self.kill_session_form.clone() {
+            form.update(cx, |f, cx| {
+                f.is_submitting = submitting;
+                cx.notify();
+            });
+        }
+    }
+
     /// Connect-on-open (D4): create the entry with `generation + 1` and spawn
     /// the `connect_session` handshake on `TOKIO_RT` (never block the GPUI
     /// thread — Pitfall 6). Bootstrap commits flow through `apply_event`;
@@ -550,6 +967,31 @@ impl AppState {
                                         entry.handle = Some(handle);
                                         entry.transport = TransportState::Connected;
                                     }
+                                    // Flush a rename pended while this socket
+                                    // was connecting (D5).
+                                    if this
+                                        .pending_rename
+                                        .as_ref()
+                                        .is_some_and(|(t, _, _)| t == &key)
+                                    {
+                                        let (_, new_name, wh) = this
+                                            .pending_rename
+                                            .take()
+                                            .expect("checked above");
+                                        let target = key.clone();
+                                        match this.send_rename_on_target(&target, &new_name) {
+                                            Ok(rx) => this.await_rename_result(
+                                                target, new_name, wh, rx, cx,
+                                            ),
+                                            Err(e) => {
+                                                this.set_rename_error(
+                                                    Some(format!("Rename failed: {e}")),
+                                                    cx,
+                                                );
+                                                this.set_rename_submitting(false, cx);
+                                            }
+                                        }
+                                    }
                                     cx.notify();
                                     // Forward pump: tagged events → guarded apply.
                                     cx.spawn(
@@ -579,8 +1021,22 @@ impl AppState {
                                     if let Some(entry) = this.sessions.get_mut(&session_name) {
                                         if entry.generation == gen {
                                             entry.transport = TransportState::Disconnected;
-                                            entry.last_error = Some(err);
+                                            entry.last_error = Some(err.clone());
                                         }
+                                    }
+                                    // A pended rename dies with the connect —
+                                    // inline error, flag never sticks (T-03-07).
+                                    if this
+                                        .pending_rename
+                                        .as_ref()
+                                        .is_some_and(|(t, _, _)| t == &session_name)
+                                    {
+                                        this.pending_rename.take();
+                                        this.set_rename_error(
+                                            Some(format!("Could not connect: {err}")),
+                                            cx,
+                                        );
+                                        this.set_rename_submitting(false, cx);
                                     }
                                     cx.notify();
                                 }

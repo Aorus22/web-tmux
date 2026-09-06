@@ -133,10 +133,17 @@ pub fn render_sidebar(app: &mut AppState, cx: &mut Context<AppState>) -> impl In
                                 let is_expanded = app.expanded_sessions.contains(&session_name);
                                 let windows_count = node.session.windows;
 
-                                let session_name_for_click = session_name.clone();
+                                let name_for_open = session_name.clone();
                                 let session_name_for_toggle = session_name.clone();
+                                let row_name = session_name.clone();
+                                let app_weak = cx.entity().downgrade();
 
-                                div()
+                                // Stable per-session id: the context menu
+                                // derives its open-state id from it, so poll
+                                // ticks (cx.notify) must never reset it —
+                                // no counters or indices here.
+                                let row = div()
+                                    .id(format!("session-row/{}", session_name))
                                     .mb(px(2.0))
                                     .child(
                                         div()
@@ -151,8 +158,17 @@ pub fn render_sidebar(app: &mut AppState, cx: &mut Context<AppState>) -> impl In
                                             .cursor_pointer()
                                             .when(is_active, |s| s.bg(active_bg).text_color(foreground_text))
                                             .when(!is_active, |s| s.text_color(foreground_text).hover(|h| h.bg(hover_bg)))
+                                            // Row click opens-or-activates the
+                                            // session tab (ensure-socket when
+                                            // new, switch when open). Left
+                                            // button only — right-click is the
+                                            // context menu by construction.
                                             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _window, cx| {
-                                                this.active_session = Some(session_name_for_click.clone());
+                                                let base = this.base_url.clone();
+                                                this.open_session(&name_for_open);
+                                                if let Some(base) = base {
+                                                    this.ensure_session_socket(&base, &name_for_open, cx);
+                                                }
                                                 cx.notify();
                                             }))
                                             // Chevron expand icon
@@ -259,8 +275,13 @@ pub fn render_sidebar(app: &mut AppState, cx: &mut Context<AppState>) -> impl In
                                                         }))
                                                 })),
                                         )
-                                    })
-                                    .into_any_element()
+                                    });
+                                crate::views::session_context_menu::with_session_context_menu(
+                                    row,
+                                    row_name,
+                                    app_weak,
+                                )
+                                .into_any_element()
                             }).collect()
                         }),
                 )
