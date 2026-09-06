@@ -41,6 +41,11 @@ pub struct AppState {
     pub sidebar_open: bool,
     pub poll_generation: u64,
     pub tree_error: Option<String>,
+
+    /// DLG1 Create Session dialog form entity, held alive while the modal is
+    /// open. Reset to `None` on dismiss; replaced on every (re)open.
+    pub create_session_form:
+        Option<gpui::Entity<crate::views::create_session_dialog::CreateSessionForm>>,
 }
 
 impl AppState {
@@ -61,6 +66,7 @@ impl AppState {
             sidebar_open: true,
             poll_generation: 0,
             tree_error: None,
+            create_session_form: None,
         }
     }
 

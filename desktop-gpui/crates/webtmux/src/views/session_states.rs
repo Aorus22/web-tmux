@@ -101,8 +101,10 @@ pub fn render_empty_state(_app: &mut AppState, cx: &mut Context<AppState>) -> im
                 .cursor_pointer()
                 .hover(|s| s.opacity(0.9))
                 .child("Create Session")
-                .on_mouse_down(MouseButton::Left, cx.listener(|_this, _, _window, _cx| {
-                    // Dialog open trigger wired in Task 2
+                .on_mouse_down(MouseButton::Left, cx.listener(|_this, _, window, cx| {
+                    crate::views::create_session_dialog::open_create_session_dialog_from_state(
+                        _this, window, cx,
+                    );
                 })),
         )
 }

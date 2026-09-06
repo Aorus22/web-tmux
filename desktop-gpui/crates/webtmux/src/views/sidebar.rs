@@ -100,8 +100,10 @@ pub fn render_sidebar(app: &mut AppState, cx: &mut Context<AppState>) -> impl In
                                                 .size(px(12.0))
                                                 .text_color(muted_text),
                                         )
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|_this, _, _window, _cx| {
-                                            // Dialog creation hook will be expanded in Plan 02-02
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|_this, _, window, cx| {
+                                            crate::views::create_session_dialog::open_create_session_dialog_from_state(
+                                                _this, window, cx,
+                                            );
                                         })),
                                 ),
                         ),
