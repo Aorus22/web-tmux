@@ -448,12 +448,9 @@ impl Supervisor {
 
         if let Ok(resp) = client.get(&probe_url).send().await {
             if resp.status().is_success() {
-                let port = probe_url
-                    .split(':')
-                    .nth(2)?
-                    .split('/')
-                    .next()?
-                    .parse::<u16>()
+                let port = reqwest::Url::parse(&probe_url)
+                    .ok()
+                    .and_then(|u| u.port_or_known_default())
                     .unwrap_or(0);
                 return Some(BackendInfo {
                     base_url,
