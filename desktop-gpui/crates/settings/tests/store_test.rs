@@ -1,0 +1,96 @@
+use std::fs;
+use std::path::PathBuf;
+use tempfile::tempdir;
+use webtmux_settings::{DesktopSettings, Theme, WindowState};
+
+#[test]
+fn roundtrip() {
+    let dir = tempdir().unwrap();
+    let base = dir.path();
+
+    let initial = DesktopSettings {
+        backend_path: Some(PathBuf::from("/usr/bin/tmux-gui-server")),
+        theme: Theme::Light,
+        theme_preset: "default-light".to_string(),
+        window_state: Some(WindowState {
+            x: Some(100),
+            y: Some(200),
+            width: Some(1400),
+            height: Some(900),
+            maximized: false,
+        }),
+        last_backend_url: Some("http://127.0.0.1:9001".to_string()),
+        custom_base: Some(base.to_path_buf()),
+    };
+
+    initial.save_to(base).expect("save_to should succeed");
+
+    let loaded = DesktopSettings::load_from(base).expect("load_from should succeed");
+
+    assert_eq!(loaded.backend_path, initial.backend_path);
+    assert_eq!(loaded.theme, initial.theme);
+    assert_eq!(loaded.theme_preset, initial.theme_preset);
+    assert_eq!(loaded.window_state, initial.window_state);
+    assert_eq!(loaded.last_backend_url, initial.last_backend_url);
+}
+
+#[test]
+fn corrupt_recovery() {
+    let dir = tempdir().unwrap();
+    let base = dir.path();
+    let config_dir = webtmux_settings::paths::config_dir_with_base(base);
+    fs::create_dir_all(&config_dir).unwrap();
+
+    let settings_file = config_dir.join("settings.json");
+    fs::write(&settings_file, "{ malformed json content !!!").unwrap();
+
+    let loaded = DesktopSettings::load_from(base).expect("load_from should recover from corrupt json");
+
+    // Defaults should be returned
+    assert_eq!(loaded.theme, Theme::Dark);
+    assert_eq!(loaded.theme_preset, "default-dark");
+    assert_eq!(loaded.window_state, None);
+
+    // settings.json.bak should exist
+    let bak_file = config_dir.join("settings.json.bak");
+    assert!(bak_file.exists(), "settings.json.bak must exist after corrupt load");
+    let bak_content = fs::read_to_string(&bak_file).unwrap();
+    assert_eq!(bak_content, "{ malformed json content !!!");
+
+    // A valid new settings.json should have been written with defaults
+    assert!(settings_file.exists(), "new settings.json should be saved");
+    let second_load = DesktopSettings::load_from(base).expect("second load should succeed");
+    assert_eq!(second_load.theme, Theme::Dark);
+}
+
+#[test]
+fn first_run() {
+    let dir = tempdir().unwrap();
+    let base = dir.path();
+
+    let loaded = DesktopSettings::load_from(base).expect("first run load should succeed");
+    assert_eq!(loaded.theme, Theme::Dark);
+    assert_eq!(loaded.theme_preset, "default-dark");
+    assert_eq!(loaded.window_state, None);
+    assert_eq!(loaded.custom_base, Some(base.to_path_buf()));
+
+    // Save should create the file
+    loaded.save().expect("save should succeed with custom_base");
+    let config_dir = webtmux_settings::paths::config_dir_with_base(base);
+    assert!(config_dir.join("settings.json").exists(), "settings.json should be created on save");
+}
+
+#[test]
+fn atomic_save_leaves_no_temp_files_and_writes_file() {
+    let dir = tempdir().unwrap();
+    let base = dir.path();
+    let config_dir = webtmux_settings::paths::config_dir_with_base(base);
+
+    let mut settings = DesktopSettings::default();
+    settings.theme = Theme::Light;
+
+    settings.save_to(base).expect("save_to must succeed");
+
+    let entries: Vec<_> = fs::read_dir(&config_dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(entries, vec!["settings.json"]);
+}

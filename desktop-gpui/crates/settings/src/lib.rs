@@ -126,22 +126,28 @@ impl DesktopSettings {
 
     /// Save settings using an injectable base directory.
     pub fn save_to(&self, base: &Path) -> Result<(), SettingsError> {
-        paths::ensure_dirs_with_base(base)?;
+        let dir = paths::ensure_dirs_with_base(base)?;
         let file_path = paths::settings_path_with_base(base);
         let content = serde_json::to_string_pretty(self)?;
-        fs::write(&file_path, content)?;
+
+        // Atomic write: write to temp file in same directory, then rename
+        let tmp_file = tempfile::NamedTempFile::new_in(&dir)?;
+        let tmp_path = tmp_file.path().to_path_buf();
+        fs::write(&tmp_path, content)?;
 
         // Set user-only permissions (0600) on Unix.
-        // On Windows, the user's %APPDATA% profile directory ACL provides user-only privacy.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = fs::metadata(&file_path) {
+            if let Ok(metadata) = fs::metadata(&tmp_path) {
                 let mut perms = metadata.permissions();
                 perms.set_mode(0o600);
-                let _ = fs::set_permissions(&file_path, perms);
+                let _ = fs::set_permissions(&tmp_path, perms);
             }
         }
+
+        // Atomically replace destination file
+        tmp_file.persist(&file_path).map_err(|e| e.error)?;
 
         Ok(())
     }
