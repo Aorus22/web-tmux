@@ -41,6 +41,10 @@ fn default_theme_preset() -> String {
     "default-dark".to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// Desktop settings store holding UI preferences and window geometry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DesktopSettings {
@@ -54,6 +58,17 @@ pub struct DesktopSettings {
     pub window_state: Option<WindowState>,
     #[serde(default)]
     pub last_backend_url: Option<String>,
+    /// Confirm before killing a tmux session (SESS-05, honored since Phase 3).
+    /// `default_true` so legacy Phase-1/2 settings files (keys absent) keep
+    /// confirming — FE `settingsStore.ts` parity (`confirmKillSession: true`).
+    #[serde(default = "default_true")]
+    pub confirm_kill_session: bool,
+    /// Confirm before killing a pane (Phase 5 reads this; struct parity now).
+    #[serde(default = "default_true")]
+    pub confirm_kill_pane: bool,
+    /// Confirm before killing a window (Phase 5 reads this; struct parity now).
+    #[serde(default = "default_true")]
+    pub confirm_kill_window: bool,
 
     #[serde(skip)]
     pub custom_base: Option<PathBuf>,
@@ -67,6 +82,9 @@ impl Default for DesktopSettings {
             theme_preset: default_theme_preset(),
             window_state: None,
             last_backend_url: None,
+            confirm_kill_session: true,
+            confirm_kill_pane: true,
+            confirm_kill_window: true,
             custom_base: None,
         }
     }

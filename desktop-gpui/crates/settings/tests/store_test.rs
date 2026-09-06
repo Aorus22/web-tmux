@@ -20,6 +20,9 @@ fn roundtrip() {
             maximized: false,
         }),
         last_backend_url: Some("http://127.0.0.1:9001".to_string()),
+        confirm_kill_session: true,
+        confirm_kill_pane: true,
+        confirm_kill_window: true,
         custom_base: Some(base.to_path_buf()),
     };
 

@@ -330,6 +330,13 @@ impl AppState {
         self.active_session = name;
     }
 
+    /// Kill-confirm gate (SESS-05): true opens the confirm dialog, false kills
+    /// directly. Reads only `confirm_kill_session` — the pane/window flags
+    /// are Phase 5/6 owned (FE `settingsStore.ts` parity).
+    pub fn kill_requires_confirm(&self) -> bool {
+        self.settings.confirm_kill_session
+    }
+
     /// Close a tab: remove from `open_sessions`, drop the entry (which aborts
     /// its pumps — teardown-on-close, D4), then neighbor activation
     /// `open[min(idx, len-1)]`, `None` when empty. The tmux session itself
