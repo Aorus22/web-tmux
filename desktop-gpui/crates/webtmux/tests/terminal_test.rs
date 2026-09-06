@@ -552,3 +552,108 @@ fn test_copy_paste_keys() {
     assert_eq!(envelope.msg_type, MSG_TERMINAL_INPUT);
     assert_eq!(envelope.data.as_deref(), Some("pasted text 中"));
 }
+
+// --- Phase 4 plan 04-02 Task 2 RED: debounced resize + layout resync ---
+
+use webtmux::app_state::{
+    actual_viewport, build_terminal_resize, clamp_viewport, compute_layout_key, px_to_cols_rows,
+    LayoutResync,
+};
+
+#[test]
+fn test_resize_dance() {
+    // Clamp floor: tmux rejects cols<=0/rows<=0, server enforces cols>=2.
+    assert_eq!(clamp_viewport(0, 0), (2, 1));
+    assert_eq!(clamp_viewport(1, 1), (2, 1));
+    assert_eq!(clamp_viewport(80, 24), (80, 24));
+    // px fallback mirrors FE pxToColsRows (CELL 8x18).
+    assert_eq!(px_to_cols_rows(800.0, 360.0), (100, 20));
+
+    let mut app = fresh_app();
+    app.open_session("dev");
+    commit_state(&mut app, "dev", vec![("%0", "@0")]);
+
+    // Zero-size measures never arm.
+    assert_eq!(app.arm_viewport_for_pane("%0", 0, 24), None);
+    assert_eq!(app.arm_viewport_for_pane("%0", 80, 0), None);
+    assert!(app.pending_viewport.is_none());
+
+    // Rapid arms collapse: last settled values win, one envelope fires.
+    let s1 = app
+        .arm_viewport_for_pane("%0", 80, 24)
+        .expect("first arm must schedule");
+    let s2 = app
+        .arm_viewport_for_pane("%0", 100, 30)
+        .expect("second arm supersedes the first");
+    assert_ne!(s1, s2);
+    // Stale generation drops (poll-pump pattern).
+    assert!(app.take_debounced_resize(s1).is_none());
+    let (session, envelope) = app
+        .take_debounced_resize(s2)
+        .expect("settled arm must fire once");
+    assert_eq!(session, "dev");
+    assert_eq!(envelope.msg_type, "terminal.resize");
+    let cols = envelope.cols.expect("resize must carry cols");
+    let rows = envelope.rows.expect("resize must carry rows");
+    assert!(cols >= 2 && rows >= 1, "clamped dims, got {cols}x{rows}");
+    // Fired pending clears: no second send.
+    assert!(app.pending_viewport.is_none());
+
+    // First mount (no prior layout key) skips the resync pair.
+    let key = app.current_layout_key();
+    assert!(!key.is_empty());
+    assert_eq!(
+        app.decide_layout_resync(key),
+        LayoutResync::FirstMountSkip
+    );
+}
+
+#[test]
+fn test_layout_key_resync() {
+    let mut app = fresh_app();
+    app.open_session("dev");
+    commit_state(&mut app, "dev", vec![("%0", "@0")]);
+    let gen = app.sessions.get("dev").unwrap().generation;
+    // Register %0 via a snapshot frame so resync has a live target.
+    assert!(app.apply_event(
+        "dev",
+        gen,
+        &terminal_frame(EV_TERMINAL_SNAPSHOT, "dev", "%0", "h\ns", true, Some(1)),
+    ));
+
+    // Pure key shape mirrors FE layoutKey fields.
+    let k1 = compute_layout_key("@0", 80, 24, "tiled", &[("%0".to_string(), 0, 0, 80, 24, false)]);
+    let k2 = compute_layout_key("@0", 80, 24, "tiled", &[("%0".to_string(), 0, 0, 80, 24, false)]);
+    assert_eq!(k1, k2);
+    let k3 = compute_layout_key("@0", 100, 24, "tiled", &[("%0".to_string(), 0, 0, 100, 24, false)]);
+    assert_ne!(k1, k3);
+
+    // First mount skips; identical key schedules nothing.
+    assert_eq!(
+        app.decide_layout_resync(k1.clone()),
+        LayoutResync::FirstMountSkip
+    );
+    assert_eq!(
+        app.decide_layout_resync(k1.clone()),
+        LayoutResync::NoChange
+    );
+    // Changed key schedules the 150ms resize + 325ms capture pair.
+    assert_eq!(
+        app.decide_layout_resync(k3.clone()),
+        LayoutResync::Resync
+    );
+    // Visible registered panes are the capture targets (unregistered excluded).
+    let targets = app.layout_resync_panes(&["%0".to_string(), "%ghost".to_string()]);
+    assert_eq!(targets, vec!["%0".to_string()]);
+
+    // actualViewport scaling: measured pane size scales to the whole window.
+    let (cols, rows) = actual_viewport(80, 24, 40, 24, 80, 24, 800.0, 360.0);
+    assert_eq!((cols, rows), (160, 24));
+    // Fallback when no pane geometry: px conversion.
+    let (fc, fr) = actual_viewport(0, 0, 0, 0, 0, 0, 800.0, 360.0);
+    assert_eq!((fc, fr), (100, 20));
+    // build_terminal_resize clamps and tags the envelope.
+    let msg = build_terminal_resize(1, 0);
+    assert_eq!(msg.msg_type, "terminal.resize");
+    assert_eq!((msg.cols, msg.rows), (Some(2), Some(1)));
+}
