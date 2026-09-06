@@ -150,7 +150,7 @@ pub fn restore(settings: &DesktopSettings) -> Option<WindowBounds> {
     };
 
     let bounds = match (state.x, state.y) {
-        (Some(x), Some(y)) if x > -1000 && y > -1000 => Bounds {
+        (Some(x), Some(y)) if x > -10000 && y > -10000 => Bounds {
             origin: Point {
                 x: px(x as f32),
                 y: px(y as f32),
