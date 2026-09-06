@@ -305,3 +305,246 @@ fn test_terminal_input_ownership() {
     // tui_scroll defaults ON for unknown panes (D3).
     assert!(app.tui_scroll("%fresh-pane"));
 }
+
+// --- Phase 4 plan 04-02 Task 1 RED: wheel / selection / copy-paste depth ---
+
+use webtmux::app_state::{
+    decide_key_route, decide_wheel_action, wheel_delta_to_lines, wheel_delta_to_px, KeyRoute,
+    WheelAction, WheelDelta,
+};
+use webtmux_terminal::{AlacPoint, Column, Line, TermMode};
+
+fn alac_origin() -> AlacPoint {
+    AlacPoint::new(Line(0), Column(0))
+}
+
+#[test]
+fn test_wheel_policy() {
+    // Mouse-reporting mode → SGR 64 (up) / 65 (down), no paging.
+    let mode = TermMode::MOUSE_REPORT_CLICK;
+    let (up, _) = decide_wheel_action(
+        mode,
+        true,
+        WheelDelta::Pixels(120.0),
+        0.0,
+        18.9,
+        alac_origin(),
+        0,
+    );
+    match up {
+        WheelAction::Sgr(bytes) => {
+            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[<64;1;1M")
+        }
+        other => panic!("mouse mode must emit SGR up, got {other:?}"),
+    }
+    let (down, _) = decide_wheel_action(
+        mode,
+        true,
+        WheelDelta::Pixels(-120.0),
+        0.0,
+        18.9,
+        alac_origin(),
+        0,
+    );
+    match down {
+        WheelAction::Sgr(bytes) => {
+            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[<65;1;1M")
+        }
+        other => panic!("mouse mode must emit SGR down, got {other:?}"),
+    }
+
+    // TUI-on (incl. absent map entry = ON per D3) → 100px/notch PageUp/Down.
+    let plain = TermMode::empty();
+    // Sub-notch accumulates without emitting.
+    let (ignored, accum) = decide_wheel_action(
+        plain,
+        true,
+        WheelDelta::Pixels(40.0),
+        0.0,
+        18.9,
+        alac_origin(),
+        0,
+    );
+    assert_eq!(ignored, WheelAction::Ignored);
+    assert!((accum - 40.0).abs() < f32::EPSILON);
+    // Crossing the notch emits one PageDown (GPUI positive = down-content).
+    let (paged, accum2) = decide_wheel_action(
+        plain,
+        true,
+        WheelDelta::Pixels(70.0),
+        accum,
+        18.9,
+        alac_origin(),
+        0,
+    );
+    match paged {
+        WheelAction::Pages(bytes) => {
+            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[6~")
+        }
+        other => panic!("TUI-on must page, got {other:?}"),
+    }
+    assert!(accum2.abs() < 1.0);
+
+    // Line deltas scale ×16 into px (FE parity): 7 lines = 112px = 1 notch.
+    assert!((wheel_delta_to_px(WheelDelta::Lines(7.0)) - 112.0).abs() < f32::EPSILON);
+    let (line_page, _) = decide_wheel_action(
+        plain,
+        true,
+        WheelDelta::Lines(7.0),
+        0.0,
+        18.9,
+        alac_origin(),
+        0,
+    );
+    match line_page {
+        WheelAction::Pages(bytes) => {
+            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[6~")
+        }
+        other => panic!("line-delta TUI paging failed, got {other:?}"),
+    }
+
+    // Burst clamp 3: a fast fling never emits more than 3 repeats.
+    let (burst, _) = decide_wheel_action(
+        plain,
+        true,
+        WheelDelta::Pixels(1000.0),
+        0.0,
+        18.9,
+        alac_origin(),
+        0,
+    );
+    match burst {
+        WheelAction::Pages(bytes) => {
+            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[6~\x1b[6~\x1b[6~")
+        }
+        other => panic!("burst must clamp to 3, got {other:?}"),
+    }
+    // Wheel up (negative px) pages up.
+    let (up_page, _) = decide_wheel_action(
+        plain,
+        true,
+        WheelDelta::Pixels(-100.0),
+        0.0,
+        18.9,
+        alac_origin(),
+        0,
+    );
+    match up_page {
+        WheelAction::Pages(bytes) => {
+            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[5~")
+        }
+        other => panic!("wheel up must send PageUp, got {other:?}"),
+    }
+
+    // TUI-off → scrollback delta lines via the reference pixel→lines conversion.
+    assert_eq!(wheel_delta_to_lines(WheelDelta::Pixels(37.8), 18.9), 2);
+    let (sb, _) = decide_wheel_action(
+        plain,
+        false,
+        WheelDelta::Pixels(37.8),
+        0.0,
+        18.9,
+        alac_origin(),
+        0,
+    );
+    assert_eq!(sb, WheelAction::Scrollback(2));
+
+    // AppState-side accumulation + default-ON switch (absent entry = ON).
+    let mut app = fresh_app();
+    app.open_session("dev");
+    commit_state(&mut app, "dev", vec![("%0", "@0")]);
+    assert!(app.tui_scroll("%0"));
+    let a1 = app.apply_wheel("%0", WheelDelta::Pixels(40.0), 18.9, alac_origin(), 0);
+    assert_eq!(a1, WheelAction::Ignored);
+    let a2 = app.apply_wheel("%0", WheelDelta::Pixels(70.0), 18.9, alac_origin(), 0);
+    match a2 {
+        WheelAction::Pages(bytes) => {
+            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[6~")
+        }
+        other => panic!("AppState accum must page on notch, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_selection_text() {
+    let mut app = fresh_app();
+    app.open_session("dev");
+    commit_state(&mut app, "dev", vec![("%0", "@0")]);
+    let gen = app.sessions.get("dev").unwrap().generation;
+    assert!(app.apply_event(
+        "dev",
+        gen,
+        &terminal_frame(EV_TERMINAL_OUTPUT, "dev", "%0", "hello selection", false, None),
+    ));
+    // Programmatic selection across the first row yields the fed text.
+    {
+        let entry = app.terminals.get("%0").expect("store entry must exist");
+        let mut term = entry.terminal.lock();
+        term.start_selection(
+            AlacPoint::new(Line(0), Column(0)),
+            webtmux_terminal::selection_type_from_clicks(1),
+        );
+        term.update_selection(AlacPoint::new(Line(0), Column(14)));
+    }
+    let text = app
+        .pane_selection_text("%0")
+        .expect("selection text must exist");
+    assert!(
+        text.contains("hello selection"),
+        "selection must return fed grid text, got {text:?}"
+    );
+}
+
+#[test]
+fn test_copy_paste_keys() {
+    // Copy keys with a selection route to copy (not to terminal.input).
+    assert_eq!(
+        decide_key_route(true, true, true, false, "c"),
+        KeyRoute::Copy
+    );
+    assert_eq!(
+        decide_key_route(true, false, false, true, "c"),
+        KeyRoute::Copy
+    );
+    // Paste keys route clipboard content to terminal.input.
+    assert_eq!(
+        decide_key_route(false, true, true, false, "v"),
+        KeyRoute::Paste
+    );
+    assert_eq!(
+        decide_key_route(false, false, false, true, "v"),
+        KeyRoute::Paste
+    );
+    // Everything else falls through to the terminal byte path.
+    assert_eq!(
+        decide_key_route(false, false, false, false, "c"),
+        KeyRoute::Terminal
+    );
+    // With EMPTY selection Ctrl+C falls through to interrupt bytes (\x03).
+    assert_eq!(
+        decide_key_route(false, true, false, false, "c"),
+        KeyRoute::Terminal
+    );
+    let ctrl_c = webtmux_terminal::keystroke_to_bytes(
+        &gpui::Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                ..Default::default()
+            },
+            key: "c".into(),
+            key_char: None,
+        },
+        TermMode::empty(),
+    )
+    .expect("Ctrl+C must map to bytes");
+    assert_eq!(ctrl_c, vec![0x03]);
+    // Paste byte path rides terminal.input untouched (no client chunking).
+    let mut app = fresh_app();
+    app.open_session("dev");
+    commit_state(&mut app, "dev", vec![("%0", "@0")]);
+    let (_, envelope) = app
+        .build_terminal_input("%0", "pasted text 中".to_string())
+        .expect("paste builds terminal.input");
+    assert_eq!(envelope.msg_type, MSG_TERMINAL_INPUT);
+    assert_eq!(envelope.data.as_deref(), Some("pasted text 中"));
+}
