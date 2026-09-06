@@ -657,3 +657,46 @@ fn test_layout_key_resync() {
     assert_eq!(msg.msg_type, "terminal.resize");
     assert_eq!((msg.cols, msg.rows), (Some(2), Some(1)));
 }
+
+#[test]
+fn test_hidden_session_recapture() {
+    // Reconnect re-arms + re-captures panes of THAT session only (TERM-02
+    // reconnect clause, D6): the exactly-once gate re-opens per pane of the
+    // session, other sessions keep their gates shut.
+    let mut app = fresh_app();
+    app.open_session("a");
+    app.open_session("b");
+    app.set_active_session(Some("a".to_string()));
+    commit_state(&mut app, "a", vec![("%a0", "@0")]);
+    commit_state(&mut app, "b", vec![("%b0", "@0"), ("%b1", "@0")]);
+    let gen_a = app.sessions.get("a").unwrap().generation;
+    let gen_b = app.sessions.get("b").unwrap().generation;
+
+    for (session, gen, pane) in [
+        ("a", gen_a, "%a0"),
+        ("b", gen_b, "%b0"),
+        ("b", gen_b, "%b1"),
+    ] {
+        assert!(app.apply_event(
+            session,
+            gen,
+            &terminal_frame(EV_TERMINAL_SNAPSHOT, session, pane, "h\ns", true, Some(1)),
+        ));
+    }
+    // Gates shut after the first snapshot: repeats drop.
+    assert!(!app.commit_terminal_snapshot("b", "%b0", "h\ns", Some(1)));
+
+    // Reconnect of session b re-arms only b's panes (sends no-op without live
+    // sockets, but invalidation — the headless-testable half — still runs).
+    app.recapture_session("b");
+    // b re-armed: next snapshot applies again.
+    assert!(app.apply_event(
+        "b",
+        gen_b,
+        &terminal_frame(EV_TERMINAL_SNAPSHOT, "b", "%b0", "h\ns", true, Some(1)),
+    ));
+    // a untouched: its gate still drops repeats.
+    assert!(!app.commit_terminal_snapshot("a", "%a0", "h\ns", Some(1)));
+    // Unknown session recaptures nothing and never panics.
+    app.recapture_session("ghost");
+}

@@ -1,0 +1,13 @@
+{
+  "description": "Phase 4 plan 04-02 interop: scrollback+screen snapshot plus live chunks and one replace:true frame over a real socket (TERM-02/06). Snapshot blob mirrors the exactly-once contract (history above len - screenRows, screen tail positioned); chunks are incremental replace:false output; replace_frame is a Windows-style full-screen frame.",
+  "pane_id": "%0",
+  "screen_rows": 2,
+  "snapshot_data": "h1\nh2\ns1\ns2",
+  "output_chunks": ["LIVE-A ", "LIVE-B"],
+  "replace_frame": {
+    "data": "h1\nh2\nh3\nr1\nr2",
+    "screen_rows": 2
+  },
+  "expected_grid": ["s1", "LIVE-A LIVE-B", "r1"],
+  "resize": { "cols": 100, "rows": 30 }
+}

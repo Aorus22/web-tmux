@@ -437,3 +437,251 @@ async fn test_ws_malformed_frame_dropped() {
     assert!(saw_snapshot, "valid event after malformed frame was lost");
     handle.disconnect();
 }
+
+/// Phase 4 plan 04-02 Task 3: mock-server terminal interop (TERM-02/06).
+///
+/// Scripts `connection.ready` + `state.snapshot` bootstrap, then on
+/// `terminal.capture` replies `terminal.snapshot{replace:true, screenRows}`
+/// from `terminal_ws_frames.json`, streams `terminal.output{replace:false}`
+/// chunks plus one `replace:true` frame, and asserts the client sent
+/// `terminal.capture` plus a debounced clamped `terminal.resize` — with no
+/// `hello` observed on the wire (D4). Grid parity itself is locked in the
+/// `webtmux-terminal` capture/output tests by reference; here the wire
+/// payloads are asserted to carry the expected grid substrings end to end.
+#[tokio::test]
+async fn test_terminal_frames() {
+    let fixture_json = include_str!("fixtures/terminal_ws_frames.json");
+    let fixture: serde_json::Value = serde_json::from_str(fixture_json).unwrap();
+    let pane_id = fixture["pane_id"].as_str().unwrap().to_string();
+    let screen_rows = fixture["screen_rows"].as_i64().unwrap() as i32;
+    let snapshot_data = fixture["snapshot_data"].as_str().unwrap().to_string();
+    let chunks: Vec<String> = fixture["output_chunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    let replace_data = fixture["replace_frame"]["data"].as_str().unwrap().to_string();
+    let replace_rows = fixture["replace_frame"]["screen_rows"].as_i64().unwrap() as i32;
+    let expected: Vec<String> = fixture["expected_grid"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    let resize_cols = fixture["resize"]["cols"].as_i64().unwrap() as i32;
+    let resize_rows = fixture["resize"]["rows"].as_i64().unwrap() as i32;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base_url = format!("http://{}", addr);
+    let pane_srv = pane_id.clone();
+    let snap_srv = snapshot_data.clone();
+    let chunks_srv = chunks.clone();
+    let replace_srv = replace_data.clone();
+
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let (mut write, mut read) = ws.split();
+        let mut saw_capture = false;
+        let mut saw_hello = false;
+        let mut saw_resize = false;
+        let mut resize_dims = (0, 0);
+
+        write
+            .send(Message::Text(
+                r#"{"type":"connection.ready","session":"dev"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let snap = include_str!("fixtures/ws_snapshot_full.json");
+        write.send(Message::Text(snap.into())).await.unwrap();
+
+        // Wait for terminal.capture (ignoring the automatic state.resync).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            let remain = deadline - std::time::Instant::now();
+            match tokio::time::timeout(remain, read.next()).await {
+                Ok(Some(Ok(Message::Text(t)))) => {
+                    let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                    match v.get("type").and_then(|x| x.as_str()) {
+                        Some("terminal.capture") => {
+                            assert_eq!(
+                                v.get("paneId").and_then(|x| x.as_str()),
+                                Some(pane_srv.as_str()),
+                                "capture must target the registered pane"
+                            );
+                            saw_capture = true;
+                            break;
+                        }
+                        Some("hello") => saw_hello = true,
+                        _ => {}
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        // Scripted capture reply + live chunks + one replace:true frame.
+        let snapshot_msg = serde_json::json!({
+            "type": "terminal.snapshot",
+            "session": "dev",
+            "paneId": pane_srv,
+            "data": snap_srv,
+            "replace": true,
+            "screenRows": screen_rows,
+        });
+        write
+            .send(Message::Text(snapshot_msg.to_string().into()))
+            .await
+            .unwrap();
+        for chunk in &chunks_srv {
+            let out = serde_json::json!({
+                "type": "terminal.output",
+                "session": "dev",
+                "paneId": pane_srv,
+                "data": chunk,
+                "replace": false,
+            });
+            write
+                .send(Message::Text(out.to_string().into()))
+                .await
+                .unwrap();
+        }
+        let replace_msg = serde_json::json!({
+            "type": "terminal.output",
+            "session": "dev",
+            "paneId": pane_srv,
+            "data": replace_srv,
+            "replace": true,
+            "screenRows": replace_rows,
+        });
+        write
+            .send(Message::Text(replace_msg.to_string().into()))
+            .await
+            .unwrap();
+
+        // Wait for the debounced terminal.resize (clamped, no hello).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            let remain = deadline - std::time::Instant::now();
+            match tokio::time::timeout(remain, read.next()).await {
+                Ok(Some(Ok(Message::Text(t)))) => {
+                    let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                    match v.get("type").and_then(|x| x.as_str()) {
+                        Some("terminal.resize") => {
+                            let cols = v.get("cols").and_then(|x| x.as_i64()).unwrap_or(0);
+                            let rows = v.get("rows").and_then(|x| x.as_i64()).unwrap_or(0);
+                            resize_dims = (cols, rows);
+                            saw_resize = true;
+                            break;
+                        }
+                        Some("hello") => saw_hello = true,
+                        _ => {}
+                    }
+                }
+                _ => break,
+            }
+        }
+        // Drain briefly for a stray hello after resize.
+        while let Ok(Some(Ok(Message::Text(t)))) = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            read.next(),
+        )
+        .await
+        {
+            let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+            if v.get("type").and_then(|x| x.as_str()) == Some("hello") {
+                saw_hello = true;
+            }
+        }
+        (saw_capture, saw_resize, saw_hello, resize_dims)
+    });
+
+    let handle = connect_session(&base_url, "dev", 1)
+        .await
+        .expect("connect failed");
+    // Drain bootstrap ready + snapshot.
+    for _ in 0..2 {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle.recv_event())
+            .await
+            .expect("no bootstrap event")
+            .expect("event channel closed");
+    }
+
+    // Pane-register → capture request.
+    let capture = WsIncoming {
+        msg_type: "terminal.capture".to_string(),
+        pane_id: Some(pane_id.clone()),
+        ..Default::default()
+    };
+    let _ = handle.send_command(capture).expect("capture send failed");
+
+    // Snapshot commit: replace:true with the scrollback+screen blob.
+    let snap_ev = tokio::time::timeout(std::time::Duration::from_secs(5), handle.recv_event())
+        .await
+        .expect("no terminal.snapshot")
+        .expect("event channel closed");
+    assert_eq!(snap_ev.msg.msg_type, "terminal.snapshot");
+    assert!(snap_ev.msg.replace);
+    assert_eq!(snap_ev.msg.pane_id.as_deref(), Some(pane_id.as_str()));
+    assert_eq!(snap_ev.msg.screen_rows, Some(screen_rows));
+    let snap_data = snap_ev.msg.data.clone().unwrap_or_default();
+    assert_eq!(snap_data, snapshot_data);
+    assert!(
+        snap_data.contains(&expected[0]),
+        "snapshot must carry expected grid text, got {snap_data:?}"
+    );
+
+    // Live chunks continue seamlessly.
+    for chunk in &chunks {
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(5), handle.recv_event())
+            .await
+            .expect("no live chunk")
+            .expect("event channel closed");
+        assert_eq!(ev.msg.msg_type, "terminal.output");
+        assert!(!ev.msg.replace);
+        assert_eq!(ev.msg.data.as_deref(), Some(chunk.as_str()));
+    }
+    // One replace:true frame (Windows capture-poll shape).
+    let rep_ev = tokio::time::timeout(std::time::Duration::from_secs(5), handle.recv_event())
+        .await
+        .expect("no replace frame")
+        .expect("event channel closed");
+    assert_eq!(rep_ev.msg.msg_type, "terminal.output");
+    assert!(rep_ev.msg.replace);
+    assert_eq!(rep_ev.msg.screen_rows, Some(replace_rows));
+    let rep_data = rep_ev.msg.data.clone().unwrap_or_default();
+    assert_eq!(rep_data, replace_data);
+    assert!(
+        rep_data.contains(&expected[2]),
+        "replace frame must carry expected grid text, got {rep_data:?}"
+    );
+
+    // Simulated settle → debounced window-level resize (clamped, D4: no hello).
+    let resize = WsIncoming {
+        msg_type: "terminal.resize".to_string(),
+        cols: Some(resize_cols),
+        rows: Some(resize_rows),
+        ..Default::default()
+    };
+    let _ = handle.send_command(resize).expect("resize send failed");
+    // Let the write pump flush the resize before teardown (disconnect sets
+    // closed and would otherwise drop the queued frame).
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    handle.disconnect();
+
+    let (saw_capture, saw_resize, saw_hello, (cols, rows)) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("server hung")
+            .unwrap();
+    assert!(saw_capture, "server never saw terminal.capture for the pane");
+    assert!(saw_resize, "server never saw the debounced terminal.resize");
+    assert!(!saw_hello, "client must never send hello (D4)");
+    assert!(
+        cols >= 2 && rows >= 1,
+        "resize must be clamped cols>=2 rows>=1, got {cols}x{rows}"
+    );
+}
