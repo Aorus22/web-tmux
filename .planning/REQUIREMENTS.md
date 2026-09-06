@@ -10,7 +10,7 @@ Requirements for milestone v1.0 (Desktop GPUI). Each maps to roadmap phases.
 ### Shell (window chrome)
 
 - [ ] **SHELL-01**: User sees a frameless title bar with drag region, app identity, tmux-window tabs of the active session, and a Settings gear — visually identical to the Electron title bar
-- [ ] **SHELL-02**: User can minimize/maximize/restore/close via the custom title-bar window controls
+- [x] **SHELL-02**: User can minimize/maximize/restore/close via the custom title-bar window controls
 - [ ] **SHELL-03**: User can toggle the sidebar collapsed/expanded (binary snap; no slide animation — accepted deviation, documented)
 - [ ] **SHELL-04**: Window geometry (position/size) and theme preference persist across restarts
 - [ ] **SHELL-05**: App renders with the embedded monospace font (JetBrains Mono) and embedded lucide SVG icons — no system font or icon dependency
@@ -57,7 +57,7 @@ Requirements for milestone v1.0 (Desktop GPUI). Each maps to roadmap phases.
 - [ ] **SET-02**: User can configure terminal prefs: font size, line height, scrollback lines, per-pane TUI-scroll default
 - [ ] **SET-03**: User can set the tmux binary path (Windows), validated against `/api/tmux/binary` with status/error surfaced
 - [ ] **SET-04**: User can toggle the three kill-confirmation switches
-- [ ] **SET-05**: Settings persist across restarts (webterm settings-crate pattern)
+- [x] **SET-05**: Settings persist across restarts (webterm settings-crate pattern)
 
 ### Theming
 
@@ -67,14 +67,14 @@ Requirements for milestone v1.0 (Desktop GPUI). Each maps to roadmap phases.
 
 ### States & resilience
 
-- [ ] **STATE-01**: User sees "Starting backend…" while the sidecar warms up, and a failed-backend page with reason + Retry/Quit after the 10s port timeout
+- [x] **STATE-01**: User sees "Starting backend…" while the sidecar warms up, and a failed-backend page with reason + Retry/Quit after the 10s port timeout
 - [ ] **STATE-02**: User sees Empty (no sessions), Error (tmux missing), and SelectSession states matching Electron
 - [ ] **STATE-03**: User sees a reconnect banner and toasts on `tmux.disconnected`/`tmux.reconnecting` and command errors
 - [ ] **STATE-04**: A WS generation guard ensures stale session events never render into the wrong tab
 
 ### Build & packaging
 
-- [ ] **PKG-01**: `cargo build` works on Windows (debug without fxc; release with the ported fxc tool) and Linux (dev-package prerequisites documented)
+- [x] **PKG-01**: `cargo build` works on Windows (debug without fxc; release with the ported fxc tool) and Linux (dev-package prerequisites documented)
 - [ ] **PKG-02**: Package scripts produce Windows + Linux dist bundles with the Go backend sidecar adjacent to the app executable
 - [ ] **PKG-03**: Makefile targets integrate desktop-gpui build/dev into the repo workflow
 
@@ -108,7 +108,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | SHELL-01 | Phase 3 | Pending |
-| SHELL-02 | Phase 1 | Pending |
+| SHELL-02 | Phase 1 | Complete |
 | SHELL-03 | Phase 2 | Pending |
 | SHELL-04 | Phase 6 | Pending |
 | SHELL-05 | Phase 6 | Pending |
@@ -140,19 +140,20 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SET-02 | Phase 6 | Pending |
 | SET-03 | Phase 6 | Pending |
 | SET-04 | Phase 6 | Pending |
-| SET-05 | Phase 1 | Pending |
+| SET-05 | Phase 1 | Complete |
 | THEME-01 | Phase 6 | Pending |
 | THEME-02 | Phase 6 | Pending |
 | THEME-03 | Phase 6 | Pending |
-| STATE-01 | Phase 1 | Pending |
+| STATE-01 | Phase 1 | Complete |
 | STATE-02 | Phase 2 | Pending |
 | STATE-03 | Phase 7 | Pending |
 | STATE-04 | Phase 3 | Pending |
-| PKG-01 | Phase 1 | Pending |
+| PKG-01 | Phase 1 | Complete |
 | PKG-02 | Phase 7 | Pending |
 | PKG-03 | Phase 7 | Pending |
 
 **Coverage:**
+
 - v1 requirements: 44 total
 - Mapped to phases: 44
 - Unmapped: 0 ✓

@@ -25,7 +25,7 @@ must be logged as a backend issue, not forked in the GPUI crate.
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Workspace Foundation & Backend Sidecar** - desktop-gpui workspace (exact pins + lockfile), supervisor spawn with startup/failed status, settings persistence, custom window controls
+- [x] **Phase 1: Workspace Foundation & Backend Sidecar** - desktop-gpui workspace (exact pins + lockfile), supervisor spawn with startup/failed status, settings persistence, custom window controls (completed 2026-09-06)
 - [ ] **Phase 2: REST Client, Sidebar & Session Management** - polling session tree, Create Session dialog, empty/error/select states
 - [ ] **Phase 3: WebSocket Client & Multi-Session Tabs** - per-session WS lifecycle with generation guard, session tabs + title bar, correlated mutations
 - [ ] **Phase 4: Terminal Engine & Live Pane Rendering** - alacritty-backed live terminals with capture replay, byte-safe input, scrollback, selection
@@ -154,7 +154,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Workspace Foundation & Backend Sidecar | 3/3 | In Progress|  |
+| 1. Workspace Foundation & Backend Sidecar | 3/3 | Complete    | 2026-09-06 |
 | 2. REST Client, Sidebar & Session Management | TBD | Not started | - |
 | 3. WebSocket Client & Multi-Session Tabs | TBD | Not started | - |
 | 4. Terminal Engine & Live Pane Rendering | TBD | Not started | - |
