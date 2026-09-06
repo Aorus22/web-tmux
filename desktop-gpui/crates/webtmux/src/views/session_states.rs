@@ -35,6 +35,9 @@ pub fn determine_workspace_state(
 
 /// Render the central workspace body based on current AppState.
 pub fn render_workspace_body(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    if app.showing_settings {
+        return render_settings_placeholder(app, cx).into_any_element();
+    }
     match app.workspace_state() {
         WorkspaceState::Error => render_error_state(app, cx).into_any_element(),
         WorkspaceState::Empty => render_empty_state(app, cx).into_any_element(),
@@ -338,6 +341,60 @@ pub fn render_select_session_view(app: &mut AppState, cx: &mut Context<AppState>
         )
 }
 
+/// Renders the honest Phase-6 placeholder behind the SHELL-01 Settings gear.
+///
+/// Static copy only — no settings values, paths, or tokens displayed (T-03-08).
+/// Open tabs stay connected underneath; Back returns to the prior workspace
+/// routing (`showing_settings = false`, `active_session` left as-is).
+pub fn render_settings_placeholder(_app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let muted_text = rgb(0x808080);
+    let foreground_text = rgb(0xd4d4d4);
+    let border_color = rgb(0x3c3c3c);
+    let hover_bg = rgb(0x262626);
+
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .size_full()
+        .p(px(32.0))
+        .gap(px(12.0))
+        .text_center()
+        .child(
+            div()
+                .text_base()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(foreground_text)
+                .child("Settings arrive in Phase 6"),
+        )
+        .child(
+            div()
+                .max_w(px(384.0))
+                .text_sm()
+                .text_color(muted_text)
+                .child("Your tabs stay connected underneath — pick one from the sidebar to go back."),
+        )
+        .child(
+            div()
+                .mt(px(4.0))
+                .px(px(16.0))
+                .py(px(8.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(border_color)
+                .text_color(foreground_text)
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .hover(|s| s.bg(hover_bg))
+                .child("Back to sessions")
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _window, cx| {
+                    this.showing_settings = false;
+                    cx.notify();
+                })),
+        )
+}
 /// Renders placeholder for when a session is actively selected.
 ///
 /// Phase-3 tracer: when the active session is an open tab with a committed WS

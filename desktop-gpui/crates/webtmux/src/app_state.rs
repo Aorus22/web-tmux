@@ -6,8 +6,9 @@ use gpui::*;
 use gpui::prelude::FluentBuilder;
 use webtmux_backend_client::{
     connect_session_with_pending, RestClient, SessionSnapshot, SessionWsHandle, SharedPending,
-    TransportState, TmuxTree, WsOutgoing, EV_STATE_DELTA, EV_STATE_SNAPSHOT, EV_SERVER_ERROR,
-    EV_TERMINAL_OUTPUT, EV_TERMINAL_SNAPSHOT, EV_TMUX_DISCONNECTED, EV_TMUX_RECONNECTING,
+    TransportState, TmuxTree, WsIncoming, WsOutgoing, EV_STATE_DELTA, EV_STATE_SNAPSHOT,
+    EV_SERVER_ERROR, EV_TERMINAL_OUTPUT, EV_TERMINAL_SNAPSHOT, EV_TMUX_DISCONNECTED,
+    EV_TMUX_RECONNECTING, MSG_WINDOW_SELECT,
 };
 use webtmux_settings::DesktopSettings;
 use webtmux_supervisor::{BackendInfo, BackendStatus, SpawnOptions, Supervisor};
@@ -92,6 +93,10 @@ pub struct AppState {
     pub open_sessions: Vec<String>,
     pub sessions: HashMap<String, OpenSession>,
 
+    /// Settings placeholder page flag (SHELL-01, Phase-6-owned page): the gear
+    /// sets `active_session = None` + this to true; tabs stay open underneath.
+    pub showing_settings: bool,
+
     /// DLG1 Create Session dialog form entity, held alive while the modal is
     /// open. Reset to `None` on dismiss; replaced on every (re)open.
     pub create_session_form:
@@ -119,6 +124,7 @@ impl AppState {
             create_session_form: None,
             open_sessions: Vec::new(),
             sessions: HashMap::new(),
+            showing_settings: false,
         }
     }
 
@@ -463,6 +469,26 @@ impl AppState {
                 }
             })
             .collect()
+    }
+
+    /// Fire-and-forget `window.select` on the active session's socket
+    /// (SHELL-01, FE `WindowTabs.tsx:120` parity): correlated send, no await,
+    /// no optimistic flip — state follows via delta. No-op when there is no
+    /// active session or its socket is not connected. The dropped receiver's
+    /// pending entry is cleaned when the server's `command.success` arrives.
+    pub fn send_window_select(&self, window_id: &str) {
+        let Some(active) = self.active_session.as_deref() else {
+            return;
+        };
+        let Some(handle) = self.sessions.get(active).and_then(|e| e.handle.as_ref()) else {
+            return;
+        };
+        let msg = WsIncoming {
+            msg_type: MSG_WINDOW_SELECT.to_string(),
+            pane_id: Some(window_id.to_string()),
+            ..Default::default()
+        };
+        let _ = handle.send_command(msg);
     }
 
     /// Connect-on-open (D4): create the entry with `generation + 1` and spawn

@@ -293,7 +293,12 @@ pub fn render_sidebar(app: &mut AppState, cx: &mut Context<AppState>) -> impl In
                                         .text_sm()
                                         .text_color(foreground_text)
                                         .child("Settings"),
-                                ),
+                                )
+                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _window, cx| {
+                                    this.active_session = None;
+                                    this.showing_settings = true;
+                                    cx.notify();
+                                })),
                         ),
                 ),
         )
