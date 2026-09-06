@@ -1,7 +1,9 @@
-//! Root application state and supervisor lifecycle pump.
+//! Root application state, polling pump, and supervisor lifecycle.
 
+use std::collections::HashSet;
 use std::sync::LazyLock;
 use gpui::*;
+use webtmux_backend_client::{RestClient, TmuxTree};
 use webtmux_settings::DesktopSettings;
 use webtmux_supervisor::{BackendInfo, BackendStatus, SpawnOptions, Supervisor};
 use crate::views::{status::render_status_page, tab_strip::render_title_bar};
@@ -29,6 +31,15 @@ pub struct AppState {
     pub base_url: Option<String>,
     pub is_maximized: bool,
     pub supervisor: std::sync::Arc<parking_lot::Mutex<Option<Supervisor>>>,
+
+    // Phase 2: REST Client, Polling, Sidebar & Session State
+    pub rest_client: Option<RestClient>,
+    pub tree: TmuxTree,
+    pub active_session: Option<String>,
+    pub expanded_sessions: HashSet<String>,
+    pub sidebar_open: bool,
+    pub poll_generation: u64,
+    pub tree_error: Option<String>,
 }
 
 impl AppState {
@@ -41,7 +52,93 @@ impl AppState {
             base_url: None,
             is_maximized,
             supervisor: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+
+            rest_client: None,
+            tree: TmuxTree::default(),
+            active_session: None,
+            expanded_sessions: HashSet::new(),
+            sidebar_open: true,
+            poll_generation: 0,
+            tree_error: None,
         }
+    }
+
+    /// Trigger an immediate REST polling fetch with generation guard discarding stale ticks.
+    pub fn trigger_poll(&mut self, cx: &mut Context<Self>) {
+        let client = match &self.rest_client {
+            Some(c) => c.clone(),
+            None => return,
+        };
+
+        self.poll_generation += 1;
+        let expected_gen = self.poll_generation;
+
+        cx.spawn(move |view_weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let cx_handle = cx.clone();
+            async move {
+                let result = client.tree().await;
+                let _ = cx_handle.update(|cx: &mut App| {
+                    if let Some(entity) = view_weak.upgrade() {
+                        entity.update(cx, |this, cx| {
+                            if this.poll_generation != expected_gen {
+                                return;
+                            }
+                            match result {
+                                Ok(tree) => {
+                                    if this.active_session.is_none() && !tree.sessions.is_empty() {
+                                        this.active_session = Some(tree.sessions[0].session.name.clone());
+                                    } else if let Some(active) = &this.active_session {
+                                        if !tree.sessions.iter().any(|s| &s.session.name == active) {
+                                            this.active_session = tree.sessions.first().map(|s| s.session.name.clone());
+                                        }
+                                    }
+                                    this.tree = tree;
+                                    this.tree_error = None;
+                                }
+                                Err(e) => {
+                                    this.tree_error = Some(e.to_string());
+                                }
+                            }
+                            cx.notify();
+                        });
+                    }
+                });
+            }
+        }).detach();
+    }
+
+    /// Start 1500ms background polling loop.
+    pub fn start_polling_loop(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(|view_weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let cx_handle = cx.clone();
+            async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_millis(1500));
+                // First tick completes immediately
+                interval.tick().await;
+
+                loop {
+                    interval.tick().await;
+                    let should_continue = cx_handle.update(|cx: &mut App| {
+                        if let Some(entity) = view_weak.upgrade() {
+                            entity.update(cx, |this, cx| {
+                                if let BackendStatus::Ready(_) = &this.backend_status {
+                                    this.trigger_poll(cx);
+                                    true
+                                } else {
+                                    false
+                                }
+                            })
+                        } else {
+                            false
+                        }
+                    });
+
+                    if !should_continue {
+                        break;
+                    }
+                }
+            }
+        }).detach();
     }
 
     /// Stop any running supervisor and terminate child process.
@@ -71,7 +168,6 @@ impl AppState {
         self.backend_status = BackendStatus::Starting;
         cx.notify();
 
-        let view_weak = cx.entity().downgrade();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SupervisorEvent>();
         let supervisor_arc = self.supervisor.clone();
 
@@ -109,12 +205,10 @@ impl AppState {
         });
 
         // Observe events inside GPUI foreground executor with weak.upgrade() leak prevention
-        cx.spawn(move |_view, cx: &mut AsyncApp| {
-            let view_weak = view_weak.clone();
+        cx.spawn(move |view_weak: WeakEntity<Self>, cx: &mut AsyncApp| {
             let cx_handle = cx.clone();
             async move {
                 while let Some(event) = rx.recv().await {
-                    let view_weak = view_weak.clone();
                     let _ = cx_handle.update(|cx: &mut App| {
                         if let Some(entity) = view_weak.upgrade() {
                             entity.update(cx, |this, cx| {
@@ -124,7 +218,11 @@ impl AppState {
                                     }
                                     SupervisorEvent::Ready(info) => {
                                         this.base_url = Some(info.base_url.clone());
+                                        let client = RestClient::new(&info.base_url);
+                                        this.rest_client = Some(client);
                                         this.backend_status = BackendStatus::Ready(info);
+                                        this.trigger_poll(cx);
+                                        this.start_polling_loop(cx);
                                     }
                                     SupervisorEvent::Failed { reason, stderr_tail } => {
                                         this.backend_status = BackendStatus::Failed {

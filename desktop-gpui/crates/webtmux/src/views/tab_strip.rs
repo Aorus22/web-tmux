@@ -2,7 +2,9 @@
 
 use gpui::*;
 use crate::app_state::AppState;
-use crate::icons::{COPY_SVG, MINUS_SVG, SQUARE_SVG, TERMINAL_SQUARE_SVG, X_SVG};
+use crate::icons::{
+    COPY_SVG, MINUS_SVG, PANEL_LEFT_SVG, SQUARE_SVG, TERMINAL_SQUARE_SVG, X_SVG,
+};
 
 /// Render the minimal S1 title bar with app identity, drag area, and custom window controls.
 pub fn render_title_bar(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
@@ -23,13 +25,39 @@ pub fn render_title_bar(app: &mut AppState, cx: &mut Context<AppState>) -> impl 
         .border_b_1()
         .border_color(border_color)
         .px_3()
-        // Left: Identity icon (TerminalSquare 16px) + "Tmux GUI" Body 14px/500
+        // Left: Sidebar Toggle button (PanelLeft 16px, 40x32 button) + Identity icon + "Tmux GUI"
         .child(
             div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap_2()
+                // Sidebar toggle button (SHELL-03)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(32.0))
+                        .h(px(32.0))
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(hover_bg).text_color(text_color))
+                        .child(
+                            svg()
+                                .data(PANEL_LEFT_SVG)
+                                .size(px(16.0))
+                                .text_color(if app.sidebar_open {
+                                    text_color
+                                } else {
+                                    muted_text
+                                }),
+                        )
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _window, cx| {
+                            this.sidebar_open = !this.sidebar_open;
+                            cx.notify();
+                        })),
+                )
                 .child(
                     svg()
                         .data(TERMINAL_SQUARE_SVG)
