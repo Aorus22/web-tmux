@@ -238,10 +238,11 @@ impl Supervisor {
                     let mut lock = stderr_tail.lock();
                     lock.push_str(&line);
                     lock.push('\n');
-                    let len = lock.chars().count();
-                    if len > MAX_STDERR_TAIL_CHARS {
-                        let to_drop = len - MAX_STDERR_TAIL_CHARS;
-                        *lock = lock.chars().skip(to_drop).collect();
+                    if lock.len() > MAX_STDERR_TAIL_CHARS {
+                        let excess = lock.len() - MAX_STDERR_TAIL_CHARS;
+                        if let Some((idx, _)) = lock.char_indices().find(|(i, _)| *i >= excess) {
+                            *lock = lock[idx..].to_string();
+                        }
                     }
                 }
             });
