@@ -64,6 +64,15 @@ impl AppState {
         }
     }
 
+    /// Determine current workspace state (Error, Empty, SelectSession, ActiveSession).
+    pub fn workspace_state(&self) -> crate::views::session_states::WorkspaceState {
+        crate::views::session_states::determine_workspace_state(
+            self.tree_error.as_deref(),
+            !self.tree.sessions.is_empty(),
+            self.active_session.is_some(),
+        )
+    }
+
     /// Trigger an immediate REST polling fetch with generation guard discarding stale ticks.
     pub fn trigger_poll(&mut self, cx: &mut Context<Self>) {
         let client = match &self.rest_client {
@@ -268,20 +277,7 @@ impl Render for AppState {
                                     .flex_1()
                                     .size_full()
                                     .bg(rgb(0x1e1e1e))
-                                    // Main workspace body placeholder
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .size_full()
-                                            .text_sm()
-                                            .text_color(rgb(0x808080))
-                                            .child(match &self.active_session {
-                                                Some(name) => format!("Active session: {}", name),
-                                                None => "Select a session".to_string(),
-                                            }),
-                                    ),
+                                    .child(crate::views::session_states::render_workspace_body(self, cx))
                             )
                     })
                     .when(!is_ready, |s| {
