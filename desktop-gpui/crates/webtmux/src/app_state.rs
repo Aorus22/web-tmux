@@ -9,12 +9,14 @@ use tokio::sync::oneshot;
 use webtmux_backend_client::{
     connect_session, connect_session_with_pending, validate_session_name, RestClient,
     CommandResult, SessionSnapshot, SessionWsHandle, SharedPending, TransportState, TmuxTree,
-    WsIncoming, WsOutgoing, EV_STATE_DELTA, EV_STATE_SNAPSHOT, EV_SERVER_ERROR,
-    EV_TERMINAL_OUTPUT, EV_TERMINAL_SNAPSHOT, EV_TMUX_DISCONNECTED, EV_TMUX_RECONNECTING,
-    MSG_SESSION_KILL, MSG_SESSION_RENAME, MSG_WINDOW_SELECT,
+    WsIncoming, WsOutgoing, EV_CONNECTION_READY, EV_STATE_DELTA, EV_STATE_SNAPSHOT,
+    EV_SERVER_ERROR, EV_TERMINAL_OUTPUT, EV_TERMINAL_SNAPSHOT, EV_TMUX_DISCONNECTED,
+    EV_TMUX_RECONNECTING, MSG_SESSION_KILL, MSG_SESSION_RENAME, MSG_TERMINAL_CAPTURE,
+    MSG_TERMINAL_INPUT, MSG_WINDOW_SELECT,
 };
 use webtmux_settings::DesktopSettings;
 use webtmux_supervisor::{BackendInfo, BackendStatus, SpawnOptions, Supervisor};
+use webtmux_terminal::{apply_capture, Terminal, TerminalEvent};
 use crate::views::{status::render_status_page, tab_strip::render_title_bar};
 
 /// Global multi-thread Tokio runtime entered once at application boot.
@@ -62,6 +64,40 @@ impl Default for OpenSession {
             last_error: None,
         }
     }
+}
+
+/// One pane's live terminal plus its capture-replay guards (Phase 4, TERM-02).
+///
+/// Lives in the `AppState` store — never inside views — so hidden sessions
+/// keep ingesting while unmounted (Pitfall 6).
+pub struct PaneTerminal {
+    /// The alacritty-backed grid; mutated synchronously on the GPUI thread.
+    pub terminal: Terminal,
+    /// Exactly-once gate: first `terminal.snapshot` replaces, later ones drop
+    /// until `invalidate_pane_snapshot` re-arms (reconnect / layout resync).
+    pub snapshot_written: bool,
+    /// Scrollback lines already pushed to this instance (FE `ingestedHistory`).
+    pub ingested_history: usize,
+}
+
+impl PaneTerminal {
+    fn fresh() -> Self {
+        Self {
+            terminal: Terminal::new(80, 24),
+            snapshot_written: false,
+            ingested_history: 0,
+        }
+    }
+}
+
+/// Generation-tagged pending viewport armed by `TerminalView` resize
+/// callbacks (Phase 4, TERM-06). Armed here, SENT in plan 04-02 — never from
+/// paint (Pitfall 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingViewport {
+    pub generation: u64,
+    pub cols: usize,
+    pub rows: usize,
 }
 
 /// Title-bar window-tab model derived from the active snapshot (SHELL-01).
@@ -128,6 +164,18 @@ pub struct AppState {
     /// open. Reset to `None` on dismiss; replaced on every (re)open.
     pub create_session_form:
         Option<gpui::Entity<crate::views::create_session_dialog::CreateSessionForm>>,
+
+    // Phase 4: pane-id-keyed terminal store (TERM-01/02/03/07). Owns every
+    // pane's `Terminal`; views borrow/render the active session's entries.
+    pub terminals: HashMap<String, PaneTerminal>,
+    /// Pane → owning session attribution for input routing + D7 retirement.
+    pub pane_session: HashMap<String, String>,
+    /// Per-pane TUI-scroll override (D3); absent means ON (`unwrap_or(true)`).
+    pub tui_scroll: HashMap<String, bool>,
+    /// Last OSC title per pane (D8); bell is a no-op.
+    pub pane_titles: HashMap<String, String>,
+    /// Resize armed by views, sent by plan 04-02 (TERM-06).
+    pub pending_viewport: Option<PendingViewport>,
 }
 
 impl AppState {
@@ -155,6 +203,11 @@ impl AppState {
             rename_session_form: None,
             kill_session_form: None,
             pending_rename: None,
+            terminals: HashMap::new(),
+            pane_session: HashMap::new(),
+            tui_scroll: HashMap::new(),
+            pane_titles: HashMap::new(),
+            pending_viewport: None,
         }
     }
 
@@ -431,8 +484,9 @@ impl AppState {
     /// (b) envelope session match (absent `session` treated as belonging,
     ///     FE `websocket.ts:140-148` parity),
     /// (c) tab-liveness (entry still in the map).
-    /// `terminal.snapshot`/`terminal.output` parse-and-ignore: accepted,
-    /// committed nowhere (Phase 4 owns them).
+    /// `terminal.snapshot`/`terminal.output` commit into the pane-id-keyed
+    /// store (Phase 4, TERM-02/07); malformed terminal frames drop-and-continue
+    /// (accepted, committed nowhere — never unwrap in the commit path).
     pub fn apply_event(&mut self, session: &str, generation: u64, msg: &WsOutgoing) -> bool {
         let entry = match self.sessions.get_mut(session) {
             Some(e) => e,
@@ -448,15 +502,59 @@ impl AppState {
         }
         match msg.msg_type.as_str() {
             EV_STATE_SNAPSHOT | EV_STATE_DELTA => {
-                if let Some(snap) = msg.snapshot.clone() {
-                    entry.snapshot = Some(snap);
+                let snap = match msg.snapshot.clone() {
+                    Some(s) => s,
+                    None => return false,
+                };
+                let was_connected = self
+                    .sessions
+                    .get(session)
+                    .is_some_and(|e| e.transport == TransportState::Connected);
+                if let Some(entry) = self.sessions.get_mut(session) {
+                    entry.snapshot = Some(snap.clone());
                     entry.transport = TransportState::Connected;
-                    true
-                } else {
-                    false
                 }
+                // D7 attribution + retirement scoped to this session: other
+                // sessions' panes are untouched (TERM-07).
+                let present: HashSet<String> =
+                    snap.panes.iter().map(|p| p.id.clone()).collect();
+                for pane in &present {
+                    self.attribute_pane(session, pane);
+                }
+                self.retire_stale_panes(session, &present);
+                // D6: transition into Connected re-arms + re-captures this
+                // session's registered panes (idempotent via the gate; a
+                // fresh first snapshot has no registered panes → no-op).
+                if !was_connected {
+                    self.recapture_session(session);
+                }
+                true
             }
-            EV_TERMINAL_SNAPSHOT | EV_TERMINAL_OUTPUT => true, // parse-and-ignore
+            EV_TERMINAL_SNAPSHOT | EV_TERMINAL_OUTPUT => {
+                let pane_id = match msg.pane_id.clone() {
+                    Some(p) if !p.is_empty() => p,
+                    _ => return true, // malformed: drop-and-continue
+                };
+                let data = msg.data.clone().unwrap_or_default();
+                if msg.msg_type == EV_TERMINAL_SNAPSHOT {
+                    self.commit_terminal_snapshot(session, &pane_id, &data, msg.screen_rows);
+                } else {
+                    self.commit_terminal_output(
+                        session,
+                        &pane_id,
+                        &data,
+                        msg.replace,
+                        msg.screen_rows,
+                    );
+                }
+                true
+            }
+            EV_CONNECTION_READY => {
+                // D6: belt-and-braces with the snapshot-transition path above
+                // (gate-safe if it already re-captured).
+                self.recapture_session(session);
+                true
+            }
             EV_TMUX_DISCONNECTED => {
                 entry.transport = TransportState::Disconnected;
                 true
@@ -470,6 +568,229 @@ impl AppState {
                 true
             }
             _ => true, // connection.ready, command acks, unknown: nothing to commit
+        }
+    }
+
+    // -- Phase 4: pane-id-keyed TerminalStore + terminal sends --------------
+
+    /// Fresh-or-existing store entry (create-on-demand: terminal frames may
+    /// precede the first snapshot on reconnect; D7 retirement keeps it bound).
+    pub fn pane_entry(&mut self, pane_id: &str) -> &mut PaneTerminal {
+        self.terminals
+            .entry(pane_id.to_string())
+            .or_insert_with(PaneTerminal::fresh)
+    }
+
+    /// Headless grid dump for a pane (contract tests, views).
+    pub fn pane_grid_text(&self, pane_id: &str) -> Option<Vec<String>> {
+        self.terminals.get(pane_id).map(|e| e.terminal.grid_text())
+    }
+
+    /// Replay counter for a pane (contract tests).
+    pub fn pane_ingested_history(&self, pane_id: &str) -> Option<usize> {
+        self.terminals.get(pane_id).map(|e| e.ingested_history)
+    }
+
+    /// Last OSC title for a pane (D8).
+    pub fn pane_title(&self, pane_id: &str) -> Option<String> {
+        self.pane_titles.get(pane_id).cloned()
+    }
+
+    /// D3: per-pane TUI-scroll switch — absent means ON (FE `?? true` parity).
+    pub fn tui_scroll(&self, pane_id: &str) -> bool {
+        self.tui_scroll.get(pane_id).copied().unwrap_or(true)
+    }
+
+    /// Attribute pane → session (D7). When attribution CHANGES sessions the
+    /// entry resets fresh: tmux may reuse a `%N`, and a stale grid must never
+    /// replay under a new owner.
+    fn attribute_pane(&mut self, session: &str, pane_id: &str) {
+        let changed = self
+            .pane_session
+            .get(pane_id)
+            .is_some_and(|s| s != session);
+        self.pane_session
+            .insert(pane_id.to_string(), session.to_string());
+        if changed {
+            self.terminals
+                .insert(pane_id.to_string(), PaneTerminal::fresh());
+        }
+    }
+
+    /// Resolve the owning session for a pane: explicit attribution first, then
+    /// the latest committed snapshots (Phase-3 D5 lesson — never the active
+    /// proxy). `None` is a typed miss: the caller sends nothing.
+    pub fn owning_session(&self, pane_id: &str) -> Option<String> {
+        if let Some(s) = self.pane_session.get(pane_id) {
+            return Some(s.clone());
+        }
+        for (name, entry) in &self.sessions {
+            if let Some(snap) = entry.snapshot.as_ref() {
+                if snap.panes.iter().any(|p| p.id == pane_id) {
+                    return Some(name.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Commit a `terminal.snapshot` frame: exactly-once gate + apply_capture.
+    /// Synchronous on the GPUI thread in pump order (frame atomicity, no
+    /// queue). Returns true when applied, false when dropped by the gate.
+    pub fn commit_terminal_snapshot(
+        &mut self,
+        session: &str,
+        pane_id: &str,
+        data: &str,
+        screen_rows: Option<i32>,
+    ) -> bool {
+        self.attribute_pane(session, pane_id);
+        let entry = self.pane_entry(pane_id);
+        if entry.snapshot_written {
+            return false; // exactly-once: remount re-requests die here
+        }
+        entry.snapshot_written = true;
+        let feed = apply_capture(data, screen_rows, &mut entry.ingested_history);
+        entry.terminal.process_bytes(&feed);
+        self.drain_pane_events(pane_id);
+        true
+    }
+
+    /// Commit a `terminal.output` frame: `replace=true` runs the capture path
+    /// WITHOUT the gate (FE `replaceScreen` is not idempotent-gated);
+    /// `replace=false` feeds raw bytes straight to the Processor.
+    pub fn commit_terminal_output(
+        &mut self,
+        session: &str,
+        pane_id: &str,
+        data: &str,
+        replace: bool,
+        screen_rows: Option<i32>,
+    ) -> bool {
+        self.attribute_pane(session, pane_id);
+        if replace {
+            let entry = self.pane_entry(pane_id);
+            let feed = apply_capture(data, screen_rows, &mut entry.ingested_history);
+            entry.terminal.process_bytes(&feed);
+        } else {
+            self.pane_entry(pane_id)
+                .terminal
+                .process_bytes(data.as_bytes());
+        }
+        self.drain_pane_events(pane_id);
+        true
+    }
+
+    /// Drain alacritty events for a pane: `Title` commits the last-title map
+    /// (D8, feeds Phase-5 headers), `Bell` is a no-op.
+    fn drain_pane_events(&mut self, pane_id: &str) {
+        let events = match self.terminals.get(pane_id) {
+            Some(e) => e.terminal.drain_events(),
+            None => return,
+        };
+        for ev in events {
+            if let TerminalEvent::Title(title) = ev {
+                self.pane_titles.insert(pane_id.to_string(), title);
+            }
+        }
+    }
+
+    /// Re-arm the exactly-once gate so the next snapshot replaces (layout-key
+    /// resync / reconnect / manual resync).
+    pub fn invalidate_pane_snapshot(&mut self, pane_id: &str) {
+        if let Some(e) = self.terminals.get_mut(pane_id) {
+            e.snapshot_written = false;
+        }
+    }
+
+    /// D7: retire entries attributed to `session` but absent from its latest
+    /// panes (counters and titles drop too).
+    pub fn retire_stale_panes(&mut self, session: &str, present: &HashSet<String>) {
+        let stale: Vec<String> = self
+            .pane_session
+            .iter()
+            .filter(|(pane, sess)| sess.as_str() == session && !present.contains(pane.as_str()))
+            .map(|(pane, _)| pane.clone())
+            .collect();
+        for pane in stale {
+            self.terminals.remove(&pane);
+            self.pane_session.remove(&pane);
+            self.pane_titles.remove(&pane);
+        }
+    }
+
+    /// Pure constructor for `terminal.input`: owning-socket resolve + envelope.
+    /// The payload rides `String` (exact UTF-8 round-trip, locked by the
+    /// task-1 contract test — never lossy).
+    pub fn build_terminal_input(
+        &self,
+        pane_id: &str,
+        data: String,
+    ) -> Option<(String, WsIncoming)> {
+        let session = self.owning_session(pane_id)?;
+        let msg = WsIncoming {
+            msg_type: MSG_TERMINAL_INPUT.to_string(),
+            pane_id: Some(pane_id.to_string()),
+            data: Some(data),
+            ..Default::default()
+        };
+        Some((session, msg))
+    }
+
+    /// Fire-and-forget `terminal.input` on the OWNING session's socket (the
+    /// receiver is dropped — uncorrelated by server design, same shape as
+    /// `send_window_select`). False on miss or dead socket; never panics.
+    /// No `hello` is sent anywhere (D4).
+    pub fn send_terminal_input(&self, pane_id: &str, data: String) -> bool {
+        let (session, msg) = match self.build_terminal_input(pane_id, data) {
+            Some(v) => v,
+            None => return false,
+        };
+        match self.sessions.get(&session).and_then(|e| e.handle.as_ref()) {
+            Some(handle) => handle.send_command(msg).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Pure constructor for `terminal.capture` (initial + resync captures).
+    pub fn build_terminal_capture(&self, pane_id: &str) -> Option<(String, WsIncoming)> {
+        let session = self.owning_session(pane_id)?;
+        let msg = WsIncoming {
+            msg_type: MSG_TERMINAL_CAPTURE.to_string(),
+            pane_id: Some(pane_id.to_string()),
+            ..Default::default()
+        };
+        Some((session, msg))
+    }
+
+    /// Fire-and-forget `terminal.capture` on the owning socket (FE
+    /// initial-capture parity). False on miss or dead socket.
+    pub fn request_pane_capture(&self, pane_id: &str) -> bool {
+        let (session, msg) = match self.build_terminal_capture(pane_id) {
+            Some(v) => v,
+            None => return false,
+        };
+        match self.sessions.get(&session).and_then(|e| e.handle.as_ref()) {
+            Some(handle) => handle.send_command(msg).is_ok(),
+            None => false,
+        }
+    }
+
+    /// D6: re-arm + re-capture every registered pane of `session` (reconnect).
+    /// Invalidation always runs (headless-testable); sends no-op without
+    /// live sockets. Idempotent and cheap.
+    pub fn recapture_session(&mut self, session: &str) {
+        let panes: Vec<String> = self
+            .pane_session
+            .iter()
+            .filter(|(_, s)| s.as_str() == session)
+            .map(|(p, _)| p.clone())
+            .collect();
+        for pane in &panes {
+            self.invalidate_pane_snapshot(pane);
+        }
+        for pane in &panes {
+            let _ = self.request_pane_capture(pane);
         }
     }
 

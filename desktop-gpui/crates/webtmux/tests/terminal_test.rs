@@ -114,8 +114,8 @@ fn test_snapshot_exactly_once() {
     commit_state(&mut app, "dev", vec![("%0", "@0")]);
     let gen = app.sessions.get("dev").unwrap().generation;
 
-    // Fresh pane: empty grid.
-    assert_eq!(app.pane_grid_text("%0").unwrap()[0], "");
+    // Fresh pane: no store entry until the first terminal frame lands.
+    assert_eq!(app.pane_grid_text("%0"), None);
 
     // First snapshot replays history exactly once then paints the screen.
     let blob1 = "h1\nh2\ns1\ns2";
