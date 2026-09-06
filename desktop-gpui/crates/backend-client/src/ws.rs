@@ -215,3 +215,287 @@ pub fn normalize_ws_url(base_url: &str, session: &str) -> Result<String, WsUrlEr
         encode_query_value(session)
     ))
 }
+
+// ---------------------------------------------------------------------------
+// Live transport: connect_session + split-pump SessionWsHandle (Task 2)
+// ---------------------------------------------------------------------------
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::oneshot;
+use tokio_tungstenite::connect_async;
+
+/// Per-session pending correlation map shared between the handle and the read pump.
+pub type SharedPending = Arc<Mutex<HashMap<String, oneshot::Sender<CommandResult>>>>;
+
+/// One inbound frame tagged with the connection it arrived on.
+///
+/// The pump captures `(session, generation)` at spawn; the GPUI apply path drops
+/// events whose generation no longer matches (STATE-04 guard layer (a)).
+#[derive(Debug, Clone)]
+pub struct WsPumpEvent {
+    pub session: String,
+    pub generation: u64,
+    pub msg: WsOutgoing,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WsConnectError {
+    #[error("invalid base URL: {0}")]
+    Url(#[from] WsUrlError),
+    #[error("websocket connect failed for {url}: {source}")]
+    Connect {
+        url: String,
+        #[source]
+        source: tokio_tungstenite::tungstenite::Error,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum WsSendError {
+    #[error("session socket is disconnected")]
+    Disconnected,
+    #[error("failed to encode command: {0}")]
+    Encode(String),
+}
+
+/// Flume-based handle for one session socket.
+///
+/// Shape mirrors the reference `terminal_ws.rs` split-pump: an unbounded outbound
+/// queue drained by a write pump, and a read pump forwarding tagged events. All I/O
+/// lives in tasks spawned on the caller's runtime — never await `connect_async` or
+/// pump futures on the GPUI thread; spawn them on `TOKIO_RT`.
+pub struct SessionWsHandle {
+    session: String,
+    generation: u64,
+    outbound: flume::Sender<Option<String>>,
+    events: flume::Receiver<WsPumpEvent>,
+    pending: SharedPending,
+    closed: Arc<AtomicBool>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl std::fmt::Debug for SessionWsHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionWsHandle")
+            .field("session", &self.session)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for SessionWsHandle {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::SeqCst);
+        let _ = self.outbound.send(None);
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
+}
+
+impl SessionWsHandle {
+    /// Connection session this handle is bound to.
+    pub fn session(&self) -> &str {
+        &self.session
+    }
+
+    /// Generation captured at spawn (compare against the entry before sending).
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Shared pending-correlation map (same `Arc` the read pump resolves into).
+    pub fn pending(&self) -> SharedPending {
+        self.pending.clone()
+    }
+
+    /// Receive the next tagged inbound event (`None` once the socket is gone).
+    pub async fn recv_event(&self) -> Option<WsPumpEvent> {
+        self.events.recv_async().await.ok()
+    }
+
+    /// Send a correlated command: registers `pending[request_id]` BEFORE enqueueing
+    /// (no lost-wakeup race), then queues the serialized envelope. Assigns a fresh
+    /// `request_id` when the message carries none.
+    pub fn send_command(
+        &self,
+        mut msg: WsIncoming,
+    ) -> Result<oneshot::Receiver<CommandResult>, WsSendError> {
+        if msg.request_id.as_deref().unwrap_or_default().is_empty() {
+            msg.request_id = Some(request_id());
+        }
+        let id = msg.request_id.clone().unwrap_or_default();
+        let (tx, rx) = oneshot::channel();
+        match self.pending.lock() {
+            Ok(mut pending) => pending.insert(id.clone(), tx),
+            Err(_) => return Err(WsSendError::Disconnected),
+        };
+        let json = serde_json::to_string(&msg).map_err(|e| {
+            if let Ok(mut pending) = self.pending.lock() {
+                pending.remove(&id);
+            }
+            WsSendError::Encode(e.to_string())
+        })?;
+        if self.closed.load(Ordering::SeqCst) || self.outbound.send(Some(json)).is_err() {
+            if let Ok(mut pending) = self.pending.lock() {
+                pending.remove(&id);
+            }
+            return Err(WsSendError::Disconnected);
+        }
+        Ok(rx)
+    }
+
+    /// Tear down the socket: the write pump exits, the server sees EOF, and the
+    /// read pump drains to `None`. The handle stays usable for `recv_event` drain.
+    pub fn disconnect(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        let _ = self.outbound.send(None);
+    }
+}
+
+/// Connect one session socket and spawn its split pumps on the caller's runtime.
+pub async fn connect_session(
+    base_url: &str,
+    session: &str,
+    generation: u64,
+) -> Result<SessionWsHandle, WsConnectError> {
+    connect_session_with_pending(base_url, session, generation, SharedPending::default()).await
+}
+
+/// `connect_session` with a caller-provided pending map so `AppState` entries can
+/// share the same correlation table as the handle (T-03-03 audit point).
+pub async fn connect_session_with_pending(
+    base_url: &str,
+    session: &str,
+    generation: u64,
+    pending: SharedPending,
+) -> Result<SessionWsHandle, WsConnectError> {
+    let url = normalize_ws_url(base_url, session)?;
+    let (ws, _) = connect_async(&url).await.map_err(|e| WsConnectError::Connect {
+        url: url.clone(),
+        source: e,
+    })?;
+    let (mut sink, mut stream) = ws.split();
+
+    let (outbound_tx, outbound_rx) = flume::unbounded::<Option<String>>();
+    let (events_tx, events_rx) = flume::unbounded::<WsPumpEvent>();
+    let closed = Arc::new(AtomicBool::new(false));
+
+    let session_name = session.to_string();
+
+    // Write pump: drain the outbound queue into Text frames; None = shutdown.
+    let write_closed = closed.clone();
+    let write_task = tokio::spawn(async move {
+        while let Ok(item) = outbound_rx.recv_async().await {
+            let text = match item {
+                Some(text) => text,
+                None => break,
+            };
+            if write_closed.load(Ordering::SeqCst) {
+                break;
+            }
+            if sink
+                .send(tokio_tungstenite::tungstenite::Message::Text(text.into()))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    // Read pump: parse Text frames drop-and-continue (never unwrap — T-03-01),
+    // resolve command correlations, answer ready with resync, forward the rest tagged.
+    let read_session = session_name.clone();
+    let read_outbound = outbound_tx.clone();
+    let read_pending = pending.clone();
+    let read_closed = closed.clone();
+    let read_task = tokio::spawn(async move {
+        let forward = |msg: WsOutgoing| {
+            let _ = events_tx.send(WsPumpEvent {
+                session: read_session.clone(),
+                generation,
+                msg,
+            });
+        };
+        loop {
+            if read_closed.load(Ordering::SeqCst) {
+                break;
+            }
+            let msg = match stream.next().await {
+                Some(Ok(m)) => m,
+                Some(Err(_)) | None => {
+                    forward(WsOutgoing {
+                        msg_type: EV_TMUX_DISCONNECTED.to_string(),
+                        session: Some(read_session.clone()),
+                        ..Default::default()
+                    });
+                    break;
+                }
+            };
+            match msg {
+                tokio_tungstenite::tungstenite::Message::Text(text) => {
+                    let parsed: Result<WsOutgoing, _> = serde_json::from_str(&text);
+                    let incoming = match parsed {
+                        Ok(m) => m,
+                        Err(_) => continue, // malformed frame: drop-and-continue
+                    };
+                    match incoming.msg_type.as_str() {
+                        EV_CONNECTION_READY => {
+                            // FE sockets.ts parity: belt-and-braces full refresh.
+                            let resync = WsIncoming {
+                                msg_type: MSG_STATE_RESYNC.to_string(),
+                                ..Default::default()
+                            };
+                            if let Ok(json) = serde_json::to_string(&resync) {
+                                let _ = read_outbound.send(Some(json));
+                            }
+                            forward(incoming);
+                        }
+                        EV_COMMAND_SUCCESS | EV_COMMAND_ERROR => {
+                            let ok = incoming.msg_type == EV_COMMAND_SUCCESS;
+                            if let Some(id) = incoming.request_id.clone() {
+                                let waiter = match read_pending.lock() {
+                                    Ok(mut p) => p.remove(&id),
+                                    Err(_) => None,
+                                };
+                                if let Some(tx) = waiter {
+                                    let _ = tx.send(CommandResult {
+                                        request_id: id,
+                                        ok,
+                                        message: incoming.message.clone(),
+                                    });
+                                }
+                                // Late reply with no waiter: ignored (forget-timeout).
+                            }
+                        }
+                        _ => forward(incoming),
+                    }
+                }
+                tokio_tungstenite::tungstenite::Message::Close(_) => {
+                    forward(WsOutgoing {
+                        msg_type: EV_TMUX_DISCONNECTED.to_string(),
+                        session: Some(read_session.clone()),
+                        ..Default::default()
+                    });
+                    break;
+                }
+                _ => continue, // Binary/Ping/Pong/Frame: ignorable
+            }
+        }
+    });
+
+    Ok(SessionWsHandle {
+        session: session_name,
+        generation,
+        outbound: outbound_tx,
+        events: events_rx,
+        pending,
+        closed,
+        tasks: vec![write_task, read_task],
+    })
+}
