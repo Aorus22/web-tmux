@@ -367,7 +367,8 @@ fn test_wheel_policy() {
     );
     assert_eq!(ignored, WheelAction::Ignored);
     assert!((accum - 40.0).abs() < f32::EPSILON);
-    // Crossing the notch emits one PageDown (GPUI positive = down-content).
+    // Crossing the notch emits one PageUp (GPUI positive = wheel-up, matching
+    // the SGR/scrollback sign above and the reference view).
     let (paged, accum2) = decide_wheel_action(
         plain,
         true,
@@ -379,11 +380,14 @@ fn test_wheel_policy() {
     );
     match paged {
         WheelAction::Pages(bytes) => {
-            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[6~")
+            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[5~")
         }
         other => panic!("TUI-on must page, got {other:?}"),
     }
-    assert!(accum2.abs() < 1.0);
+    assert!(
+        (accum2 - 10.0).abs() < 1.0,
+        "leftover must be 110-100=10, got {accum2}"
+    );
 
     // Line deltas scale ×16 into px (FE parity): 7 lines = 112px = 1 notch.
     assert!((wheel_delta_to_px(WheelDelta::Lines(7.0)) - 112.0).abs() < f32::EPSILON);
@@ -398,7 +402,7 @@ fn test_wheel_policy() {
     );
     match line_page {
         WheelAction::Pages(bytes) => {
-            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[6~")
+            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[5~")
         }
         other => panic!("line-delta TUI paging failed, got {other:?}"),
     }
@@ -415,12 +419,12 @@ fn test_wheel_policy() {
     );
     match burst {
         WheelAction::Pages(bytes) => {
-            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[6~\x1b[6~\x1b[6~")
+            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[5~\x1b[5~\x1b[5~")
         }
         other => panic!("burst must clamp to 3, got {other:?}"),
     }
-    // Wheel up (negative px) pages up.
-    let (up_page, _) = decide_wheel_action(
+    // Wheel down (negative px) pages down.
+    let (down_page, _) = decide_wheel_action(
         plain,
         true,
         WheelDelta::Pixels(-100.0),
@@ -429,11 +433,11 @@ fn test_wheel_policy() {
         alac_origin(),
         0,
     );
-    match up_page {
+    match down_page {
         WheelAction::Pages(bytes) => {
-            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[5~")
+            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[6~")
         }
-        other => panic!("wheel up must send PageUp, got {other:?}"),
+        other => panic!("wheel down must send PageDown, got {other:?}"),
     }
 
     // TUI-off → scrollback delta lines via the reference pixel→lines conversion.
@@ -459,7 +463,7 @@ fn test_wheel_policy() {
     let a2 = app.apply_wheel("%0", WheelDelta::Pixels(70.0), 18.9, alac_origin(), 0);
     match a2 {
         WheelAction::Pages(bytes) => {
-            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[6~")
+            assert_eq!(String::from_utf8(bytes).unwrap(), "\x1b[5~")
         }
         other => panic!("AppState accum must page on notch, got {other:?}"),
     }

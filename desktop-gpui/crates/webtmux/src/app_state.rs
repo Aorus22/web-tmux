@@ -17,7 +17,7 @@ use webtmux_backend_client::{
 };
 use webtmux_settings::DesktopSettings;
 use webtmux_supervisor::{BackendInfo, BackendStatus, SpawnOptions, Supervisor};
-use webtmux_terminal::{apply_capture, Terminal, TerminalEvent};
+use webtmux_terminal::{apply_capture, scroll_report, AlacPoint, TermMode, Terminal, TerminalEvent};
 use crate::views::terminal_view::TerminalView;
 use crate::views::{status::render_status_page, tab_strip::render_title_bar};
 
@@ -104,6 +104,158 @@ pub struct PendingViewport {
     pub rows: usize,
 }
 
+// --- Phase 4 plan 04-02 Task 1: FE-parity wheel policy (TERM-04) --------
+///
+/// FE ground truth (`fe/src/features/terminal/useTerminal.ts:124-170`):
+/// capture-phase consume; TUI-switch ON → notch accumulator (100px/notch,
+/// line×16, page×100, burst clamp 3) emitting PageUp/PageDown repeats over
+/// `terminal.input`; OFF → native scrollback. GPUI port adds the SGR branch
+/// first (mouse-reporting apps get SGR 64/65 via `scroll_report`).
+///
+/// Sign note: DOM `WheelEvent.deltaY` is negative on wheel-up, while GPUI
+/// `ScrollDelta` positive-y means wheel-up (reference `view.rs` treats
+/// positive as up for both `scroll_report` and `scroll_display`). The TUI key
+/// mapping below is therefore mirrored vs the FE text (`pages > 0 → PageUp`)
+/// but semantically identical: wheel-up pages up in both systems.
+pub const WHEEL_NOTCH_PX: f32 = 100.0;
+pub const WHEEL_MAX_BURST: i32 = 3;
+pub const WHEEL_LINE_PX: f32 = 16.0;
+pub const PAGE_UP_SEQ: &str = "\x1b[5~";
+pub const PAGE_DOWN_SEQ: &str = "\x1b[6~";
+
+/// Headless wheel delta mirroring GPUI `ScrollDelta` without the GPUI event
+/// type (pure-apply pattern: decision stays testable, the view converts).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WheelDelta {
+    Lines(f32),
+    Pixels(f32),
+}
+
+/// Pure wheel outcome: bytes to send over `terminal.input`, a scrollback
+/// delta to apply, or sub-notch silence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WheelAction {
+    Sgr(Vec<u8>),
+    Pages(Vec<u8>),
+    Scrollback(i32),
+    Ignored,
+}
+
+/// FE normalization into pixels for the TUI notch accumulator:
+/// line deltas scale ×16, pixel deltas pass through (page deltas do not exist
+/// in GPUI; FE page×100 has no caller here).
+pub fn wheel_delta_to_px(delta: WheelDelta) -> f32 {
+    match delta {
+        WheelDelta::Lines(y) => y * WHEEL_LINE_PX,
+        WheelDelta::Pixels(y) => y,
+    }
+}
+
+/// Reference pixel→lines conversion (`view.rs:410-427` Pixels branch) plus the
+/// Lines passthrough: the TUI-off scrollback path.
+pub fn wheel_delta_to_lines(delta: WheelDelta, cell_h: f32) -> i32 {
+    match delta {
+        WheelDelta::Lines(y) => y.round() as i32,
+        WheelDelta::Pixels(y) => {
+            if cell_h > 0.0 {
+                (y / cell_h).round() as i32
+            } else {
+                0
+            }
+        }
+    }
+}
+
+fn mouse_reporting_on(mode: TermMode) -> bool {
+    mode.intersects(
+        TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_MOTION | TermMode::MOUSE_DRAG,
+    )
+}
+
+/// Pure wheel decision (mode bits + tui flag + delta → action + new accum).
+/// Headless-testable; the GPUI handler only converts + emits.
+pub fn decide_wheel_action(
+    mode: TermMode,
+    tui_on: bool,
+    delta: WheelDelta,
+    accum_px: f32,
+    cell_h: f32,
+    point: AlacPoint,
+    mods: u8,
+) -> (WheelAction, f32) {
+    // Mouse-reporting apps get verbatim SGR passthrough (no accumulation).
+    if mouse_reporting_on(mode) {
+        let lines = wheel_delta_to_lines(delta, cell_h);
+        if lines == 0 {
+            return (WheelAction::Ignored, accum_px);
+        }
+        match scroll_report(lines, point, mods, mode) {
+            Some(bytes) => return (WheelAction::Sgr(bytes), accum_px),
+            None => return (WheelAction::Ignored, accum_px),
+        }
+    }
+    if tui_on {
+        let accum2 = accum_px + wheel_delta_to_px(delta);
+        let notches = (accum2 / WHEEL_NOTCH_PX).trunc() as i32;
+        if notches == 0 {
+            return (WheelAction::Ignored, accum2);
+        }
+        let pages = notches.clamp(-WHEEL_MAX_BURST, WHEEL_MAX_BURST);
+        let new_accum = accum2 - notches as f32 * WHEEL_NOTCH_PX;
+        let seq = if pages > 0 {
+            PAGE_UP_SEQ
+        } else {
+            PAGE_DOWN_SEQ
+        };
+        let mut bytes = Vec::with_capacity(seq.len() * pages.unsigned_abs() as usize);
+        for _ in 0..pages.unsigned_abs() {
+            bytes.extend_from_slice(seq.as_bytes());
+        }
+        return (WheelAction::Pages(bytes), new_accum);
+    }
+    // TUI-off: scrollback delta (safe no-op-ish over alt-screen per A4 —
+    // alacritty clamps internally).
+    let lines = wheel_delta_to_lines(delta, cell_h);
+    if lines == 0 {
+        (WheelAction::Ignored, accum_px)
+    } else {
+        (WheelAction::Scrollback(lines), accum_px)
+    }
+}
+
+// --- Phase 4 plan 04-02 Task 1: copy/paste key routing (TERM-05) ---------
+///
+/// Mirrors the `TerminalView::on_key_down` checks (which stay as the runtime
+/// path): `Ctrl+Shift+C` or `Cmd+C` with a selection copies, `Ctrl+Shift+V`
+/// or `Cmd+V` pastes, everything else falls to the `keystroke_to_bytes` path
+/// (so `Ctrl+C` with an empty selection becomes the `\x03` interrupt).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyRoute {
+    Copy,
+    Paste,
+    Terminal,
+}
+
+pub fn decide_key_route(
+    has_selection: bool,
+    ctrl: bool,
+    shift: bool,
+    platform: bool,
+    key: &str,
+) -> KeyRoute {
+    let is_copy = (ctrl && shift && key.eq_ignore_ascii_case("c"))
+        || (platform && key.eq_ignore_ascii_case("c"));
+    if is_copy && has_selection {
+        return KeyRoute::Copy;
+    }
+    let is_paste = (ctrl && shift && key.eq_ignore_ascii_case("v"))
+        || (platform && key.eq_ignore_ascii_case("v"));
+    if is_paste {
+        return KeyRoute::Paste;
+    }
+    KeyRoute::Terminal
+}
+
 /// Title-bar window-tab model derived from the active snapshot (SHELL-01).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowTab {
@@ -180,6 +332,14 @@ pub struct AppState {
     pub pane_titles: HashMap<String, String>,
     /// Resize armed by views, sent by plan 04-02 (TERM-06).
     pub pending_viewport: Option<PendingViewport>,
+    /// Per-pane wheel notch accumulator (px leftover, FE `wheelAccum` parity).
+    pub wheel_accum: HashMap<String, f32>,
+    /// Debounce sequence: bumped per arm, timers drop when stale (poll-pump
+    /// generation pattern — second arm supersedes the first).
+    pub resize_seq: u64,
+    /// Last seen layout key for the 150/325ms resync pair; `None` = first
+    /// mount (initial captures already cover it — skip the pair).
+    pub last_layout_key: Option<String>,
     /// Retained per-pane views for the active window (tracer layout; Phase 5
     /// owns geometry). Views hold only a shared terminal clone — the store
     /// above stays the owner, so hidden sessions keep ingesting.
@@ -216,6 +376,9 @@ impl AppState {
             tui_scroll: HashMap::new(),
             pane_titles: HashMap::new(),
             pending_viewport: None,
+            wheel_accum: HashMap::new(),
+            resize_seq: 0,
+            last_layout_key: None,
             terminal_views: HashMap::new(),
         }
     }
@@ -610,6 +773,57 @@ impl AppState {
     /// D3: per-pane TUI-scroll switch — absent means ON (FE `?? true` parity).
     pub fn tui_scroll(&self, pane_id: &str) -> bool {
         self.tui_scroll.get(pane_id).copied().unwrap_or(true)
+    }
+
+    /// Current selection text for a pane (TERM-05 headless lock; the GPUI
+    /// clipboard itself is unavailable in tests, so copy/paste helpers assert
+    /// on this plus the `terminal.input` byte path instead of `cx.clipboard`).
+    pub fn pane_selection_text(&self, pane_id: &str) -> Option<String> {
+        self.terminals
+            .get(pane_id)
+            .and_then(|e| e.terminal.lock().selection_text())
+    }
+
+    /// FE-parity wheel emit (TERM-04): decide via `decide_wheel_action` with
+    /// the per-pane accumulator, persist the leftover, then emit — SGR/Page
+    /// bytes ride `terminal.input` on the owning socket (one message, server
+    /// batcher owns chunking), scrollback applies `scroll_display` to the
+    /// store terminal. Returns the decided action for headless assertions;
+    /// sends no-op without a live socket but the action/accum still update.
+    pub fn apply_wheel(
+        &mut self,
+        pane_id: &str,
+        delta: WheelDelta,
+        cell_h: f32,
+        point: AlacPoint,
+        mods: u8,
+    ) -> WheelAction {
+        let mode = self
+            .terminals
+            .get(pane_id)
+            .map(|e| e.terminal.lock().mode())
+            .unwrap_or_else(TermMode::empty);
+        let tui_on = self.tui_scroll(pane_id);
+        let accum = self.wheel_accum.get(pane_id).copied().unwrap_or(0.0);
+        let (action, new_accum) =
+            decide_wheel_action(mode, tui_on, delta, accum, cell_h, point, mods);
+        self.wheel_accum.insert(pane_id.to_string(), new_accum);
+        match &action {
+            WheelAction::Sgr(bytes) | WheelAction::Pages(bytes) => {
+                if let Ok(data) = String::from_utf8(bytes.clone()) {
+                    let _ = self.send_terminal_input(pane_id, data);
+                }
+            }
+            WheelAction::Scrollback(lines) => {
+                if *lines != 0 {
+                    if let Some(entry) = self.terminals.get(pane_id) {
+                        entry.terminal.lock().scroll_display(*lines);
+                    }
+                }
+            }
+            WheelAction::Ignored => {}
+        }
+        action
     }
 
     /// Attribute pane → session (D7). When attribution CHANGES sessions the

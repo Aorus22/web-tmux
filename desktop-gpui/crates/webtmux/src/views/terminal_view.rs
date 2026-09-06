@@ -14,14 +14,13 @@
 //!   and the `AppState` commit path is its single consumer (D8 titles). A
 //!   second drain here would steal `Title` events from the commit path.
 
-use crate::app_state::{AppState, PendingViewport};
+use crate::app_state::{decide_key_route, AppState, KeyRoute, PendingViewport, WheelDelta};
 use gpui::*;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use webtmux_terminal::{
     keystroke_to_bytes, modifiers_to_mouse_code, mouse_button_report, pixel_to_cell,
-    scroll_report, selection_type_from_clicks, AlacPoint, ColorPalette, Column, Line, Terminal,
-    TerminalRenderer,
+    selection_type_from_clicks, AlacPoint, ColorPalette, Column, Line, Terminal, TerminalRenderer,
 };
 
 pub type InputCallback = Arc<dyn Fn(&[u8]) + Send + Sync>;
@@ -258,27 +257,33 @@ impl TerminalView {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        // Clipboard shortcuts:
-        // Ctrl+Shift+C or Cmd+C -> Copy (only with a non-empty selection)
-        let is_copy = (event.keystroke.modifiers.control
-            && event.keystroke.modifiers.shift
-            && event.keystroke.key.eq_ignore_ascii_case("c"))
-            || (event.keystroke.modifiers.platform
-                && event.keystroke.key.eq_ignore_ascii_case("c"));
-
-        if is_copy && self.copy_selection(cx) {
-            return;
-        }
-
-        // Ctrl+Shift+V or Cmd+V -> Paste
-        let is_paste = (event.keystroke.modifiers.control
-            && event.keystroke.modifiers.shift
-            && event.keystroke.key.eq_ignore_ascii_case("v"))
-            || (event.keystroke.modifiers.platform
-                && event.keystroke.key.eq_ignore_ascii_case("v"));
-
-        if is_paste && self.paste_clipboard(cx) {
-            return;
+        // Clipboard routing via the headless-tested helper (TERM-05):
+        // Ctrl+Shift+C / Cmd+C with a selection copies, Ctrl+Shift+V /
+        // Cmd+V pastes, everything else (incl. Ctrl+C with an empty
+        // selection) falls through to the interrupt byte path below.
+        let has_selection = self
+            .terminal
+            .lock()
+            .selection_text()
+            .is_some_and(|t| !t.is_empty());
+        match decide_key_route(
+            has_selection,
+            event.keystroke.modifiers.control,
+            event.keystroke.modifiers.shift,
+            event.keystroke.modifiers.platform,
+            &event.keystroke.key,
+        ) {
+            KeyRoute::Copy => {
+                if self.copy_selection(cx) {
+                    return;
+                }
+            }
+            KeyRoute::Paste => {
+                if self.paste_clipboard(cx) {
+                    return;
+                }
+            }
+            KeyRoute::Terminal => {}
         }
 
         // Any key press resets scrollback offset to zero (bottom of terminal)
@@ -411,23 +416,19 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let delta_lines = match event.delta {
-            ScrollDelta::Lines(delta) => delta.y.round() as i32,
-            ScrollDelta::Pixels(delta) => {
-                let dy: f32 = delta.y.into();
-                let ch: f32 = self.renderer.cell_height.into();
-                if ch > 0.0 {
-                    (dy / ch).round() as i32
-                } else {
-                    0
-                }
+        // FE-parity wheel policy (TERM-04): convert to the headless
+        // `WheelDelta`, compute the SGR point, then emit via the AppState
+        // accumulator path (SGR/Page bytes over terminal.input, scrollback
+        // via scroll_display). Capture-phase consume is implicit: GPUI
+        // delivers the wheel to the focused view and we never propagate.
+        let delta = match event.delta {
+            ScrollDelta::Lines(d) => WheelDelta::Lines(d.y),
+            ScrollDelta::Pixels(d) => {
+                let dy: f32 = d.y.into();
+                WheelDelta::Pixels(dy)
             }
         };
-
-        if delta_lines == 0 {
-            return;
-        }
-
+        let cell_h: f32 = self.renderer.cell_height.into();
         let bounds = *self.last_bounds.lock();
         let pt = if let Some(bounds) = bounds {
             let origin = Point {
@@ -446,17 +447,12 @@ impl TerminalView {
         } else {
             AlacPoint::new(Line(0), Column(0))
         };
-
-        let mode = self.terminal.lock().mode();
         let mouse_mods = modifiers_to_mouse_code(&event.modifiers);
-
-        if let Some(bytes) = scroll_report(delta_lines, pt, mouse_mods, mode) {
-            self.write_to_pty(&bytes, cx);
-        } else {
-            let mut term = self.terminal.lock();
-            term.scroll_display(delta_lines);
-        }
-
+        let pane = self.pane_id.clone();
+        let _ = self.app.update(cx, |app, cx| {
+            app.apply_wheel(&pane, delta, cell_h, pt, mouse_mods);
+            cx.notify();
+        });
         cx.notify();
     }
 }
@@ -508,6 +504,16 @@ impl Render for TerminalView {
                             (bounds.size.height - padding.top - padding.bottom).into();
                         let cw: f32 = measured.cell_width.into();
                         let ch: f32 = measured.cell_height.into();
+
+                        // Zero-size measures never arm (T-04-05): a container
+                        // with no area must not shrink the shared viewport.
+                        if avail_w <= 0.0 || avail_h <= 0.0 || cw <= 0.0 || ch <= 0.0 {
+                            let term = term_arc.lock();
+                            let raw_term_arc = term.term_arc();
+                            let raw_term = raw_term_arc.lock();
+                            measured.paint(bounds, padding, &raw_term, is_focused, window, cx);
+                            return;
+                        }
 
                         let cols = ((avail_w / cw).floor() as usize).max(1);
                         let rows = ((avail_h / ch).floor() as usize).max(1);
