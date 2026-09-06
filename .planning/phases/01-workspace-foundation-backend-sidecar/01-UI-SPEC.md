@@ -1,10 +1,11 @@
 ---
 phase: "1"
 slug: "workspace-foundation-backend-sidecar"
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: "2026-09-06"
+reviewed_at: "2026-09-06"
 ---
 
 # Phase 1 — UI Design Contract
@@ -128,7 +129,7 @@ Copy follows FE casing: sentence case, plain words, ellipsis character in "Start
 
 - Full-width bar, height **44px**, background `#1e1e1e`, bottom border 1px `#3c3c3c` (FE `border-b` on `bg-background/80` — over a `#1e1e1e` body the 80% backdrop-blur blend renders as `#1e1e1e`; GPUI has no backdrop-blur, use solid — Assumption A9), horizontal padding 12px.
 - **Left group** (gap 8px): `TerminalSquare` lucide icon 16px at muted `#808080`, then label **"Tmux GUI"** — Body 14px/500, `#d4d4d4`. (Sidebar toggle button = Phase 2; window tabs = Phase 3; Settings gear = Phase 6.)
-- **Right group**: vertical separator line (1px `#3c3c3c`, 5px total margins), then three adjacent icon buttons, each **40×32px**, radius 6px, no gap:
+- **Right group**: vertical separator line (1px `#3c3c3c`), offset **4px** from the preceding content (`ml-1`, FE AppTitleBar.tsx:85) with **4px** padding to the first button (`pl-1`, same line) — both on-grid `xs`; then three adjacent icon buttons, each **40×32px**, radius 6px, no gap:
   - Minimize: `Minus` icon 16px; **Maximize/Restore**: `Square` 14px when restored, `Copy` 14px when maximized (icon set swaps by actual window state via `IsZoomed` — web-term `window_state::is_window_maximized`); **Close**: `X` icon 16px.
   - Icon stroke width 1.5; idle icon color `#9d9d9d`; hover: background `#2d2d2d` + icon `#d4d4d4`; **close hover: background `#7F1D1D` + icon `#ffffff`**.
 - **Drag contract**: the whole header is a drag region (GPUI: `window.start_window_move()` on mousedown of the bar background — web-term `tab_strip.rs` pattern); the three control buttons opt out (they handle their own mousedown, no window move). Double-click on the bar toggles maximize/restore via `window_state::toggle_maximize`.
@@ -220,12 +221,13 @@ Copy lives only in `## Copywriting Contract` — rows above reference, not resta
 
 ## Checker Sign-Off
 
-- [ ] Dimension 1 Copywriting: PASS
-- [ ] Dimension 2 Visuals: PASS
-- [ ] Dimension 3 Color: PASS
-- [ ] Dimension 4 Typography: PASS
-- [ ] Dimension 5 Spacing: PASS
-- [ ] Dimension 6 Registry Safety: PASS
-- [ ] Dimension 7 Inventory Provenance: PASS
+- [x] Dimension 1 Copywriting: PASS
+- [x] Dimension 2 Visuals: PASS
+- [x] Dimension 3 Color: PASS
+- [x] Dimension 4 Typography: PASS
+- [x] Dimension 5 Spacing: PASS (FLAG resolved 2026-09-06 — S1 separator corrected to FE's 4px `ml-1` + 4px `pl-1`, AppTitleBar.tsx:85)
+- [x] Dimension 6 Registry Safety: PASS
+- [x] Dimension 7 Inventory Provenance: PASS
 
-**Approval:** pending
+**Verdict:** APPROVED — 0 BLOCK, 1 FLAG (D5 spacing, resolved)
+**Approval:** approved 2026-09-06
