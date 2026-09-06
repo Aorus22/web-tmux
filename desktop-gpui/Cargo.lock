@@ -7779,6 +7779,7 @@ version = "0.1.0"
 dependencies = [
  "flume",
  "futures-util",
+ "rand 0.10.2",
  "reqwest",
  "serde",
  "serde_json",
