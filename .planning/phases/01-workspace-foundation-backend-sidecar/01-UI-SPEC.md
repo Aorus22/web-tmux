@@ -163,7 +163,8 @@ Copy follows FE casing: sentence case, plain words, ellipsis character in "Start
 
 ## UI Considerations
 
-Applicable state considerations resolved: **6 covered, 1 backstop, 0 unresolved, 2 not applicable**
+Applicable state considerations resolved: **10 covered, 1 backstop, 0 unresolved, 5 not applicable**
+(Engine-verified 2026-09-06 via ui-consideration-probe.cjs over S1–S4; whole-shell rows retained, per-element rows appended.)
 
 | Category | Element(s) | Status | Resolution / Reason |
 |----------|------------|--------|---------------------|
@@ -174,8 +175,17 @@ Applicable state considerations resolved: **6 covered, 1 backstop, 0 unresolved,
 | long-text | S3 reason string and stderr lines | ✅ covered | Both wrap inside the 700px card (GPUI default whitespace wrap); no ellipsis/truncation |
 | populated | S4 Ready workspace body | 🧪 backstop | Statement: "Ready state renders the shell (S1) over a bare #1e1e1e body with zero status-page leftovers inside Phase 1" — verify at UAT that no Starting/Failed remnant renders after `/api/health` success |
 | partial | S3 backends failing mid-handshake (port found but health probe failed) | ✅ covered | Reason string carries the stage ("port {n} reachable but /api/health never succeeded" style); the page structure is stage-independent |
-| zero-one-many | n/a — Phase 1 has no list collections (sessions/tree arrive Phase 2) | – | Not applicable |
-| zero-one-many (window controls) | S1 max/restore icon states | ✅ covered | Maximize ⇄ restore swaps Square/Copy 14px icons by actual `IsZoomed` state, aria/tooltips swap Maximize/Restore accordingly |
+| zero-one-many (stderr lines) | S3 tail block at 0 / 1 / many captured lines | ✅ covered | Zero → block omitted entirely; one → single-line block; many → newest-10 ring cap, newest last |
+| zero-one-many (window controls) | S1 max/restore icon states | ✅ covered | Maximize ⇄ restore swaps Square/Copy 14px icons by actual `IsZeroed`/`IsZoomed` state, aria/tooltips swap Maximize/Restore accordingly |
+| overflow (title bar) | S1 fixed 44px chrome with controls | ✅ covered | Fixed geometry — identity group, separator, three 40×32 buttons fit statically; scrollable window-tab overflow is Phase 3 scope (documented in the roadmap) |
+| long-text (title bar) | S1 static identity label "Tmux GUI" | ✅ covered | Static constant string, single line, no wrap possible in Phase 1 |
+| populated (S3 card) | S3 card with reason + non-empty tail | ✅ covered | Same structure as the error row — card renders heading+reason+tail together; no separate happy-path variant exists |
+| empty (S1 chrome) | S1 static chrome | – | Not applicable — bar is data-free chrome in every status; no zero-data case exists |
+| loading/error (S1 chrome) | S1 static chrome | – | Not applicable — bar renders identically during S2/S3; loading+error states are the body's contract (whole-shell rows above) |
+| overflow/long-text (S2) | S2 fixed spinner+label column | – | Not applicable — fixed two-element layout; content can never exceed the container |
+| loading (S3) | S3 terminal failure state | – | Not applicable — S3 is a terminal state; loading re-entry is S2 via Retry |
+| loading/error (S4) | S4 ready shell | – | Not applicable — load failures route to S3 by STATE-01; S4 is by definition the post-loading state |
+| overflow/long-text (S4) | S4 bare body | – | Not applicable — no content renders in the body this phase |
 
 Copy lives only in `## Copywriting Contract` — rows above reference, not restate, the copy.
 
