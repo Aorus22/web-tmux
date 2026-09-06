@@ -339,17 +339,63 @@ pub fn render_select_session_view(app: &mut AppState, cx: &mut Context<AppState>
 }
 
 /// Renders placeholder for when a session is actively selected.
+///
+/// Phase-3 tracer: when the active session is an open tab with a committed WS
+/// snapshot, render a real-data panel (session name + window list) proving the
+/// WS path. Terminal rendering arrives in Phase 4.
 fn render_active_session_placeholder(app: &mut AppState, _cx: &mut Context<AppState>) -> impl IntoElement {
     let muted_text = rgb(0x808080);
-    div()
-        .flex()
-        .items_center()
-        .justify_center()
-        .size_full()
-        .text_sm()
-        .text_color(muted_text)
-        .child(match &app.active_session {
-            Some(name) => format!("Active session: {}", name),
-            None => "Select a session".to_string(),
-        })
+    let foreground_text = rgb(0xd4d4d4);
+    let dim_text = rgb(0xaaaaaa);
+
+    let snapshot_panel = app
+        .active_session
+        .clone()
+        .and_then(|name| {
+            app.sessions.get(&name).and_then(|entry| {
+                entry.snapshot.clone().map(|snap| (name, snap))
+            })
+        });
+
+    match snapshot_panel {
+        Some((name, snap)) => div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .p(px(24.0))
+            .gap(px(8.0))
+            .child(
+                div()
+                    .text_base()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(foreground_text)
+                    .child(format!("Session: {}", name)),
+            )
+            .children(snap.windows.iter().map(|w| {
+                div()
+                    .text_xs()
+                    .text_color(dim_text)
+                    .child(format!("{}: {}", w.index, w.name))
+            }))
+            .child(
+                div()
+                    .mt(px(8.0))
+                    .text_xs()
+                    .text_color(muted_text)
+                    .child("Terminal view arrives in Phase 4"),
+            )
+            .into_any_element(),
+        None => div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .size_full()
+            .text_sm()
+            .text_color(muted_text)
+            .child(match &app.active_session {
+                Some(name) => format!("Active session: {}", name),
+                None => "Select a session".to_string(),
+            })
+            .into_any_element(),
+    }
 }

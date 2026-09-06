@@ -318,6 +318,12 @@ impl SessionWsHandle {
         self.events.recv_async().await.ok()
     }
 
+    /// Clone the inbound event queue for a second consumer (the `AppState`
+    /// forward pump). Only one consumer should drain it in practice.
+    pub fn subscribe_events(&self) -> flume::Receiver<WsPumpEvent> {
+        self.events.clone()
+    }
+
     /// Send a correlated command: registers `pending[request_id]` BEFORE enqueueing
     /// (no lost-wakeup race), then queues the serialized envelope. Assigns a fresh
     /// `request_id` when the message carries none.
