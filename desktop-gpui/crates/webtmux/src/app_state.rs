@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use gpui::*;
+use gpui::prelude::FluentBuilder;
 use webtmux_backend_client::{RestClient, TmuxTree};
 use webtmux_settings::DesktopSettings;
 use webtmux_supervisor::{BackendInfo, BackendStatus, SpawnOptions, Supervisor};
@@ -246,6 +247,8 @@ impl Render for AppState {
         let title_bar = render_title_bar(self, cx);
         let status = self.backend_status.clone();
 
+        let is_ready = matches!(status, BackendStatus::Ready(_));
+
         div()
             .flex()
             .flex_col()
@@ -254,19 +257,46 @@ impl Render for AppState {
             .child(title_bar)
             .child(
                 div()
+                    .flex()
+                    .flex_row()
                     .flex_1()
                     .size_full()
-                    .child(render_status_page(
-                        &status,
-                        |this, _, _window, cx| {
-                            this.start_supervisor(cx);
-                        },
-                        |this, _, _window, cx| {
-                            this.stop_supervisor();
-                            cx.quit();
-                        },
-                        cx,
-                    )),
+                    .when(is_ready, |s| {
+                        s.child(crate::views::sidebar::render_sidebar(self, cx))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .size_full()
+                                    .bg(rgb(0x1e1e1e))
+                                    // Main workspace body placeholder
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .size_full()
+                                            .text_sm()
+                                            .text_color(rgb(0x808080))
+                                            .child(match &self.active_session {
+                                                Some(name) => format!("Active session: {}", name),
+                                                None => "Select a session".to_string(),
+                                            }),
+                                    ),
+                            )
+                    })
+                    .when(!is_ready, |s| {
+                        s.child(render_status_page(
+                            &status,
+                            |this, _, _window, cx| {
+                                this.start_supervisor(cx);
+                            },
+                            |this, _, _window, cx| {
+                                this.stop_supervisor();
+                                cx.quit();
+                            },
+                            cx,
+                        ))
+                    }),
             )
     }
 }
