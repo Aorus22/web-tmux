@@ -2,8 +2,12 @@
 //! serialization, and URL/request-id helpers (Task 1) plus mock-server
 //! interop: bootstrap flow, correlated commands, malformed frames (Task 2).
 
+use futures_util::{SinkExt, StreamExt};
+use std::sync::{Arc, Mutex};
+use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::Message;
 use webtmux_backend_client::{
-    normalize_ws_url, request_id, SessionSnapshot, WsIncoming, WsOutgoing,
+    connect_session, normalize_ws_url, request_id, SessionSnapshot, WsIncoming, WsOutgoing,
 };
 
 #[test]
@@ -156,4 +160,280 @@ fn test_request_id_unique() {
     assert!(!a.is_empty());
     assert!(!b.is_empty());
     assert_ne!(a, b, "request ids must be unique per call");
+}
+
+/// Read one text frame from the mock side with a timeout.
+async fn mock_recv_text(
+    read: &mut futures_util::stream::SplitStream<
+        tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    >,
+) -> Option<String> {
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(5), read.next())
+        .await
+        .ok()??;
+    match msg {
+        Ok(Message::Text(t)) => Some(t.to_string()),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn test_ws_bootstrap_flow() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base_url = format!("http://{}", addr);
+    let seen_path: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let seen_path_srv = seen_path.clone();
+
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let seen = seen_path_srv.clone();
+        let ws = tokio_tungstenite::accept_hdr_async(
+            stream,
+            move |req: &tokio_tungstenite::tungstenite::handshake::server::Request, resp| {
+                *seen.lock().unwrap() = req.uri().path_and_query().map(|p| p.to_string());
+                Ok(resp)
+            },
+        )
+        .await
+        .unwrap();
+        let (mut write, mut read) = ws.split();
+
+        // Unsolicited bootstrap: ready + snapshot with no client message first.
+        write
+            .send(Message::Text(
+                r#"{"type":"connection.ready","session":"dev"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let snap = include_str!("fixtures/ws_snapshot_full.json");
+        write.send(Message::Text(snap.into())).await.unwrap();
+
+        // Expect state.resync within 2s.
+        let mut saw_resync = false;
+        let mut saw_hello = false;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            let remain = deadline - std::time::Instant::now();
+            match tokio::time::timeout(remain, read.next()).await {
+                Ok(Some(Ok(Message::Text(t)))) => {
+                    let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                    match v.get("type").and_then(|x| x.as_str()) {
+                        Some("state.resync") => {
+                            saw_resync = true;
+                            break;
+                        }
+                        Some("hello") => saw_hello = true,
+                        _ => {}
+                    }
+                }
+                _ => break,
+            }
+        }
+        // Bootstrap window: keep watching briefly for a stray hello.
+        if saw_resync {
+            while let Ok(Some(Ok(Message::Text(t)))) = tokio::time::timeout(
+                std::time::Duration::from_millis(400),
+                read.next(),
+            )
+            .await
+            {
+                let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                if v.get("type").and_then(|x| x.as_str()) == Some("hello") {
+                    saw_hello = true;
+                }
+            }
+        }
+        (saw_resync, saw_hello)
+    });
+
+    let handle = connect_session(&base_url, "dev", 1)
+        .await
+        .expect("connect failed");
+
+    // Ready + snapshot surface as tagged events for generation 1.
+    let ready = tokio::time::timeout(std::time::Duration::from_secs(5), handle.recv_event())
+        .await
+        .expect("no ready event")
+        .expect("event channel closed");
+    assert_eq!(ready.session, "dev");
+    assert_eq!(ready.generation, 1);
+    assert_eq!(ready.msg.msg_type, "connection.ready");
+
+    let snap_ev = tokio::time::timeout(std::time::Duration::from_secs(5), handle.recv_event())
+        .await
+        .expect("no snapshot event")
+        .expect("event channel closed");
+    assert_eq!(snap_ev.msg.msg_type, "state.snapshot");
+    assert_eq!(
+        snap_ev.msg.snapshot.as_ref().unwrap().session.name,
+        "dev"
+    );
+
+    handle.disconnect();
+    let (saw_resync, saw_hello) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("server hung")
+            .unwrap();
+    assert!(saw_resync, "client must answer ready with state.resync");
+    assert!(!saw_hello, "client must never send hello (D7)");
+    assert_eq!(
+        seen_path.lock().unwrap().as_deref(),
+        Some("/api/ws?session=dev")
+    );
+}
+
+#[tokio::test]
+async fn test_ws_correlated_command() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base_url = format!("http://{}", addr);
+
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let (mut write, mut read) = ws.split();
+        write
+            .send(Message::Text(
+                r#"{"type":"connection.ready","session":"dev"}"#.into(),
+            ))
+            .await
+            .unwrap();
+
+        // First command: reply command.success echoing the requestId.
+        let mut first_id = String::new();
+        while let Some(t) = mock_recv_text(&mut read).await {
+            let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+            if v.get("type").and_then(|x| x.as_str()) == Some("session.rename") {
+                first_id = v
+                    .get("requestId")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                assert_eq!(v.get("newName").and_then(|x| x.as_str()), Some("newname"));
+                break;
+            }
+        }
+        assert!(!first_id.is_empty(), "server never saw session.rename");
+        write
+            .send(Message::Text(
+                format!(r#"{{"type":"command.success","requestId":"{}"}}"#, first_id).into(),
+            ))
+            .await
+            .unwrap();
+
+        // Second command's receiver is dropped (forget-timeout); late reply ignored.
+        while let Some(t) = mock_recv_text(&mut read).await {
+            let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+            if v.get("type").and_then(|x| x.as_str()) == Some("session.rename") {
+                let late_id = v
+                    .get("requestId")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                write
+                    .send(Message::Text(
+                        format!(r#"{{"type":"command.success","requestId":"{}"}}"#, late_id)
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+                break;
+            }
+        }
+        // Prove the pump survived: a snapshot right after is still delivered.
+        let snap = include_str!("fixtures/ws_snapshot_full.json");
+        write.send(Message::Text(snap.into())).await.unwrap();
+    });
+
+    let handle = connect_session(&base_url, "dev", 1)
+        .await
+        .expect("connect failed");
+    // Drain the unsolicited ready.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle.recv_event())
+        .await
+        .unwrap();
+
+    let rename = WsIncoming {
+        msg_type: "session.rename".to_string(),
+        request_id: None, // handle assigns one
+        new_name: Some("newname".to_string()),
+        ..Default::default()
+    };
+    let rx = handle.send_command(rename).expect("send_command failed");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), rx)
+        .await
+        .expect("correlated command timed out")
+        .expect("sender dropped");
+    assert!(result.ok);
+    assert!(!result.request_id.is_empty());
+
+    // Forget-timeout path: drop the waiter, reply still handled without panic.
+    let rename2 = WsIncoming {
+        msg_type: "session.rename".to_string(),
+        request_id: None,
+        new_name: Some("later".to_string()),
+        ..Default::default()
+    };
+    let rx2 = handle.send_command(rename2).expect("send_command failed");
+    drop(rx2);
+    // Next valid event still arrives: pump did not die on the orphan reply.
+    loop {
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(10), handle.recv_event())
+            .await
+            .expect("pump died after orphan reply")
+            .expect("event channel closed");
+        if ev.msg.msg_type == "state.snapshot" {
+            break;
+        }
+    }
+    handle.disconnect();
+    tokio::time::timeout(std::time::Duration::from_secs(10), server)
+        .await
+        .expect("server hung")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_ws_malformed_frame_dropped() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base_url = format!("http://{}", addr);
+
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let (mut write, _read) = ws.split();
+        write
+            .send(Message::Text(
+                r#"{"type":"connection.ready","session":"dev"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        write
+            .send(Message::Text("THIS IS NOT JSON {{{".into()))
+            .await
+            .unwrap();
+        let snap = include_str!("fixtures/ws_snapshot_full.json");
+        write.send(Message::Text(snap.into())).await.unwrap();
+    });
+
+    let handle = connect_session(&base_url, "dev", 1)
+        .await
+        .expect("connect failed");
+    // Ready arrives, malformed frame is dropped, snapshot still delivered.
+    let mut saw_snapshot = false;
+    for _ in 0..3 {
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(5), handle.recv_event())
+            .await
+            .expect("pump panicked or stalled on malformed frame")
+            .expect("event channel closed");
+        if ev.msg.msg_type == "state.snapshot" {
+            saw_snapshot = true;
+            break;
+        }
+    }
+    assert!(saw_snapshot, "valid event after malformed frame was lost");
+    handle.disconnect();
 }
