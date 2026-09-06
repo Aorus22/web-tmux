@@ -14,7 +14,7 @@
 //!   and the `AppState` commit path is its single consumer (D8 titles). A
 //!   second drain here would steal `Title` events from the commit path.
 
-use crate::app_state::{decide_key_route, AppState, KeyRoute, PendingViewport, WheelDelta};
+use crate::app_state::{decide_key_route, AppState, KeyRoute, WheelDelta};
 use gpui::*;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -465,6 +465,13 @@ impl Focusable for TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Layout-key resync hook (TERM-06): first mount records and skips,
+        // later topology changes schedule the 150/325ms pair. Dedupe inside
+        // `observe_layout_key_and_schedule` keeps per-pane renders to one
+        // schedule per key change.
+        let _ = self.app.update(cx, |app, cx| {
+            app.observe_layout_key_and_schedule(cx);
+        });
         let focus_handle = self.focus_handle.clone();
         let is_focused = focus_handle.is_focused(window);
         let term_arc = Arc::clone(&self.terminal);
@@ -519,7 +526,8 @@ impl Render for TerminalView {
                         let rows = ((avail_h / ch).floor() as usize).max(1);
 
                         // Local resize applies immediately; on change the
-                        // resize path fires and only ARMS (never sends).
+                        // resize path fires and only ARMS (never sends —
+                        // Pitfall 4: the 100ms AppState debounce owns sends).
                         let mut term = term_arc.lock();
                         if cols != term.cols() || rows != term.rows() {
                             term.resize(cols, rows);
@@ -529,15 +537,9 @@ impl Render for TerminalView {
                             } else {
                                 let pane = pane_id.clone();
                                 let _ = app_weak.update(cx, |app, cx| {
-                                    let generation = app
-                                        .owning_session(&pane)
-                                        .and_then(|s| app.sessions.get(&s).map(|e| e.generation))
-                                        .unwrap_or(0);
-                                    app.pending_viewport = Some(PendingViewport {
-                                        generation,
-                                        cols,
-                                        rows,
-                                    });
+                                    if app.arm_viewport_for_pane(&pane, cols, rows).is_some() {
+                                        app.schedule_debounced_resize(cx);
+                                    }
                                     cx.notify();
                                 });
                             }

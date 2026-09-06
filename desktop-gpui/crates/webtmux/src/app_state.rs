@@ -13,7 +13,7 @@ use webtmux_backend_client::{
     WsIncoming, WsOutgoing, EV_CONNECTION_READY, EV_STATE_DELTA, EV_STATE_SNAPSHOT,
     EV_SERVER_ERROR, EV_TERMINAL_OUTPUT, EV_TERMINAL_SNAPSHOT, EV_TMUX_DISCONNECTED,
     EV_TMUX_RECONNECTING, MSG_SESSION_KILL, MSG_SESSION_RENAME, MSG_TERMINAL_CAPTURE,
-    MSG_TERMINAL_INPUT, MSG_WINDOW_SELECT,
+    MSG_TERMINAL_INPUT, MSG_TERMINAL_RESIZE, MSG_WINDOW_SELECT,
 };
 use webtmux_settings::DesktopSettings;
 use webtmux_supervisor::{BackendInfo, BackendStatus, SpawnOptions, Supervisor};
@@ -254,6 +254,91 @@ pub fn decide_key_route(
         return KeyRoute::Paste;
     }
     KeyRoute::Terminal
+}
+
+// --- Phase 4 plan 04-02 Task 2: debounced resize + layout resync (TERM-06)
+/// Nominal cell size for the px fallback (`fe/src/lib/geometry.ts:23-24`).
+pub const RESIZE_CELL_W_PX: f32 = 8.0;
+pub const RESIZE_CELL_H_PX: f32 = 18.0;
+
+/// Clamp to the server contract (`cols>=2, rows>=1`; handler rejects
+/// `cols<=0||rows<=0`, service enforces `cols<2||rows<1`).
+pub fn clamp_viewport(cols: usize, rows: usize) -> (i32, i32) {
+    (cols.max(2) as i32, rows.max(1) as i32)
+}
+
+/// FE `pxToColsRows` parity: container px → tmux viewport with the same floor.
+pub fn px_to_cols_rows(width_px: f32, height_px: f32) -> (usize, usize) {
+    (
+        (width_px / RESIZE_CELL_W_PX).round().max(2.0) as usize,
+        (height_px / RESIZE_CELL_H_PX).round().max(1.0) as usize,
+    )
+}
+
+/// FE `actualViewport` parity (`PaneWorkspace.tsx:41-57`): scale one visible
+/// pane's measured xterm size to the whole window via tmux cell geometry. A
+/// full/zoomed pane yields exactly its measured size. Falls back to px
+/// conversion before any terminal registers.
+pub fn actual_viewport(
+    measured_cols: usize,
+    measured_rows: usize,
+    pane_w: usize,
+    pane_h: usize,
+    win_w: usize,
+    win_h: usize,
+    fallback_w_px: f32,
+    fallback_h_px: f32,
+) -> (usize, usize) {
+    if pane_w > 0 && pane_h > 0 && win_w > 0 && win_h > 0 {
+        let cols = ((measured_cols as f32 * win_w as f32) / pane_w as f32)
+            .round()
+            .max(2.0) as usize;
+        let rows = ((measured_rows as f32 * win_h as f32) / pane_h as f32)
+            .round()
+            .max(1.0) as usize;
+        (cols, rows)
+    } else {
+        px_to_cols_rows(fallback_w_px, fallback_h_px)
+    }
+}
+
+/// Pure constructor for window-level `terminal.resize` (clamped, no hello).
+pub fn build_terminal_resize(cols: usize, rows: usize) -> WsIncoming {
+    let (cols, rows) = clamp_viewport(cols, rows);
+    WsIncoming {
+        msg_type: MSG_TERMINAL_RESIZE.to_string(),
+        cols: Some(cols),
+        rows: Some(rows),
+        ..Default::default()
+    }
+}
+
+/// Stable layout key (`activeWindow|WxH|layout|pane-id:cells,zoom…`, FE
+/// `layoutKey` parity). Terminal output and active-pane changes leave it
+/// unchanged, so resync fires only on real topology/geometry changes.
+pub fn compute_layout_key(
+    active_window: &str,
+    win_w: usize,
+    win_h: usize,
+    layout: &str,
+    panes: &[(String, usize, usize, usize, usize, bool)],
+) -> String {
+    let parts: Vec<String> = panes
+        .iter()
+        .map(|(id, left, top, w, h, zoomed)| {
+            format!("{id}:{left},{top},{w},{h},{}", if *zoomed { 1 } else { 0 })
+        })
+        .collect();
+    format!("{active_window}|{win_w}x{win_h}|{layout}|{}", parts.join(";"))
+}
+
+/// Layout-key resync decision: first mount skips (initial captures cover it),
+/// identical keys schedule nothing, changes schedule the 150/325ms pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutResync {
+    FirstMountSkip,
+    NoChange,
+    Resync,
 }
 
 /// Title-bar window-tab model derived from the active snapshot (SHELL-01).
@@ -824,6 +909,278 @@ impl AppState {
             WheelAction::Ignored => {}
         }
         action
+    }
+
+    // -- Phase 4 plan 04-02 Task 2: debounced resize state machine ---------
+
+    /// Arm a pending viewport from a measured grid size (TERM-06).
+    /// Zero-size measures never arm (T-04-05); identical re-arms dedupe.
+    /// Returns the debounce sequence when scheduled, `None` when skipped.
+    pub fn arm_viewport_for_pane(
+        &mut self,
+        pane_id: &str,
+        cols: usize,
+        rows: usize,
+    ) -> Option<u64> {
+        if cols == 0 || rows == 0 {
+            return None;
+        }
+        if let Some(pending) = &self.pending_viewport {
+            if pending.cols == cols && pending.rows == rows {
+                return None;
+            }
+        }
+        let generation = self
+            .owning_session(pane_id)
+            .and_then(|s| self.sessions.get(&s).map(|e| e.generation))
+            .unwrap_or(0);
+        self.pending_viewport = Some(PendingViewport {
+            generation,
+            cols,
+            rows,
+        });
+        self.resize_seq += 1;
+        Some(self.resize_seq)
+    }
+
+    /// Fire the debounced resize when `expected_seq` is still current.
+    /// Stale generations drop (second arm supersedes the first); firing
+    /// consumes the pending viewport so rapid arms collapse to ONE send.
+    /// Recomputes `actualViewport` at fire time from settled sizes with
+    /// `cols.max(2)/rows.max(1)` clamping (T-04-05).
+    pub fn take_debounced_resize(
+        &mut self,
+        expected_seq: u64,
+    ) -> Option<(String, WsIncoming)> {
+        if self.resize_seq != expected_seq {
+            return None;
+        }
+        let pending = self.pending_viewport.take()?;
+        self.debounced_envelope_for_pending(pending.cols, pending.rows)
+    }
+
+    /// Fire-time viewport computation shared by the timer and headless tests:
+    /// scale the settled measured size to the whole window via tmux cell
+    /// geometry, else fall back to the settled size clamped.
+    fn debounced_envelope_for_pending(
+        &self,
+        cols: usize,
+        rows: usize,
+    ) -> Option<(String, WsIncoming)> {
+        let session = self.active_session.clone().or_else(|| {
+            self.active_window_pane_ids()
+                .first()
+                .and_then(|p| self.owning_session(p))
+        })?;
+        let (actual_cols, actual_rows) = self.scaled_viewport(cols, rows, &session);
+        let msg = build_terminal_resize(actual_cols, actual_rows);
+        Some((session, msg))
+    }
+
+    /// Scale a settled measured size through the session snapshot geometry.
+    fn scaled_viewport(&self, cols: usize, rows: usize, session: &str) -> (usize, usize) {
+        let entry = match self.sessions.get(session) {
+            Some(e) => e,
+            None => return (cols.max(2), rows.max(1)),
+        };
+        let snap = match entry.snapshot.as_ref() {
+            Some(s) => s,
+            None => return (cols.max(2), rows.max(1)),
+        };
+        let panes: Vec<_> = snap
+            .panes
+            .iter()
+            .filter(|p| p.window_id == snap.active_window)
+            .collect();
+        if panes.is_empty() {
+            return (cols.max(2), rows.max(1));
+        }
+        let visible: Vec<_> = match panes.iter().find(|p| p.zoomed) {
+            Some(z) => vec![*z],
+            None => panes,
+        };
+        let first = match visible.first() {
+            Some(p) => *p,
+            None => return (cols.max(2), rows.max(1)),
+        };
+        let window_obj = snap.windows.iter().find(|w| w.id == snap.active_window);
+        let ww = window_obj.map(|w| w.width).unwrap_or(first.width);
+        let wh = window_obj.map(|w| w.height).unwrap_or(first.height);
+        actual_viewport(cols, rows, first.width, first.height, ww, wh, 0.0, 0.0)
+    }
+
+    /// Fire-and-forget window-level `terminal.resize` on a session's own
+    /// socket (clamped; never from paint — Pitfall 4; never `hello` — D4).
+    pub fn send_terminal_resize(&self, session: &str, cols: usize, rows: usize) -> bool {
+        let msg = build_terminal_resize(cols, rows);
+        match self.sessions.get(session).and_then(|e| e.handle.as_ref()) {
+            Some(handle) => handle.send_command(msg).is_ok(),
+            None => false,
+        }
+    }
+
+    /// 100ms generation-tagged debounce sender: recomputes at fire time from
+    /// settled sizes and sends exactly one clamped `terminal.resize`.
+    /// Timer bodies are manual-UAT class (like 02-02/03-02 visual checks);
+    /// headless tests cover arm/collapse/clamp via `take_debounced_resize`.
+    pub fn schedule_debounced_resize(&mut self, cx: &mut Context<Self>) {
+        let seq = self.resize_seq;
+        cx.spawn(move |view_weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let cx_handle = cx.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let _ = cx_handle.update(|cx: &mut App| {
+                    if let Some(entity) = view_weak.upgrade() {
+                        entity.update(cx, |this, _cx| {
+                            if let Some((session, msg)) = this.take_debounced_resize(seq) {
+                                if let Some(handle) = this
+                                    .sessions
+                                    .get(&session)
+                                    .and_then(|e| e.handle.as_ref())
+                                {
+                                    let _ = handle.send_command(msg);
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Current layout key for the active snapshot (FE `layoutKey` parity).
+    /// Empty when there is no active window/panes (caller skips resync).
+    pub fn current_layout_key(&self) -> String {
+        let name = match self.active_session.as_deref() {
+            Some(n) => n,
+            None => return String::new(),
+        };
+        let snap = match self.sessions.get(name).and_then(|e| e.snapshot.as_ref()) {
+            Some(s) => s,
+            None => return String::new(),
+        };
+        let panes: Vec<_> = snap
+            .panes
+            .iter()
+            .filter(|p| p.window_id == snap.active_window)
+            .collect();
+        if panes.is_empty() {
+            return String::new();
+        }
+        let visible: Vec<_> = match panes.iter().find(|p| p.zoomed) {
+            Some(z) => vec![*z],
+            None => panes,
+        };
+        let window_obj = snap.windows.iter().find(|w| w.id == snap.active_window);
+        let ww = window_obj
+            .map(|w| w.width)
+            .unwrap_or_else(|| visible[0].width);
+        let wh = window_obj
+            .map(|w| w.height)
+            .unwrap_or_else(|| visible[0].height);
+        let layout = window_obj.map(|w| w.layout.as_str()).unwrap_or("");
+        let rows: Vec<(String, usize, usize, usize, usize, bool)> = visible
+            .iter()
+            .map(|p| {
+                (
+                    p.id.clone(),
+                    p.left,
+                    p.top,
+                    p.width,
+                    p.height,
+                    p.zoomed,
+                )
+            })
+            .collect();
+        compute_layout_key(&snap.active_window, ww, wh, layout, &rows)
+    }
+
+    /// Layout-key tracker: first mount records and skips, identical keys
+    /// schedule nothing, changes record and request the 150/325ms pair.
+    pub fn decide_layout_resync(&mut self, new_key: String) -> LayoutResync {
+        if new_key.is_empty() {
+            return LayoutResync::NoChange;
+        }
+        match &self.last_layout_key {
+            None => {
+                self.last_layout_key = Some(new_key);
+                LayoutResync::FirstMountSkip
+            }
+            Some(prev) if *prev == new_key => LayoutResync::NoChange,
+            _ => {
+                self.last_layout_key = Some(new_key);
+                LayoutResync::Resync
+            }
+        }
+    }
+
+    /// Visible panes with a registered store entry — the 325ms capture
+    /// targets (FE `terminalRegistry.has` parity; unregistered excluded).
+    pub fn layout_resync_panes(&self, visible: &[String]) -> Vec<String> {
+        visible
+            .iter()
+            .filter(|p| self.terminals.contains_key(p.as_str()))
+            .cloned()
+            .collect()
+    }
+
+    /// Observe the current layout key and, on change (and not first mount),
+    /// schedule the 150ms resize + 325ms invalidate-and-recapture pair per
+    /// visible registered pane. Called from the workspace render path with a
+    /// live `Context` (manual-UAT timing; decision logic stays headless).
+    pub fn observe_layout_key_and_schedule(&mut self, cx: &mut Context<Self>) {
+        let key = self.current_layout_key();
+        if key.is_empty() {
+            return;
+        }
+        if self.decide_layout_resync(key) != LayoutResync::Resync {
+            return;
+        }
+        cx.spawn(move |view_weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let cx_handle = cx.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                let _ = cx_handle.update(|cx: &mut App| {
+                    if let Some(entity) = view_weak.upgrade() {
+                        entity.update(cx, |this, _cx| {
+                            if let Some(pending) = this.pending_viewport {
+                                let (cols, rows) = this.scaled_viewport(
+                                    pending.cols,
+                                    pending.rows,
+                                    &this.active_session.clone().unwrap_or_default(),
+                                );
+                                if let Some(session) = this.active_session.clone() {
+                                    let _ = this.send_terminal_resize(&session, cols, rows);
+                                }
+                            } else if let Some(session) = this.active_session.clone() {
+                                // No settled measure yet: still report the scaled
+                                // snapshot geometry so tmux learns the new layout.
+                                let panes = this.active_window_pane_ids();
+                                let _ = panes;
+                                let _ = this.send_terminal_resize(&session, 80, 24);
+                            }
+                        });
+                    }
+                });
+                tokio::time::sleep(std::time::Duration::from_millis(175)).await;
+                let _ = cx_handle.update(|cx: &mut App| {
+                    if let Some(entity) = view_weak.upgrade() {
+                        entity.update(cx, |this, _cx| {
+                            let visible = this.active_window_pane_ids();
+                            let targets = this.layout_resync_panes(&visible);
+                            for pane in &targets {
+                                this.invalidate_pane_snapshot(pane);
+                            }
+                            for pane in &targets {
+                                let _ = this.request_pane_capture(pane);
+                            }
+                        });
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     /// Attribute pane → session (D7). When attribution CHANGES sessions the
