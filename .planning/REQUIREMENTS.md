@@ -37,13 +37,13 @@ Requirements for milestone v1.0 (Desktop GPUI). Each maps to roadmap phases.
 
 ### Terminal (rendering & I/O)
 
-- [ ] **TERM-01**: Terminal output renders in an alacritty_terminal-backed grid per pane (same engine as web-term)
-- [ ] **TERM-02**: Opening a pane replays history: capture blob ingests the scrollback delta then rebuilds the positioned screen (applyCapture semantics with ingestedHistory counter)
-- [ ] **TERM-03**: Keyboard input reaches the pane byte-safe through the WS `terminal.input` path
+- [x] **TERM-01**: Terminal output renders in an alacritty_terminal-backed grid per pane (same engine as web-term)
+- [x] **TERM-02**: Opening a pane replays history: capture blob ingests the scrollback delta then rebuilds the positioned screen (applyCapture semantics with ingestedHistory counter)
+- [x] **TERM-03**: Keyboard input reaches the pane byte-safe through the WS `terminal.input` path
 - [ ] **TERM-04**: User can scroll scrollback with the wheel; with the TUI-scroll switch on, the wheel sends PageUp/PageDown to TUI panes
 - [ ] **TERM-05**: User can select text and copy/paste via the clipboard
 - [ ] **TERM-06**: Terminals report cols/rows on container resize with the Electron debounce dance (~100ms resize, 150/325ms capture resync, layout-key invalidation) — no resize storms
-- [ ] **TERM-07**: Inactive (hidden) session workspaces keep ingesting terminal output while not rendered
+- [x] **TERM-07**: Inactive (hidden) session workspaces keep ingesting terminal output while not rendered
 
 ### Dialogs & palette
 
@@ -126,13 +126,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PANE-06 | Phase 5 | Pending |
 | PANE-07 | Phase 5 | Pending |
 | PANE-08 | Phase 5 | Pending |
-| TERM-01 | Phase 4 | Pending |
-| TERM-02 | Phase 4 | Pending |
-| TERM-03 | Phase 4 | Pending |
+| TERM-01 | Phase 4 | Complete |
+| TERM-02 | Phase 4 | Complete |
+| TERM-03 | Phase 4 | Complete |
 | TERM-04 | Phase 4 | Pending |
 | TERM-05 | Phase 4 | Pending |
 | TERM-06 | Phase 4 | Pending |
-| TERM-07 | Phase 4 | Pending |
+| TERM-07 | Phase 4 | Complete |
 | DLG-01 | Phase 6 | Pending |
 | DLG-02 | Phase 5 | Pending |
 | DLG-03 | Phase 6 | Pending |

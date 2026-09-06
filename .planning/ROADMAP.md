@@ -26,8 +26,8 @@ must be logged as a backend issue, not forked in the GPUI crate.
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Workspace Foundation & Backend Sidecar** - desktop-gpui workspace (exact pins + lockfile), supervisor spawn with startup/failed status, settings persistence, custom window controls (completed 2026-09-06)
-- [ ] **Phase 2: REST Client, Sidebar & Session Management** - polling session tree, Create Session dialog, empty/error/select states
-- [ ] **Phase 3: WebSocket Client & Multi-Session Tabs** - per-session WS lifecycle with generation guard, session tabs + title bar, correlated mutations
+- [x] **Phase 2: REST Client, Sidebar & Session Management** - polling session tree, Create Session dialog, empty/error/select states (completed 2026-09-06, override U1 FE-parity accepted, HV advisory → Phase 7)
+- [x] **Phase 3: WebSocket Client & Multi-Session Tabs** - per-session WS lifecycle with generation guard, session tabs + title bar, correlated mutations (completed 2026-09-06, 20/20 passed, 39/39 green)
 - [ ] **Phase 4: Terminal Engine & Live Pane Rendering** - alacritty-backed live terminals with capture replay, byte-safe input, scrollback, selection
 - [ ] **Phase 5: Pane Grid & Workspace Operations** - tmux-geometry pane layout, split/zoom/resize drags, layout presets, pane/window context menus
 - [ ] **Phase 6: Theme System, Settings & Chrome Parity** - generated 102+78 theme tables, Settings page, command palette, embedded font/icons
@@ -105,6 +105,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 **Plans**: TBD
 
+- [x] 04-01-PLAN.md
+- [ ] 04-02-PLAN.md
+
 ### Phase 5: Pane Grid & Workspace Operations
 
 **Goal**: The workspace faithfully displays and manipulates real tmux pane geometry — layout, dividers, zoom, presets, and the full pane/window context menus
@@ -159,9 +162,9 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Workspace Foundation & Backend Sidecar | 3/3 | Complete    | 2026-09-06 |
-| 2. REST Client, Sidebar & Session Management | 2/2 | In Progress|  |
-| 3. WebSocket Client & Multi-Session Tabs | TBD | Not started | - |
-| 4. Terminal Engine & Live Pane Rendering | TBD | Not started | - |
+| 2. REST Client, Sidebar & Session Management | 2/2 | Complete | 2026-09-06 |
+| 3. WebSocket Client & Multi-Session Tabs | 2/2 | Complete | 2026-09-06 |
+| 4. Terminal Engine & Live Pane Rendering | 1/2 | In Progress|  |
 | 5. Pane Grid & Workspace Operations | TBD | Not started | - |
 | 6. Theme System, Settings & Chrome Parity | TBD | Not started | - |
 | 7. Resilience, Packaging & Parity Audit | TBD | Not started | - |
