@@ -1,10 +1,11 @@
 //! Root application state, polling pump, and supervisor lifecycle.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 use gpui_component::WindowExt as _;
+use parking_lot::Mutex;
 use tokio::sync::oneshot;
 use webtmux_backend_client::{
     connect_session, connect_session_with_pending, validate_session_name, RestClient,
@@ -17,6 +18,7 @@ use webtmux_backend_client::{
 use webtmux_settings::DesktopSettings;
 use webtmux_supervisor::{BackendInfo, BackendStatus, SpawnOptions, Supervisor};
 use webtmux_terminal::{apply_capture, Terminal, TerminalEvent};
+use crate::views::terminal_view::TerminalView;
 use crate::views::{status::render_status_page, tab_strip::render_title_bar};
 
 /// Global multi-thread Tokio runtime entered once at application boot.
@@ -71,8 +73,10 @@ impl Default for OpenSession {
 /// Lives in the `AppState` store — never inside views — so hidden sessions
 /// keep ingesting while unmounted (Pitfall 6).
 pub struct PaneTerminal {
-    /// The alacritty-backed grid; mutated synchronously on the GPUI thread.
-    pub terminal: Terminal,
+    /// Shared handle to the alacritty-backed grid, mutated synchronously on
+    /// the GPUI thread. `TerminalView`s hold a clone for paint/input; the
+    /// store's handle keeps hidden sessions ingesting while unmounted.
+    pub terminal: Arc<Mutex<Terminal>>,
     /// Exactly-once gate: first `terminal.snapshot` replaces, later ones drop
     /// until `invalidate_pane_snapshot` re-arms (reconnect / layout resync).
     pub snapshot_written: bool,
@@ -83,7 +87,7 @@ pub struct PaneTerminal {
 impl PaneTerminal {
     fn fresh() -> Self {
         Self {
-            terminal: Terminal::new(80, 24),
+            terminal: Arc::new(Mutex::new(Terminal::new(80, 24))),
             snapshot_written: false,
             ingested_history: 0,
         }
@@ -176,6 +180,10 @@ pub struct AppState {
     pub pane_titles: HashMap<String, String>,
     /// Resize armed by views, sent by plan 04-02 (TERM-06).
     pub pending_viewport: Option<PendingViewport>,
+    /// Retained per-pane views for the active window (tracer layout; Phase 5
+    /// owns geometry). Views hold only a shared terminal clone — the store
+    /// above stays the owner, so hidden sessions keep ingesting.
+    pub terminal_views: HashMap<String, Entity<TerminalView>>,
 }
 
 impl AppState {
@@ -208,6 +216,7 @@ impl AppState {
             tui_scroll: HashMap::new(),
             pane_titles: HashMap::new(),
             pending_viewport: None,
+            terminal_views: HashMap::new(),
         }
     }
 
@@ -583,7 +592,9 @@ impl AppState {
 
     /// Headless grid dump for a pane (contract tests, views).
     pub fn pane_grid_text(&self, pane_id: &str) -> Option<Vec<String>> {
-        self.terminals.get(pane_id).map(|e| e.terminal.grid_text())
+        self.terminals
+            .get(pane_id)
+            .map(|e| e.terminal.lock().grid_text())
     }
 
     /// Replay counter for a pane (contract tests).
@@ -651,7 +662,7 @@ impl AppState {
         }
         entry.snapshot_written = true;
         let feed = apply_capture(data, screen_rows, &mut entry.ingested_history);
-        entry.terminal.process_bytes(&feed);
+        entry.terminal.lock().process_bytes(&feed);
         self.drain_pane_events(pane_id);
         true
     }
@@ -671,10 +682,11 @@ impl AppState {
         if replace {
             let entry = self.pane_entry(pane_id);
             let feed = apply_capture(data, screen_rows, &mut entry.ingested_history);
-            entry.terminal.process_bytes(&feed);
+            entry.terminal.lock().process_bytes(&feed);
         } else {
             self.pane_entry(pane_id)
                 .terminal
+                .lock()
                 .process_bytes(data.as_bytes());
         }
         self.drain_pane_events(pane_id);
@@ -685,7 +697,7 @@ impl AppState {
     /// (D8, feeds Phase-5 headers), `Bell` is a no-op.
     fn drain_pane_events(&mut self, pane_id: &str) {
         let events = match self.terminals.get(pane_id) {
-            Some(e) => e.terminal.drain_events(),
+            Some(e) => e.terminal.lock().drain_events(),
             None => return,
         };
         for ev in events {
@@ -717,6 +729,40 @@ impl AppState {
             self.pane_session.remove(&pane);
             self.pane_titles.remove(&pane);
         }
+    }
+
+    // -- Phase 4 task 3: active-window pane helpers + view retention --------
+
+    /// Pane IDs of the ACTIVE window of the ACTIVE session (tracer layout;
+    /// Phase 5 derives geometry from the same snapshot).
+    pub fn active_window_pane_ids(&self) -> Vec<String> {
+        let name = match self.active_session.as_deref() {
+            Some(n) => n,
+            None => return Vec::new(),
+        };
+        let snap = match self.sessions.get(name).and_then(|e| e.snapshot.as_ref()) {
+            Some(s) => s,
+            None => return Vec::new(),
+        };
+        snap.panes
+            .iter()
+            .filter(|p| p.window_id == snap.active_window)
+            .map(|p| p.id.clone())
+            .collect()
+    }
+
+    /// Drop retained view entities with no live pane behind them (retired or
+    /// vanished from every snapshot). Store entries ahead of any snapshot
+    /// keep their views (capture in flight).
+    pub fn prune_terminal_views(&mut self) {
+        let mut live = HashSet::new();
+        for entry in self.sessions.values() {
+            if let Some(snap) = entry.snapshot.as_ref() {
+                live.extend(snap.panes.iter().map(|p| p.id.clone()));
+            }
+        }
+        live.extend(self.terminals.keys().cloned());
+        self.terminal_views.retain(|pane, _| live.contains(pane));
     }
 
     /// Pure constructor for `terminal.input`: owning-socket resolve + envelope.

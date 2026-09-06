@@ -25,3 +25,8 @@ pub use mouse::{
 };
 pub use render::{BackgroundRect, BatchedTextRun, CellDimensions, TerminalRenderer};
 pub use terminal::{TermDimensions, Terminal, TerminalConfig};
+
+// Re-exported alacritty geometry/mode types so app crates can name them
+// without adding a direct dependency (pins unchanged, no new packages).
+pub use alacritty_terminal::index::{Column, Line, Point as AlacPoint};
+pub use alacritty_terminal::term::TermMode;

@@ -4,8 +4,10 @@
 
 use gpui::*;
 use gpui::prelude::InteractiveElement;
+use std::sync::Arc;
 use crate::app_state::AppState;
 use crate::icons::{ALERT_TRIANGLE_SVG, SQUARE_TERMINAL_SVG, TERMINAL_SQUARE_SVG};
+use crate::views::terminal_view::TerminalView;
 
 /// Represents the active state of the central workspace body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -402,54 +404,16 @@ pub fn render_settings_placeholder(_app: &mut AppState, cx: &mut Context<AppStat
                 })),
         )
 }
-/// Renders placeholder for when a session is actively selected.
-///
-/// Phase-3 tracer: when the active session is an open tab with a committed WS
-/// snapshot, render a real-data panel (session name + window list) proving the
-/// WS path. Terminal rendering arrives in Phase 4.
-fn render_active_session_placeholder(app: &mut AppState, _cx: &mut Context<AppState>) -> impl IntoElement {
+/// Renders the active session workspace: one live `TerminalView` per pane of
+/// the active window (Phase-4 tracer layout — stacked full-width; Phase 5
+/// owns cell geometry). Panes without a committed snapshot yet show the
+/// connecting fallback; empty/error/select routing is untouched.
+fn render_active_session_placeholder(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let muted_text = rgb(0x808080);
-    let foreground_text = rgb(0xd4d4d4);
-    let dim_text = rgb(0xaaaaaa);
 
-    let snapshot_panel = app
-        .active_session
-        .clone()
-        .and_then(|name| {
-            app.sessions.get(&name).and_then(|entry| {
-                entry.snapshot.clone().map(|snap| (name, snap))
-            })
-        });
-
-    match snapshot_panel {
-        Some((name, snap)) => div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .p(px(24.0))
-            .gap(px(8.0))
-            .child(
-                div()
-                    .text_base()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(foreground_text)
-                    .child(format!("Session: {}", name)),
-            )
-            .children(snap.windows.iter().map(|w| {
-                div()
-                    .text_xs()
-                    .text_color(dim_text)
-                    .child(format!("{}: {}", w.index, w.name))
-            }))
-            .child(
-                div()
-                    .mt(px(8.0))
-                    .text_xs()
-                    .text_color(muted_text)
-                    .child("Terminal view arrives in Phase 4"),
-            )
-            .into_any_element(),
-        None => div()
+    let panes = app.active_window_pane_ids();
+    if panes.is_empty() {
+        return div()
             .flex()
             .items_center()
             .justify_center()
@@ -460,6 +424,47 @@ fn render_active_session_placeholder(app: &mut AppState, _cx: &mut Context<AppSt
                 Some(name) => format!("Active session: {}", name),
                 None => "Select a session".to_string(),
             })
-            .into_any_element(),
+            .into_any_element();
     }
+
+    app.prune_terminal_views();
+    let app_weak = cx.entity().downgrade();
+    let mut views = Vec::with_capacity(panes.len());
+    for pane_id in &panes {
+        // Store entry first so the view clones the OWNED handle (views never
+        // create terminals — the store stays the owner).
+        app.pane_entry(pane_id);
+        if !app.terminal_views.contains_key(pane_id) {
+            let term_arc = Arc::clone(
+                &app.terminals
+                    .get(pane_id)
+                    .expect("entry ensured above")
+                    .terminal,
+            );
+            let weak = app_weak.clone();
+            let pid = pane_id.clone();
+            let view = cx.new(|cx| TerminalView::new(pid, term_arc, weak, cx));
+            app.terminal_views.insert(pane_id.clone(), view);
+            // FE initial-capture parity: the blank grid becomes replayed
+            // history as soon as the capture reply lands.
+            app.request_pane_capture(pane_id);
+        }
+        views.push(
+            app.terminal_views
+                .get(pane_id)
+                .expect("view ensured above")
+                .clone(),
+        );
+    }
+
+    div()
+        .flex()
+        .flex_col()
+        .size_full()
+        .children(
+            views
+                .into_iter()
+                .map(|v| div().flex_1().size_full().min_h(px(0.0)).child(v)),
+        )
+        .into_any_element()
 }
