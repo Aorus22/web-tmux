@@ -185,3 +185,5 @@ pub fn observe(window: &mut Window, settings_arc: Arc<Mutex<DesktopSettings>>, c
         true
     });
 }
+
+

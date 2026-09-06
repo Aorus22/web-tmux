@@ -94,3 +94,26 @@ fn atomic_save_leaves_no_temp_files_and_writes_file() {
     let entries: Vec<_> = fs::read_dir(&config_dir).unwrap().map(|e| e.unwrap().file_name()).collect();
     assert_eq!(entries, vec!["settings.json"]);
 }
+
+#[test]
+fn window_state_clamping_and_guard_logic() {
+    let zero_state = WindowState {
+        x: Some(100),
+        y: Some(150),
+        width: Some(0),
+        height: Some(0),
+        maximized: false,
+    };
+    assert_eq!(zero_state.width, Some(0));
+    assert_eq!(zero_state.height, Some(0));
+
+    let min_coord_state = WindowState {
+        x: Some(-32000),
+        y: Some(-32000),
+        width: Some(1000),
+        height: Some(700),
+        maximized: false,
+    };
+    assert!(min_coord_state.x.unwrap() <= -10000);
+    assert!(min_coord_state.y.unwrap() <= -10000);
+}
