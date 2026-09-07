@@ -1,4 +1,4 @@
-//! Single pane: h-7 header + re-hosted Phase-4 `TerminalView` (Phase 5 tracer).
+//! Single pane: h-7 header + re-hosted Phase-4 `TerminalView` (Phase 5).
 //!
 //! FE parity (`PaneView.tsx`, `PaneHeader.tsx:41-167`): `currentPath` +
 //! mono pane id, TUI-scroll switch bound to the `tui_scroll` map (default
@@ -7,12 +7,17 @@
 //! double-click zooms, active pane border, `!pane.active` click sends
 //! `pane.select`. Body re-hosts the Phase-4 `TerminalView` unchanged.
 //!
+//! The pane root carries the stable `pane-menu/%N` id and a right-click menu
+//! (`pane_context_menu`: Split right/down, Rename, Zoom, Swap picker, Break,
+//! Kill through the `confirm_kill_pane` gate). Header Kill routes through the
+//! same gate.
+//!
 //! Tooltip fallback (D10/A3, verified): `gpui-pre =0.3.3` exposes no tooltip
 //! API on raw divs and `gpui-component =0.6.0`'s tooltip applicator
 //! (`ManagedTooltipExt`) is crate-internal — only its own themed components
 //! get `.tooltip()`. Header actions therefore carry stable ids
 //! (`pane-split-right/%N`, …) plus hover affordance; hover tooltips land with
-//! the 05-02 menu wave / Phase-7 parity audit.
+//! the Phase-7 parity audit.
 
 use gpui::*;
 use gpui::prelude::{FluentBuilder, InteractiveElement};
@@ -23,6 +28,7 @@ use crate::icons::{
     MAXIMIZE2_SVG, SPLIT_SQUARE_HORIZONTAL_SVG, SPLIT_SQUARE_VERTICAL_SVG, X_SVG,
 };
 use crate::pane_geometry::PxRect;
+use crate::views::pane_context_menu::{request_kill_pane, with_pane_context_menu};
 
 /// Render one positioned pane at its `pixel_rect` rect.
 pub fn render_pane_view(
@@ -74,7 +80,13 @@ pub fn render_pane_view(
     let pid_select = pane_id.clone();
     let pid_zoom = pane_id.clone();
 
-    div()
+    // Same-window swap targets for the right-click picker (pitfall 6).
+    let candidates = app.swap_candidates(&pane.id);
+    let app_weak = cx.entity().downgrade();
+    let menu_pane_id = pane.id.clone();
+
+    let root = div()
+        .id(format!("pane-menu/{}", pane.id))
         .absolute()
         .left(px(rect.left))
         .top(px(rect.top))
@@ -149,7 +161,7 @@ pub fn render_pane_view(
                             SPLIT_SQUARE_HORIZONTAL_SVG,
                             0xd4d4d4,
                             pane_id.clone(),
-                            |this, pid, cx| {
+                            |this, pid, _window, cx| {
                                 this.submit_pane_split(pid, "horizontal", cx);
                             },
                             cx,
@@ -159,7 +171,7 @@ pub fn render_pane_view(
                             SPLIT_SQUARE_VERTICAL_SVG,
                             0xd4d4d4,
                             pane_id.clone(),
-                            |this, pid, cx| {
+                            |this, pid, _window, cx| {
                                 this.submit_pane_split(pid, "vertical", cx);
                             },
                             cx,
@@ -170,7 +182,7 @@ pub fn render_pane_view(
                                 MAXIMIZE2_SVG,
                                 0xd4d4d4,
                                 pane_id.clone(),
-                                |this, pid, cx| {
+                                |this, pid, _window, cx| {
                                     this.submit_pane_zoom(pid, cx);
                                 },
                                 cx,
@@ -181,29 +193,32 @@ pub fn render_pane_view(
                             X_SVG,
                             0xf87171,
                             pane_id.clone(),
-                            |this, pid, cx| {
-                                // Tracer direct kill; the confirm dialog
-                                // honoring `kill_requires_confirm_pane`
-                                // lands with the 05-02 menu wave.
-                                this.submit_pane_kill(pid, cx);
+                            |_this, pid, window, cx| {
+                                // Kill-confirm gate (PANE-05 per D7): dialog
+                                // when `confirm_kill_pane`, direct kill else.
+                                let app = cx.entity();
+                                request_kill_pane(&app, pid, window, cx);
                             },
                             cx,
                         )),
                 )
                 .into_any_element(),
         )
-        .child(body)
-        .into_any_element()
+        .child(body);
+
+    with_pane_context_menu(root, menu_pane_id, candidates, app_weak).into_any_element()
 }
 
 /// Small square header action button (20px box, 12px icon). Free function —
-/// not a closure — so each call reborrows `cx` independently.
+/// not a closure — so each call reborrows `cx` independently. The click
+/// handler receives the window so gated actions (kill-confirm) can open
+/// dialogs.
 fn header_action_button(
     id: String,
     icon: &'static [u8],
     hover_fg: u32,
     pid: String,
-    on_click: fn(&mut AppState, &str, &mut Context<AppState>),
+    on_click: fn(&mut AppState, &str, &mut Window, &mut Context<AppState>),
     cx: &mut Context<AppState>,
 ) -> impl IntoElement {
     div()
@@ -220,8 +235,8 @@ fn header_action_button(
         .child(svg().data(icon).size(px(12.0)))
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |this, _, _, cx| {
-                on_click(this, &pid, cx);
+            cx.listener(move |this, _, window, cx| {
+                on_click(this, &pid, window, cx);
             }),
         )
         .into_any_element()

@@ -372,10 +372,16 @@ pub struct WindowTab {
     pub active: bool,
 }
 
+/// One same-window swap target for the pane menu picker (Phase 5, PANE-05).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwapCandidate {
+    pub id: String,
+    pub label: String,
+}
+
 /// Kill transport route per D6 (see `AppState::kill_route`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum KillRoute {
-    /// Victim's own socket is live — kill rides it (no explicit field).
+pub enum KillRoute {    /// Victim's own socket is live — kill rides it (no explicit field).
     Victim,
     /// No victim socket — ride another live socket with explicit `session`.
     ViaOther(String),
@@ -428,6 +434,14 @@ pub struct AppState {
     pub create_session_form:
         Option<gpui::Entity<crate::views::create_session_dialog::CreateSessionForm>>,
 
+    /// DLG1 Rename Pane dialog form entity (Phase 5, PANE-05 + DLG-02).
+    /// Same lifetime as the session rename form: replaced on every open,
+    /// `None` on dismiss.
+    pub rename_pane_form:
+        Option<gpui::Entity<crate::views::rename_pane_dialog::RenamePaneForm>>,
+    /// Kill-confirm dialog form entity for panes (Phase 5, PANE-05 per D7).
+    pub kill_pane_form:
+        Option<gpui::Entity<crate::views::pane_context_menu::KillPaneForm>>,
     // Phase 4: pane-id-keyed terminal store (TERM-01/02/03/07). Owns every
     // pane's `Terminal`; views borrow/render the active session's entries.
     pub terminals: HashMap<String, PaneTerminal>,
@@ -485,6 +499,8 @@ impl AppState {
             rename_session_form: None,
             kill_session_form: None,
             pending_rename: None,
+            rename_pane_form: None,
+            kill_pane_form: None,
             terminals: HashMap::new(),
             pane_session: HashMap::new(),
             tui_scroll: HashMap::new(),
@@ -1490,7 +1506,92 @@ impl AppState {
         let _ = handle.send_command(msg);
     }
 
-    // -- Phase 5 Task 2: pane/window correlated sends + kill gates (D5/D7) --
+    // -- Phase 5 plan 05-02 Task 2: swap scope, rename lookups, toolbar -----
+
+    /// Swap-picker row label (FE `PaneContextMenu.tsx:166` parity):
+    /// `currentCommand || title || currentPath`. Note the order differs
+    /// deliberately from the rename prefill (`title || current_command`).
+    pub fn swap_candidate_label(
+        current_command: &str,
+        title: &str,
+        current_path: &str,
+    ) -> String {
+        if !current_command.is_empty() {
+            current_command.to_string()
+        } else if !title.is_empty() {
+            title.to_string()
+        } else {
+            current_path.to_string()
+        }
+    }
+
+    /// Same-window swap candidates for `pane_id` (PANE-05 per D7, pitfall 6):
+    /// panes of the active session's snapshot sharing the pane's window,
+    /// excluding the pane itself. Empty when the pane is unknown, alone in
+    /// its window, or no snapshot is committed — the Swap entry disables.
+    pub fn swap_candidates(&self, pane_id: &str) -> Vec<SwapCandidate> {
+        let name = match self.active_session.as_deref() {
+            Some(n) => n,
+            None => return Vec::new(),
+        };
+        let snap = match self.sessions.get(name).and_then(|e| e.snapshot.as_ref()) {
+            Some(s) => s,
+            None => return Vec::new(),
+        };
+        let window_id = match snap.panes.iter().find(|p| p.id == pane_id) {
+            Some(p) => p.window_id.clone(),
+            None => return Vec::new(),
+        };
+        snap.panes
+            .iter()
+            .filter(|p| p.window_id == window_id && p.id != pane_id)
+            .map(|p| SwapCandidate {
+                id: p.id.clone(),
+                label: Self::swap_candidate_label(
+                    &p.current_command,
+                    &p.title,
+                    &p.current_path,
+                ),
+            })
+            .collect()
+    }
+
+    /// `(title, current_command)` prefill sources for the Rename Pane dialog
+    /// (DLG-02 per D6: `title || current_command || ''`). Searches every
+    /// committed snapshot; `None` when the pane is unknown.
+    pub fn pane_for_rename(&self, pane_id: &str) -> Option<(String, String)> {
+        for entry in self.sessions.values() {
+            if let Some(snap) = entry.snapshot.as_ref() {
+                if let Some(p) = snap.panes.iter().find(|p| p.id == pane_id) {
+                    return Some((p.title.clone(), p.current_command.clone()));
+                }
+            }
+        }
+        None
+    }
+
+    /// Window name prefill for the Rename Window dialog (DLG-02 per D6:
+    /// `w.name`). `None` when the window is unknown.
+    pub fn window_name(&self, window_id: &str) -> Option<String> {
+        for entry in self.sessions.values() {
+            if let Some(snap) = entry.snapshot.as_ref() {
+                if let Some(w) = snap.windows.iter().find(|w| w.id == window_id) {
+                    return Some(w.name.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Active window id of the active session (`@N`), the `paneId` target for
+    /// every `window.*` command (no `windowId` field exists server-side).
+    pub fn active_window_id(&self) -> Option<String> {
+        let name = self.active_session.as_deref()?;
+        let snap = self.sessions.get(name)?.snapshot.as_ref()?;
+        Some(snap.active_window.clone())
+    }
+
+    // -- Phase 5 Task 2 (05-01): pane/window correlated sends + kill gates (D5/D7) --
 
     /// Kill-confirm gate for panes (PANE-05 per D7): true opens the confirm
     /// dialog, false kills directly. Reads only `confirm_kill_pane`.
@@ -1839,6 +1940,64 @@ impl AppState {
             .send_command(msg)
             .map_err(|e| e.to_string())?;
         Ok((active, rx))
+    }
+
+    /// Public sync half for dialog submits (Phase 5, 05-02): enqueue a pane
+    /// command on the owning socket. Same semantics as the submit-internal
+    /// half; the caller owns the correlated await (dialog feedback).
+    pub fn try_send_pane_command(
+        &self,
+        pane_id: &str,
+        msg: WsIncoming,
+    ) -> Result<(String, oneshot::Receiver<CommandResult>), String> {
+        self.send_pane_command(pane_id, msg)
+    }
+
+    /// Public sync half for dialog submits (Phase 5, 05-02): enqueue a window
+    /// command on the active socket.
+    pub fn try_send_window_command(
+        &self,
+        msg: WsIncoming,
+    ) -> Result<(String, oneshot::Receiver<CommandResult>), String> {
+        self.send_window_command(msg)
+    }
+
+    /// Await a correlated reply with dialog feedback (Phase 5, 05-02): the
+    /// same 10s forget-timeout as `await_pane_command_result`, but the
+    /// outcome routes into `on_complete` so rename/kill dialogs can close on
+    /// success or render the inline error with the dialog open and the tab
+    /// untouched. Success commits nothing locally (snapshot is the sole
+    /// truth). The closure runs on the GPUI thread via the entity update.
+    pub fn await_command_feedback(
+        &mut self,
+        rx: oneshot::Receiver<CommandResult>,
+        on_complete: impl FnOnce(&mut Self, Result<(), String>, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(move |view_weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let cx_handle = cx.clone();
+            async move {
+                let outcome: Result<(), String> = match tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    rx,
+                )
+                .await
+                {
+                    Ok(Ok(cmd)) if cmd.ok => Ok(()),
+                    Ok(Ok(cmd)) => Err(cmd.message.unwrap_or_else(|| "Command failed".to_string())),
+                    Ok(Err(_)) => Err("Request was cancelled".to_string()),
+                    Err(_) => Err("Request timed out".to_string()),
+                };
+                let _ = cx_handle.update(|cx: &mut App| {
+                    if let Some(entity) = view_weak.upgrade() {
+                        entity.update(cx, |this, cx| {
+                            on_complete(this, outcome, cx);
+                        });
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     /// Await a correlated pane/window reply (10s forget-timeout, T-05-03):

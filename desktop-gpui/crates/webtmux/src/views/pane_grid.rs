@@ -30,6 +30,7 @@ use crate::pane_geometry::{
 };
 use crate::views::pane_view::render_pane_view;
 use crate::views::terminal_view::TerminalView;
+use crate::views::window_toolbar::render_window_toolbar;
 
 /// Fallback container size before the first canvas measure (px).
 const FALLBACK_W: f32 = 800.0;
@@ -59,16 +60,36 @@ fn active_window_geometry(app: &AppState) -> Option<(Vec<TmuxPane>, usize, usize
     Some((panes, ww, wh, name.to_string()))
 }
 
-/// Render the workspace grid for the active session's active window.
+/// Render the workspace grid for the active session's active window:
+/// the window toolbar (layout presets) above the geometry grid.
 pub fn render_pane_grid(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let toolbar = render_window_toolbar(app, cx).into_any_element();
+    let body = render_grid_body(app, cx).into_any_element();
+    div()
+        .flex()
+        .flex_col()
+        .size_full()
+        .bg(rgb(0x1e1e1e))
+        .child(toolbar)
+        .child(body)
+        .into_any_element()
+}
+
+/// Render the geometry grid body (panes + dividers) inside the flex-1 space
+/// below the toolbar. The canvas probe measures this inner container, so the
+/// h-8 toolbar never enters pane geometry (FE parity — the toolbar lives
+/// outside the workspace div).
+fn render_grid_body(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let muted_text = rgb(0x808080);
 
     let Some((panes, ww, wh, _session)) = active_window_geometry(app) else {
         return div()
             .flex()
+            .flex_1()
+            .w_full()
+            .min_h(px(0.0))
             .items_center()
             .justify_center()
-            .size_full()
             .text_sm()
             .text_color(muted_text)
             .child(match &app.active_session {
@@ -142,7 +163,9 @@ pub fn render_pane_grid(app: &mut AppState, cx: &mut Context<AppState>) -> impl 
     let shared = &*app;
     let mut grid = div()
         .relative()
-        .size_full()
+        .flex_1()
+        .w_full()
+        .min_h(px(0.0))
         .bg(rgb(0x1e1e1e))
         .child(render_workspace_probe(cx))
         // Grid-level drag streaming (D3): the divider `mouse_down` arms

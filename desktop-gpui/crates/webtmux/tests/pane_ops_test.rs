@@ -182,8 +182,8 @@ fn test_swap_picker_scope() {
     let cands = app.swap_candidates("%1");
     assert_eq!(cands.len(), 1);
     assert_eq!(cands[0].id, "%0");
-    // %0 has a title → title wins over current command.
-    assert_eq!(cands[0].label, "editor");
+    // %0 has both → current command wins (FE picker order, unlike prefill).
+    assert_eq!(cands[0].label, "nvim");
 
     // Lone pane in the background window → empty (Swap disables).
     let app = app_with_snapshot();
