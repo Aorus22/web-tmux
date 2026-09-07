@@ -26,7 +26,9 @@ fn test_window_state_clamps() {
     });
     let bounds = webtmux::window_state::restore(&s).expect("bounds");
     let size = match bounds {
-        gpui::WindowBounds::Windowed(b) | gpui::WindowBounds::Maximized(b) => b.size,
+        gpui::WindowBounds::Windowed(b)
+        | gpui::WindowBounds::Maximized(b)
+        | gpui::WindowBounds::Fullscreen(b) => b.size,
     };
     assert_eq!(size.width, gpui::px(800.0));
     let s = settings_with(WindowState {
@@ -38,7 +40,9 @@ fn test_window_state_clamps() {
     });
     let bounds = webtmux::window_state::restore(&s).expect("bounds");
     let size = match bounds {
-        gpui::WindowBounds::Windowed(b) | gpui::WindowBounds::Maximized(b) => b.size,
+        gpui::WindowBounds::Windowed(b)
+        | gpui::WindowBounds::Maximized(b)
+        | gpui::WindowBounds::Fullscreen(b) => b.size,
     };
     assert_eq!(size.width, gpui::px(3840.0));
 
@@ -52,7 +56,9 @@ fn test_window_state_clamps() {
     });
     let bounds = webtmux::window_state::restore(&s).expect("bounds");
     let size = match bounds {
-        gpui::WindowBounds::Windowed(b) | gpui::WindowBounds::Maximized(b) => b.size,
+        gpui::WindowBounds::Windowed(b)
+        | gpui::WindowBounds::Maximized(b)
+        | gpui::WindowBounds::Fullscreen(b) => b.size,
     };
     assert_eq!(size.height, gpui::px(500.0));
     let s = settings_with(WindowState {
@@ -64,7 +70,9 @@ fn test_window_state_clamps() {
     });
     let bounds = webtmux::window_state::restore(&s).expect("bounds");
     let size = match bounds {
-        gpui::WindowBounds::Windowed(b) | gpui::WindowBounds::Maximized(b) => b.size,
+        gpui::WindowBounds::Windowed(b)
+        | gpui::WindowBounds::Maximized(b)
+        | gpui::WindowBounds::Fullscreen(b) => b.size,
     };
     assert_eq!(size.height, gpui::px(2160.0));
 
@@ -78,7 +86,9 @@ fn test_window_state_clamps() {
     });
     let bounds = webtmux::window_state::restore(&s).expect("bounds");
     let origin = match bounds {
-        gpui::WindowBounds::Windowed(b) | gpui::WindowBounds::Maximized(b) => b.origin,
+        gpui::WindowBounds::Windowed(b)
+        | gpui::WindowBounds::Maximized(b)
+        | gpui::WindowBounds::Fullscreen(b) => b.origin,
     };
     assert_eq!(origin.x, gpui::px(180.0));
     assert_eq!(origin.y, gpui::px(60.0));
@@ -93,7 +103,9 @@ fn test_window_state_clamps() {
     });
     let bounds = webtmux::window_state::restore(&s).expect("bounds");
     let size = match bounds {
-        gpui::WindowBounds::Windowed(b) | gpui::WindowBounds::Maximized(b) => b.size,
+        gpui::WindowBounds::Windowed(b)
+        | gpui::WindowBounds::Maximized(b)
+        | gpui::WindowBounds::Fullscreen(b) => b.size,
     };
     assert_eq!(size.width, gpui::px(DEFAULT_WIDTH as f32));
     assert_eq!(size.height, gpui::px(DEFAULT_HEIGHT as f32));
