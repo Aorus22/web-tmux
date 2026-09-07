@@ -142,3 +142,60 @@ fn test_backoff_ladder_verbatim() {
     assert!(!should_run_retry(3, 4));
 }
 
+#[test]
+fn test_retry_timer_bound_to_generation() {
+    // A retry armed at generation N dies when the tab sits at N+1
+    // (rename/close/re-resolve); the banner attempt count increments per
+    // ladder step while the episode is live (D3, T-07-03).
+    let mut app = dev_app_at_gen(2);
+
+    // Arm: pump transport-lost starts the episode at attempt 1.
+    assert!(app.apply_event("dev", 2, &event_msg(EV_TRANSPORT_LOST, Some("dev"))));
+    assert_eq!(app.sessions.get("dev").unwrap().reconnect_attempt, 1);
+
+    // Ladder steps bump the attempt with the verbatim delay behind each.
+    let d2 = app
+        .advance_reconnect_attempt("dev")
+        .expect("live transport-lost episode must advance");
+    assert_eq!(app.sessions.get("dev").unwrap().reconnect_attempt, 2);
+    assert_eq!(d2, std::time::Duration::from_millis(500));
+
+    let d3 = app
+        .advance_reconnect_attempt("dev")
+        .expect("second step must advance");
+    assert_eq!(app.sessions.get("dev").unwrap().reconnect_attempt, 3);
+    assert_eq!(d3, std::time::Duration::from_millis(1000));
+
+    // Banner tracks the ladder step being tried.
+    let (title, button) = banner_copy_for(
+        TransportState::Disconnected,
+        TransportOrigin::Local,
+        app.sessions.get("dev").unwrap().reconnect_attempt,
+    )
+    .expect("retry episode must render a banner");
+    assert_eq!(title, "Connection lost — retrying… (attempt 3)");
+    assert!(button, "retry banner always offers manual Reconnect");
+
+    // Rename bumps the generation: the stale timer captured at gen 2 must
+    // drop (pure predicate half of the schedule_transport_retry gate).
+    let captured = 2;
+    app.sessions.get_mut("dev").unwrap().generation = 3;
+    let current = app.sessions.get("dev").unwrap().generation;
+    assert!(
+        !should_run_retry(captured, current),
+        "stale retry (gen 2) must die at gen 3"
+    );
+    assert!(
+        should_run_retry(current, current),
+        "fresh timer at the new generation still runs"
+    );
+
+    // Server-sent tmux states never advance a client retry (no attempt).
+    let mut app2 = dev_app_at_gen(5);
+    assert!(app2.apply_event("dev", 5, &event_msg(EV_TMUX_DISCONNECTED, Some("dev"))));
+    assert_eq!(app2.sessions.get("dev").unwrap().reconnect_attempt, 0);
+    assert!(
+        app2.advance_reconnect_attempt("dev").is_none(),
+        "server-sent tmux.disconnected must not arm a client retry"
+    );
+}
