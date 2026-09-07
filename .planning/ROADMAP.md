@@ -30,7 +30,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: WebSocket Client & Multi-Session Tabs** - per-session WS lifecycle with generation guard, session tabs + title bar, correlated mutations (completed 2026-09-06, 20/20 passed, 39/39 green)
 - [x] **Phase 4: Terminal Engine & Live Pane Rendering** - alacritty-backed live terminals with capture replay, byte-safe input, scrollback, selection (completed 2026-09-07, 12/12 verified, 82/82 green, HV advisory → Phase 7)
 - [x] **Phase 5: Pane Grid & Workspace Operations** - tmux-geometry pane layout, split/zoom/resize drags, layout presets, pane/window context menus (completed 2026-09-07, 11/13 verified, 101/101 green, HV advisory → Phase 7)
-- [ ] **Phase 6: Theme System, Settings & Chrome Parity** - generated 102+78 theme tables, Settings page, command palette, embedded font/icons
+- [x] **Phase 6: Theme System, Settings & Chrome Parity** - generated 102+78 theme tables, Settings page, command palette, embedded font/icons (completed 2026-09-07, 13/15 verified, 116/116 green, HV advisory → Phase 7)
 - [ ] **Phase 7: Resilience, Packaging & Parity Audit** - reconnect surfaces, Windows + Linux dist bundles, Makefile integration, 1:1 acceptance checklist
 
 ## Phase Details
@@ -156,7 +156,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Makefile targets build/dev/package desktop-gpui as part of the repo workflow on both OSes
   4. A side-by-side parity audit against Electron over the daily-driver checklist (vim/htop, rapid session switching, resize flood, rename mid-session, theme swap mid-session) shows 1:1 behavior with only the documented deviation (sidebar binary snap)
 
-**Plans**: TBD
+**Plans**: 3 plans
+
+- [ ] 07-01-PLAN.md — STATE-03 resilience tracer (transport-lost split, banner + toast overlay, BACKOFF retry)
+- [ ] 07-02-PLAN.md — PKG-02/PKG-03 packaging scripts + Makefile targets (Linux = human_needed)
+- [ ] 07-03-PLAN.md — SC4 parity audit (folded HV checklist) + D7-gated chrome threading + close-out sweep
 
 ## Progress
 
@@ -170,7 +174,8 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. WebSocket Client & Multi-Session Tabs | 2/2 | Complete | 2026-09-06 |
 | 4. Terminal Engine & Live Pane Rendering | 2/2 | Complete | 2026-09-07 |
 | 5. Pane Grid & Workspace Operations | 2/2 | Complete | 2026-09-07 |
-| 6. Theme System, Settings & Chrome Parity | 1/2 | In Progress|  |
+| 6. Theme System, Settings & Chrome Parity | 2/2 | Complete | 2026-09-07 |
+| 7. Resilience, Packaging & Parity Audit | TBD | Not started | - |
 | 7. Resilience, Packaging & Parity Audit | TBD | Not started | - |
 
 ---
