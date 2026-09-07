@@ -12,8 +12,11 @@ use webtmux_backend_client::{
     CommandResult, SessionSnapshot, SessionWsHandle, SharedPending, TransportState, TmuxTree,
     WsIncoming, WsOutgoing, EV_CONNECTION_READY, EV_STATE_DELTA, EV_STATE_SNAPSHOT,
     EV_SERVER_ERROR, EV_TERMINAL_OUTPUT, EV_TERMINAL_SNAPSHOT, EV_TMUX_DISCONNECTED,
-    EV_TMUX_RECONNECTING, MSG_SESSION_KILL, MSG_SESSION_RENAME, MSG_TERMINAL_CAPTURE,
-    MSG_TERMINAL_INPUT, MSG_TERMINAL_RESIZE, MSG_WINDOW_SELECT,
+    EV_TMUX_RECONNECTING, MSG_PANE_BREAK, MSG_PANE_KILL, MSG_PANE_RENAME, MSG_PANE_RESIZE,
+    MSG_PANE_SELECT, MSG_PANE_SPLIT, MSG_PANE_SWAP, MSG_PANE_ZOOM, MSG_SESSION_KILL,
+    MSG_SESSION_RENAME, MSG_TERMINAL_CAPTURE, MSG_TERMINAL_INPUT, MSG_TERMINAL_RESIZE,
+    MSG_WINDOW_BREAK_ACTIVE, MSG_WINDOW_CREATE, MSG_WINDOW_KILL, MSG_WINDOW_LAYOUT,
+    MSG_WINDOW_MOVE, MSG_WINDOW_RENAME, MSG_WINDOW_SELECT,
 };
 use webtmux_settings::DesktopSettings;
 use webtmux_supervisor::{BackendInfo, BackendStatus, SpawnOptions, Supervisor};
@@ -1457,6 +1460,524 @@ impl AppState {
             ..Default::default()
         };
         let _ = handle.send_command(msg);
+    }
+
+    // -- Phase 5 Task 2: pane/window correlated sends + kill gates (D5/D7) --
+
+    /// Kill-confirm gate for panes (PANE-05 per D7): true opens the confirm
+    /// dialog, false kills directly. Reads only `confirm_kill_pane`.
+    pub fn kill_requires_confirm_pane(&self) -> bool {
+        self.settings.confirm_kill_pane
+    }
+
+    /// Kill-confirm gate for windows (PANE-08 per D7). Reads only
+    /// `confirm_kill_window`.
+    pub fn kill_requires_confirm_window(&self) -> bool {
+        self.settings.confirm_kill_window
+    }
+
+    /// Split-direction vocabulary (PANE-02 pitfall lock): Split right →
+    /// `"horizontal"` (tmux `-h`), Split down → `"vertical"` (tmux `-v`).
+    /// The flag names the new layout axis, not the divider.
+    pub fn pane_split_direction(split_right: bool) -> &'static str {
+        if split_right {
+            "horizontal"
+        } else {
+            "vertical"
+        }
+    }
+
+    /// Pane rename prefill (DLG-02 per D6): `title || current_command || ''`.
+    pub fn pane_rename_prefill(title: &str, current_command: &str) -> String {
+        if !title.is_empty() {
+            title.to_string()
+        } else if !current_command.is_empty() {
+            current_command.to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    /// Window rename prefill (DLG-02 per D6): `name`.
+    pub fn window_rename_prefill(name: &str) -> String {
+        name.to_string()
+    }
+
+    /// Rename non-empty gate (DLG-02 per D6): trim + non-empty only — tmux
+    /// titles accept anything, so no session-name validation applies.
+    pub fn rename_name_allowed(name: &str) -> bool {
+        !name.trim().is_empty()
+    }
+
+    /// Per-pane TUI-scroll override writer (PH1 header switch). Absent reads
+    /// ON via `tui_scroll`; no persistence in Phase 5 (Phase 6 owns it).
+    pub fn set_tui_scroll(&mut self, pane_id: &str, enabled: bool) {
+        self.tui_scroll.insert(pane_id.to_string(), enabled);
+    }
+
+    // -- Pure envelope constructors (headless-testable, no socket) ---------
+
+    pub fn build_pane_select(pane_id: &str) -> WsIncoming {
+        WsIncoming {
+            msg_type: MSG_PANE_SELECT.to_string(),
+            pane_id: Some(pane_id.to_string()),
+            ..Default::default()
+        }
+    }
+
+    pub fn build_pane_split(pane_id: &str, direction: &str) -> WsIncoming {
+        WsIncoming {
+            msg_type: MSG_PANE_SPLIT.to_string(),
+            pane_id: Some(pane_id.to_string()),
+            direction: Some(direction.to_string()),
+            ..Default::default()
+        }
+    }
+
+    pub fn build_pane_resize(pane_id: &str, direction: char, amount: i32) -> WsIncoming {
+        WsIncoming {
+            msg_type: MSG_PANE_RESIZE.to_string(),
+            pane_id: Some(pane_id.to_string()),
+            direction: Some(direction.to_string()),
+            amount: Some(amount),
+            ..Default::default()
+        }
+    }
+
+    pub fn build_pane_kill(pane_id: &str) -> WsIncoming {
+        WsIncoming {
+            msg_type: MSG_PANE_KILL.to_string(),
+            pane_id: Some(pane_id.to_string()),
+            ..Default::default()
+        }
+    }
+
+    pub fn build_pane_rename(pane_id: &str, title: &str) -> WsIncoming {
+        WsIncoming {
+            msg_type: MSG_PANE_RENAME.to_string(),
+            pane_id: Some(pane_id.to_string()),
+            title: Some(title.to_string()),
+            ..Default::default()
+        }
+    }
+
+    pub fn build_pane_zoom(pane_id: &str) -> WsIncoming {
+        WsIncoming {
+            msg_type: MSG_PANE_ZOOM.to_string(),
+            pane_id: Some(pane_id.to_string()),
+            ..Default::default()
+        }
+    }
+
+    pub fn build_pane_break(pane_id: &str) -> WsIncoming {
+        WsIncoming {
+            msg_type: MSG_PANE_BREAK.to_string(),
+            pane_id: Some(pane_id.to_string()),
+            ..Default::default()
+        }
+    }
+
+    pub fn build_pane_swap(pane_id: &str, other_pane_id: &str) -> WsIncoming {
+        WsIncoming {
+            msg_type: MSG_PANE_SWAP.to_string(),
+            pane_id: Some(pane_id.to_string()),
+            other_pane_id: Some(other_pane_id.to_string()),
+            ..Default::default()
+        }
+    }
+
+    pub fn build_window_select(window_id: &str) -> WsIncoming {
+        WsIncoming {
+            msg_type: MSG_WINDOW_SELECT.to_string(),
+            pane_id: Some(window_id.to_string()),
+            ..Default::default()
+        }
+    }
+
+    pub fn build_window_create(name: Option<&str>) -> WsIncoming {
+        WsIncoming {
+            msg_type: MSG_WINDOW_CREATE.to_string(),
+            name: name.map(|s| s.to_string()),
+            ..Default::default()
+        }
+    }
+
+    pub fn build_window_rename(window_id: &str, name: &str) -> WsIncoming {
+        WsIncoming {
+            msg_type: MSG_WINDOW_RENAME.to_string(),
+            pane_id: Some(window_id.to_string()),
+            name: Some(name.to_string()),
+            ..Default::default()
+        }
+    }
+
+    pub fn build_window_kill(window_id: &str) -> WsIncoming {
+        WsIncoming {
+            msg_type: MSG_WINDOW_KILL.to_string(),
+            pane_id: Some(window_id.to_string()),
+            ..Default::default()
+        }
+    }
+
+    pub fn build_window_layout(window_id: &str, layout: &str) -> WsIncoming {
+        WsIncoming {
+            msg_type: MSG_WINDOW_LAYOUT.to_string(),
+            pane_id: Some(window_id.to_string()),
+            layout: Some(layout.to_string()),
+            ..Default::default()
+        }
+    }
+
+    pub fn build_window_move(window_id: &str, offset: i32) -> WsIncoming {
+        WsIncoming {
+            msg_type: MSG_WINDOW_MOVE.to_string(),
+            pane_id: Some(window_id.to_string()),
+            amount: Some(offset),
+            ..Default::default()
+        }
+    }
+
+    pub fn build_window_break_active(window_id: &str) -> WsIncoming {
+        WsIncoming {
+            msg_type: MSG_WINDOW_BREAK_ACTIVE.to_string(),
+            pane_id: Some(window_id.to_string()),
+            ..Default::default()
+        }
+    }
+
+    // -- Fire-and-forget selects + drag steps (D5: receiver dropped) --------
+
+    /// Fire-and-forget `pane.select` on the OWNING session's socket (never
+    /// the active proxy). False on miss or dead socket; never panics.
+    pub fn send_pane_select(&self, pane_id: &str) -> bool {
+        let Some(session) = self.owning_session(pane_id) else {
+            return false;
+        };
+        let Some(handle) = self.sessions.get(&session).and_then(|e| e.handle.as_ref()) else {
+            return false;
+        };
+        let _ = handle.send_command(Self::build_pane_select(pane_id));
+        true
+    }
+
+    /// Fire-and-forget `pane.resize` step for divider drags (D3): the
+    /// receiver is dropped — no per-step await/task spam; the pending entry
+    /// cleans itself on reply and truth follows via snapshot deltas. Never
+    /// sends `terminal.resize` (Phase-4 layout-key timers own viewport
+    /// resync) and never sends cumulative displacement.
+    pub fn submit_pane_resize(&self, pane_id: &str, direction: char, amount: i32) -> bool {
+        if amount == 0 {
+            return false;
+        }
+        let Some(session) = self.owning_session(pane_id) else {
+            return false;
+        };
+        let Some(handle) = self.sessions.get(&session).and_then(|e| e.handle.as_ref()) else {
+            return false;
+        };
+        let _ = handle.send_command(Self::build_pane_resize(pane_id, direction, amount));
+        true
+    }
+
+    // -- Correlated mutating submits (D5: 10s await + inline error) ---------
+
+    /// Sync half shared by pane mutating submits: enqueue on the owning
+    /// socket. Err when the pane has no live socket (caller records inline).
+    fn send_pane_command(
+        &self,
+        pane_id: &str,
+        msg: WsIncoming,
+    ) -> Result<(String, oneshot::Receiver<CommandResult>), String> {
+        let session = self
+            .owning_session(pane_id)
+            .ok_or_else(|| format!("pane \"{pane_id}\" has no owning session"))?;
+        let rx = self
+            .sessions
+            .get(&session)
+            .and_then(|e| e.handle.as_ref())
+            .ok_or_else(|| format!("session \"{session}\" is not connected"))?
+            .send_command(msg)
+            .map_err(|e| e.to_string())?;
+        Ok((session, rx))
+    }
+
+    /// Sync half shared by window mutating submits: enqueue on the active
+    /// session's socket with the `@N` target riding `paneId` (no `windowId`
+    /// field exists server-side). Err when there is no active socket.
+    fn send_window_command(
+        &self,
+        msg: WsIncoming,
+    ) -> Result<(String, oneshot::Receiver<CommandResult>), String> {
+        let active = self
+            .active_session
+            .clone()
+            .ok_or_else(|| "no active session".to_string())?;
+        let rx = self
+            .sessions
+            .get(&active)
+            .and_then(|e| e.handle.as_ref())
+            .ok_or_else(|| format!("session \"{active}\" is not connected"))?
+            .send_command(msg)
+            .map_err(|e| e.to_string())?;
+        Ok((active, rx))
+    }
+
+    /// Await a correlated pane/window reply (10s forget-timeout, T-05-03):
+    /// success commits nothing locally (snapshot is the sole truth —
+    /// self-heals); `command.error`/timeout records inline on the session
+    /// entry (`last_error`) with the view left untouched (no optimistic
+    /// flips; drag/mutation errors surface inline like Phase 3).
+    fn await_pane_command_result(
+        &mut self,
+        session: String,
+        rx: oneshot::Receiver<CommandResult>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(move |view_weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let cx_handle = cx.clone();
+            async move {
+                let outcome: Result<(), String> = match tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    rx,
+                )
+                .await
+                {
+                    Ok(Ok(cmd)) if cmd.ok => Ok(()),
+                    Ok(Ok(cmd)) => Err(cmd.message.unwrap_or_else(|| "Command failed".to_string())),
+                    Ok(Err(_)) => Err("Request was cancelled".to_string()),
+                    Err(_) => Err("Request timed out".to_string()),
+                };
+                let _ = cx_handle.update(|cx: &mut App| {
+                    if let Some(entity) = view_weak.upgrade() {
+                        entity.update(cx, |this, cx| {
+                            if let Err(e) = outcome {
+                                this.note_session_error(&session, e);
+                            }
+                            cx.notify();
+                        });
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Correlated `pane.split` on the owning socket (Split right →
+    /// `"horizontal"`, Split down → `"vertical"`).
+    pub fn submit_pane_split(
+        &mut self,
+        pane_id: &str,
+        direction: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let msg = Self::build_pane_split(pane_id, direction);
+        match self.send_pane_command(pane_id, msg) {
+            Ok((session, rx)) => self.await_pane_command_result(session, rx, cx),
+            Err(e) => {
+                if let Some(session) = self.owning_session(pane_id) {
+                    self.note_session_error(&session, e);
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// Correlated `pane.zoom` toggle on the owning socket (no client zoom
+    /// state — server snapshot is the sole truth).
+    pub fn submit_pane_zoom(&mut self, pane_id: &str, cx: &mut Context<Self>) {
+        let msg = Self::build_pane_zoom(pane_id);
+        match self.send_pane_command(pane_id, msg) {
+            Ok((session, rx)) => self.await_pane_command_result(session, rx, cx),
+            Err(e) => {
+                if let Some(session) = self.owning_session(pane_id) {
+                    self.note_session_error(&session, e);
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// Correlated `pane.kill` on the owning socket.
+    pub fn submit_pane_kill(&mut self, pane_id: &str, cx: &mut Context<Self>) {
+        let msg = Self::build_pane_kill(pane_id);
+        match self.send_pane_command(pane_id, msg) {
+            Ok((session, rx)) => self.await_pane_command_result(session, rx, cx),
+            Err(e) => {
+                if let Some(session) = self.owning_session(pane_id) {
+                    self.note_session_error(&session, e);
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// Correlated `pane.break` on the owning socket.
+    pub fn submit_pane_break(&mut self, pane_id: &str, cx: &mut Context<Self>) {
+        let msg = Self::build_pane_break(pane_id);
+        match self.send_pane_command(pane_id, msg) {
+            Ok((session, rx)) => self.await_pane_command_result(session, rx, cx),
+            Err(e) => {
+                if let Some(session) = self.owning_session(pane_id) {
+                    self.note_session_error(&session, e);
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// Correlated `pane.swap` on the owning socket.
+    pub fn submit_pane_swap(
+        &mut self,
+        pane_id: &str,
+        other_pane_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let msg = Self::build_pane_swap(pane_id, other_pane_id);
+        match self.send_pane_command(pane_id, msg) {
+            Ok((session, rx)) => self.await_pane_command_result(session, rx, cx),
+            Err(e) => {
+                if let Some(session) = self.owning_session(pane_id) {
+                    self.note_session_error(&session, e);
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// Correlated `pane.rename` on the owning socket (title travels as JSON
+    /// `title` into `select-pane -t %N -T <title>` argv — no shell, T-05-01).
+    pub fn submit_pane_rename(
+        &mut self,
+        pane_id: &str,
+        title: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if !Self::rename_name_allowed(title) {
+            return;
+        }
+        let msg = Self::build_pane_rename(pane_id, title.trim());
+        match self.send_pane_command(pane_id, msg) {
+            Ok((session, rx)) => self.await_pane_command_result(session, rx, cx),
+            Err(e) => {
+                if let Some(session) = self.owning_session(pane_id) {
+                    self.note_session_error(&session, e);
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// Correlated `window.layout` on the active socket (layout strings pass
+    /// through verbatim incl `next-layout`).
+    pub fn submit_window_layout(
+        &mut self,
+        window_id: &str,
+        layout: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let msg = Self::build_window_layout(window_id, layout);
+        match self.send_window_command(msg) {
+            Ok((session, rx)) => self.await_pane_command_result(session, rx, cx),
+            Err(e) => {
+                if let Some(active) = self.active_session.clone() {
+                    self.note_session_error(&active, e);
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// Correlated `window.rename` on the active socket.
+    pub fn submit_window_rename(
+        &mut self,
+        window_id: &str,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if !Self::rename_name_allowed(name) {
+            return;
+        }
+        let msg = Self::build_window_rename(window_id, name.trim());
+        match self.send_window_command(msg) {
+            Ok((session, rx)) => self.await_pane_command_result(session, rx, cx),
+            Err(e) => {
+                if let Some(active) = self.active_session.clone() {
+                    self.note_session_error(&active, e);
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// Correlated `window.kill` on the active socket.
+    pub fn submit_window_kill(&mut self, window_id: &str, cx: &mut Context<Self>) {
+        let msg = Self::build_window_kill(window_id);
+        match self.send_window_command(msg) {
+            Ok((session, rx)) => self.await_pane_command_result(session, rx, cx),
+            Err(e) => {
+                if let Some(active) = self.active_session.clone() {
+                    self.note_session_error(&active, e);
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// Correlated `window.move` on the active socket (offset ±1 for menu
+    /// Move Left/Right).
+    pub fn submit_window_move(
+        &mut self,
+        window_id: &str,
+        offset: i32,
+        cx: &mut Context<Self>,
+    ) {
+        let msg = Self::build_window_move(window_id, offset);
+        match self.send_window_command(msg) {
+            Ok((session, rx)) => self.await_pane_command_result(session, rx, cx),
+            Err(e) => {
+                if let Some(active) = self.active_session.clone() {
+                    self.note_session_error(&active, e);
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// Correlated `window.break-active` on the active socket.
+    pub fn submit_window_break_active(
+        &mut self,
+        window_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let msg = Self::build_window_break_active(window_id);
+        match self.send_window_command(msg) {
+            Ok((session, rx)) => self.await_pane_command_result(session, rx, cx),
+            Err(e) => {
+                if let Some(active) = self.active_session.clone() {
+                    self.note_session_error(&active, e);
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// Correlated `window.create` on the active socket (Plus button, no args
+    /// beyond an optional name).
+    pub fn submit_window_create(
+        &mut self,
+        name: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let msg = Self::build_window_create(name.as_deref());
+        match self.send_window_command(msg) {
+            Ok((session, rx)) => self.await_pane_command_result(session, rx, cx),
+            Err(e) => {
+                if let Some(active) = self.active_session.clone() {
+                    self.note_session_error(&active, e);
+                }
+                cx.notify();
+            }
+        }
     }
 
     /// Rename submit orchestration (SESS-04): `validate_session_name`
