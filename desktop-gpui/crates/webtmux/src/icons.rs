@@ -51,3 +51,15 @@ pub const SQUARE_SPLIT_VERTICAL_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2
 pub const LAYOUT_GRID_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>"#;
 
 pub const ARROW_RIGHT_LEFT_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/></svg>"#;
+
+// --- Phase 6 (D8): settings + card-grid icons (lucide path data ported
+// verbatim from the web-term reference; stroke-width 1.5 to match the 24
+// existing consts above instead of the reference's 2).
+// CHECK_SVG: selected card check overlay.
+pub const CHECK_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>"#;
+
+// SEARCH_SVG: palette input affordance (06-02) + future settings search.
+pub const SEARCH_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>"#;
+
+// PAINTBRUSH_SVG: Appearance section header.
+pub const PAINTBRUSH_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m14 12-8.5 8.5a2.12 2.12 0 1 1-3-3L11 9"/><path d="M16 16l6-6"/><path d="m8 8 2-2a3 3 0 0 1 4.24 0l1.76 1.76a3 3 0 0 1 0 4.24l-2 2"/></svg>"#;

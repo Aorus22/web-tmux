@@ -36,7 +36,7 @@ pub fn determine_workspace_state(
 /// Render the central workspace body based on current AppState.
 pub fn render_workspace_body(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     if app.showing_settings {
-        return render_settings_placeholder(app, cx).into_any_element();
+        return crate::views::settings::render_settings(app, cx).into_any_element();
     }
     match app.workspace_state() {
         WorkspaceState::Error => render_error_state(app, cx).into_any_element(),
@@ -47,11 +47,13 @@ pub fn render_workspace_body(app: &mut AppState, cx: &mut Context<AppState>) -> 
 }
 
 /// Renders EmptyState: when tree.sessions is empty and backend is alive.
-pub fn render_empty_state(_app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
-    let muted_text = rgb(0x808080);
-    let foreground_text = rgb(0xd4d4d4);
-    let primary_bg = rgb(0xd4d4d4);
-    let primary_fg = rgb(0x1e1e1e);
+pub fn render_empty_state(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    // Phase 6: chrome reads the active preset per render (no cached colors).
+    let preset_name = app.settings.theme_preset.clone();
+    let muted_text = crate::theme::preset_muted_fg(&preset_name);
+    let foreground_text = crate::theme::preset_fg(&preset_name);
+    let primary_bg = crate::theme::preset_primary(&preset_name);
+    let primary_fg = crate::theme::preset_primary_fg(&preset_name);
 
     div()
         .flex()
@@ -114,11 +116,13 @@ pub fn render_empty_state(_app: &mut AppState, cx: &mut Context<AppState>) -> im
 
 /// Renders ErrorState: when tmux is missing or tree fetch fails.
 pub fn render_error_state(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
-    let destructive_color = rgb(0x7F1D1D);
-    let muted_text = rgb(0x808080);
-    let foreground_text = rgb(0xd4d4d4);
-    let border_color = rgb(0x3c3c3c);
-    let hover_bg = rgb(0x262626);
+    // Phase 6: chrome reads the active preset per render (no cached colors).
+    let preset_name = app.settings.theme_preset.clone();
+    let destructive_color = crate::theme::preset_destructive(&preset_name);
+    let muted_text = crate::theme::preset_muted_fg(&preset_name);
+    let foreground_text = crate::theme::preset_fg(&preset_name);
+    let border_color = crate::theme::preset_border(&preset_name);
+    let hover_bg = crate::theme::preset_muted(&preset_name);
 
     let error_desc = if let Some(err) = &app.tree_error {
         if err.contains("not found") || err.contains("installed") {
@@ -192,13 +196,15 @@ pub fn render_error_state(app: &mut AppState, cx: &mut Context<AppState>) -> imp
 
 /// Renders SelectSessionView: when sessions exist in the tree but none is active.
 pub fn render_select_session_view(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
-    let muted_text = rgb(0x808080);
-    let foreground_text = rgb(0xd4d4d4);
-    let border_color = rgb(0x3c3c3c);
-    let hero_bg = rgb(0x2d2d2d);
-    let card_bg = rgb(0x1e1e1e);
-    let hover_bg = rgb(0x262626);
-    let badge_bg = rgb(0x2d2d2d);
+    // Phase 6: chrome reads the active preset per render (no cached colors).
+    let preset_name = app.settings.theme_preset.clone();
+    let muted_text = crate::theme::preset_muted_fg(&preset_name);
+    let foreground_text = crate::theme::preset_fg(&preset_name);
+    let border_color = crate::theme::preset_border(&preset_name);
+    let hero_bg = crate::theme::preset_muted(&preset_name);
+    let card_bg = crate::theme::preset_card(&preset_name);
+    let hover_bg = crate::theme::preset_muted(&preset_name);
+    let badge_bg = crate::theme::preset_muted(&preset_name);
 
     let sessions: Vec<_> = app.tree.sessions.iter().map(|n| {
         (n.session.name.clone(), n.session.windows)
@@ -348,60 +354,6 @@ pub fn render_select_session_view(app: &mut AppState, cx: &mut Context<AppState>
         )
 }
 
-/// Renders the honest Phase-6 placeholder behind the SHELL-01 Settings gear.
-///
-/// Static copy only — no settings values, paths, or tokens displayed (T-03-08).
-/// Open tabs stay connected underneath; Back returns to the prior workspace
-/// routing (`showing_settings = false`, `active_session` left as-is).
-pub fn render_settings_placeholder(_app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
-    let muted_text = rgb(0x808080);
-    let foreground_text = rgb(0xd4d4d4);
-    let border_color = rgb(0x3c3c3c);
-    let hover_bg = rgb(0x262626);
-
-    div()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .size_full()
-        .p(px(32.0))
-        .gap(px(12.0))
-        .text_center()
-        .child(
-            div()
-                .text_base()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(foreground_text)
-                .child("Settings arrive in Phase 6"),
-        )
-        .child(
-            div()
-                .max_w(px(384.0))
-                .text_sm()
-                .text_color(muted_text)
-                .child("Your tabs stay connected underneath — pick one from the sidebar to go back."),
-        )
-        .child(
-            div()
-                .mt(px(4.0))
-                .px(px(16.0))
-                .py(px(8.0))
-                .rounded(px(6.0))
-                .border_1()
-                .border_color(border_color)
-                .text_color(foreground_text)
-                .text_sm()
-                .font_weight(FontWeight::MEDIUM)
-                .cursor_pointer()
-                .hover(|s| s.bg(hover_bg))
-                .child("Back to sessions")
-                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _window, cx| {
-                    this.showing_settings = false;
-                    cx.notify();
-                })),
-        )
-}
 /// Renders the active session workspace through the Phase-5 geometry grid:
 /// absolutely positioned panes with headers re-hosting the Phase-4
 /// `TerminalView`s (empty/single-pane windows render without dividers/zoom).

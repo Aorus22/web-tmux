@@ -32,12 +32,16 @@ use crate::views::rename_window_dialog::open_rename_window_dialog;
 /// Render the minimal S1 title bar with app identity, drag area, WindowTabs of
 /// the active session, Settings gear, and custom window controls.
 pub fn render_title_bar(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
-    let bar_bg = rgb(0x1e1e1e);
-    let border_color = rgb(0x3c3c3c);
-    let muted_text = rgb(0x808080);
-    let icon_idle_color = rgb(0x9d9d9d);
-    let text_color = rgb(0xd4d4d4);
-    let hover_bg = rgb(0x2d2d2d);
+    // Phase 6: chrome reads the active preset per render (no cached colors).
+    let preset_name = app.settings.theme_preset.clone();
+    let bar_bg = crate::theme::preset_bg(&preset_name);
+    let border_color = crate::theme::preset_border(&preset_name);
+    let muted_text = crate::theme::preset_muted_fg(&preset_name);
+    let icon_idle_color = crate::theme::preset_muted_fg(&preset_name);
+    let text_color = crate::theme::preset_fg(&preset_name);
+    let hover_bg = crate::theme::preset_muted(&preset_name);
+    let destructive = crate::theme::preset_destructive(&preset_name);
+    let destructive_fg = crate::theme::preset_destructive_fg(&preset_name);
 
     let has_active = app.active_session.is_some();
 
@@ -222,7 +226,7 @@ pub fn render_title_bar(app: &mut AppState, cx: &mut Context<AppState>) -> impl 
                         .h(px(32.0))
                         .rounded_md()
                         .cursor_pointer()
-                        .hover(|s| s.bg(rgb(0x7F1D1D)).text_color(rgb(0xffffff)))
+                        .hover(|s| s.bg(destructive).text_color(destructive_fg))
                         .child(
                             svg()
                                 .data(X_SVG)
@@ -242,10 +246,12 @@ pub fn render_title_bar(app: &mut AppState, cx: &mut Context<AppState>) -> impl 
 /// right-click = chip menu (rename/move/break/kill); trailing Plus creates a
 /// window. FE parity (`WindowTabs.tsx:109-190`).
 fn render_window_tabs(app: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
-    let active_bg = rgb(0x2d2d2d);
-    let active_text = rgb(0xd4d4d4);
-    let idle_text = rgb(0x808080);
-    let hover_bg = rgb(0x262626);
+    // Phase 6: chrome reads the active preset per render (no cached colors).
+    let preset_name = app.settings.theme_preset.clone();
+    let active_bg = crate::theme::preset_muted(&preset_name);
+    let active_text = crate::theme::preset_fg(&preset_name);
+    let idle_text = crate::theme::preset_muted_fg(&preset_name);
+    let hover_bg = crate::theme::preset_muted(&preset_name);
     let app_weak = cx.entity().downgrade();
 
     div()

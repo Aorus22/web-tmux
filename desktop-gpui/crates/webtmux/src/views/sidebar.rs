@@ -14,14 +14,16 @@ use crate::icons::{CHEVRON_DOWN_SVG, CHEVRON_RIGHT_SVG, PLUS_SVG, REFRESH_CW_SVG
 
 pub fn render_sidebar(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let sidebar_open = app.sidebar_open;
-    let bg_color = rgb(0x1e1e1e);
-    let border_color = rgb(0x3c3c3c);
-    let muted_text = rgb(0x808080);
-    let foreground_text = rgb(0xd4d4d4);
-    let active_bg = rgb(0x2d2d2d);
-    let hover_bg = rgb(0x262626);
-    let window_text = rgb(0xaaaaaa);
-    let pane_dot_bg = rgb(0x4f4f4f);
+    // Phase 6: chrome reads the active preset per render (no cached colors).
+    let preset_name = app.settings.theme_preset.clone();
+    let bg_color = crate::theme::preset_bg(&preset_name);
+    let border_color = crate::theme::preset_border(&preset_name);
+    let muted_text = crate::theme::preset_muted_fg(&preset_name);
+    let foreground_text = crate::theme::preset_fg(&preset_name);
+    let active_bg = crate::theme::preset_muted(&preset_name);
+    let hover_bg = crate::theme::preset_muted(&preset_name);
+    let window_text = crate::theme::preset_muted_fg(&preset_name);
+    let pane_dot_bg = crate::theme::preset_muted_fg(&preset_name);
 
     let width_val = if sidebar_open { px(240.0) } else { px(0.0) };
 

@@ -19,9 +19,14 @@ use webtmux_backend_client::{
     MSG_WINDOW_BREAK_ACTIVE, MSG_WINDOW_CREATE, MSG_WINDOW_KILL, MSG_WINDOW_LAYOUT,
     MSG_WINDOW_MOVE, MSG_WINDOW_RENAME, MSG_WINDOW_SELECT,
 };
-use webtmux_settings::DesktopSettings;
+use webtmux_settings::{
+    clamp_font_size, clamp_line_height, clamp_scrollback, DesktopSettings, Theme as SettingsTheme,
+};
 use webtmux_supervisor::{BackendInfo, BackendStatus, SpawnOptions, Supervisor};
-use webtmux_terminal::{apply_capture, scroll_report, AlacPoint, TermMode, Terminal, TerminalEvent};
+use webtmux_terminal::{
+    apply_capture, scroll_report, AlacPoint, ColorPalette, TermMode, Terminal, TerminalConfig,
+    TerminalEvent,
+};
 use crate::views::terminal_view::TerminalView;
 use crate::views::{status::render_status_page, tab_strip::render_title_bar};
 use crate::pane_geometry::drag_step_throttled;
@@ -623,6 +628,9 @@ impl AppState {
 
     /// Spawn the supervisor lifecycle in a background thread and observe transitions.
     pub fn start_supervisor(&mut self, cx: &mut Context<Self>) {
+        // Phase 6 startup: fix any legacy theme/theme_preset skew (Pitfall 2)
+        // on the one boot path with a live Context (main.rs stays untouched).
+        self.resync_theme_on_startup(cx);
         let spawn_opts = match self.spawn_opts.clone() {
             Some(opts) => opts,
             None => {
@@ -911,9 +919,14 @@ impl AppState {
         self.pane_titles.get(pane_id).cloned()
     }
 
-    /// D3: per-pane TUI-scroll switch — absent means ON (FE `?? true` parity).
+    /// D3: per-pane TUI-scroll switch — absent falls back to the persisted
+    /// `tui_scroll_default` (FE `?? true` parity via the `"JetBrains Mono"`
+    /// settings default of `true`; Phase 6 D2/D9).
     pub fn tui_scroll(&self, pane_id: &str) -> bool {
-        self.tui_scroll.get(pane_id).copied().unwrap_or(true)
+        self.tui_scroll
+            .get(pane_id)
+            .copied()
+            .unwrap_or(self.settings.tui_scroll_default)
     }
 
     /// Current selection text for a pane (TERM-05 headless lock; the GPUI
@@ -1648,9 +1661,231 @@ impl AppState {
     }
 
     /// Per-pane TUI-scroll override writer (PH1 header switch). Absent reads
-    /// ON via `tui_scroll`; no persistence in Phase 5 (Phase 6 owns it).
+    /// the persisted `tui_scroll_default` via `tui_scroll` (Phase 6 D2/D9).
     pub fn set_tui_scroll(&mut self, pane_id: &str, enabled: bool) {
         self.tui_scroll.insert(pane_id.to_string(), enabled);
+    }
+
+    // -- Phase 6 tracer: theme live-apply + terminal pref apply (D3/D9) ----
+
+    /// Terminal palette for a UI preset name through its linked terminal
+    /// preset (FE `resolvedTerminalTheme` parity — the legacy explicit
+    /// override stays ignored; one theme for the whole app). Pure: lookup +
+    /// `ColorPalette::from_rgb_u32`, no socket, no cx.
+    pub fn terminal_palette_for_ui_preset(preset_name: &str) -> ColorPalette {
+        let term = crate::themes_generated::terminal_preset_for_ui(preset_name);
+        ColorPalette::from_rgb_u32(
+            term.foreground,
+            term.background,
+            term.cursor,
+            term.foreground,
+            [
+                term.black,
+                term.red,
+                term.green,
+                term.yellow,
+                term.blue,
+                term.magenta,
+                term.cyan,
+                term.white,
+                term.bright_black,
+                term.bright_red,
+                term.bright_green,
+                term.bright_yellow,
+                term.bright_blue,
+                term.bright_magenta,
+                term.bright_cyan,
+                term.bright_white,
+            ],
+        )
+    }
+
+    /// Palette for the currently persisted preset (live-apply + new-view
+    /// default source — future views resolve the same preset via settings).
+    pub fn current_terminal_palette(&self) -> ColorPalette {
+        Self::terminal_palette_for_ui_preset(&self.settings.theme_preset)
+    }
+
+    /// Single mutation point for theme picks (D3): table lookup (fallback
+    /// `[0]`, `getUiTheme` parity), persist the preset, derive Dark/Light
+    /// from `is_dark` (FE `isLightUiTheme` parity), apply the widget theme,
+    /// push the linked palette to every live `terminal_views` entry (future
+    /// views resolve the persisted preset as their default), synchronous
+    /// `save()`, then `notify()`.
+    pub fn set_theme_preset(&mut self, preset_id: &str, cx: &mut Context<Self>) {
+        let preset = crate::themes_generated::ui_preset_by_name(preset_id);
+        let name = preset.name.to_string();
+        let is_dark = preset.is_dark;
+        self.settings.theme_preset = name.clone();
+        self.settings.theme = if is_dark {
+            SettingsTheme::Dark
+        } else {
+            SettingsTheme::Light
+        };
+        crate::theme::apply_theme(self.settings.theme, cx);
+        let palette = Self::terminal_palette_for_ui_preset(&name);
+        for view in self.terminal_views.values() {
+            view.update(cx, |v, cx| v.set_palette(palette.clone(), cx));
+        }
+        let _ = self.settings.save();
+        cx.notify();
+    }
+
+    /// Load-time re-sync (Pitfall 2): re-derive `settings.theme` from the
+    /// preset `is_dark`. Returns true when a legacy skew was corrected.
+    pub fn resync_theme_from_preset(&mut self) -> bool {
+        let preset =
+            crate::themes_generated::ui_preset_by_name(&self.settings.theme_preset);
+        let want = if preset.is_dark {
+            SettingsTheme::Dark
+        } else {
+            SettingsTheme::Light
+        };
+        if self.settings.theme != want {
+            self.settings.theme = want;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Startup re-sync with a live context (Pitfall 2): fix a legacy
+    /// theme/theme_preset skew, persist the fix, re-apply the widget theme.
+    /// Called once from `start_supervisor` — the one boot path with a live
+    /// `Context` (main.rs itself is plan-external and stays untouched).
+    pub fn resync_theme_on_startup(&mut self, cx: &mut Context<Self>) {
+        if self.resync_theme_from_preset() {
+            let _ = self.settings.save();
+        }
+        crate::theme::apply_theme(self.settings.theme, cx);
+    }
+
+    /// Appearance filter writer (D4): `all`/`dark`/`light` only; persists +
+    /// notifies so the card grid re-filters on the next render.
+    pub fn set_theme_mode_filter(&mut self, filter: &str, cx: &mut Context<Self>) {
+        if !matches!(filter, "all" | "dark" | "light") {
+            return;
+        }
+        if self.settings.theme_mode_filter == filter {
+            return;
+        }
+        self.settings.theme_mode_filter = filter.to_string();
+        let _ = self.settings.save();
+        cx.notify();
+    }
+
+    /// Re-arm the debounced viewport for every pane with a live view using
+    /// the store terminal's current grid size, then schedule the single
+    /// debounced send (Pitfall 4 — never font-apply without viewport re-arm
+    /// or tmux keeps formatting for the old viewport).
+    fn rearm_viewports_for_font_change(&mut self, cx: &mut Context<Self>) {
+        let panes: Vec<String> = self.terminal_views.keys().cloned().collect();
+        for pane in &panes {
+            let (cols, rows) = self
+                .terminals
+                .get(pane)
+                .map(|e| {
+                    let t = e.terminal.lock();
+                    (t.cols(), t.rows())
+                })
+                .unwrap_or((80, 24));
+            self.arm_viewport_for_pane(pane, cols, rows);
+        }
+        self.schedule_debounced_resize(cx);
+    }
+
+    /// Font-size apply (D9): clamp 8–32, persist, push via `set_font_size`
+    /// to all live views, re-arm the viewport, notify.
+    pub fn set_terminal_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
+        let size = clamp_font_size(size);
+        self.settings.font_size = size;
+        let _ = self.settings.save();
+        let px_size = px(size);
+        for view in self.terminal_views.values() {
+            view.update(cx, |v, cx| v.set_font_size(px_size, cx));
+        }
+        self.rearm_viewports_for_font_change(cx);
+        cx.notify();
+    }
+
+    /// Font-family apply (D9): honest single family (default JetBrains Mono;
+    /// free text falls back — D8). Persists, pushes via `set_font` with the
+    /// current size to all live views, re-arms the viewport.
+    pub fn set_terminal_font_family(&mut self, family: &str, cx: &mut Context<Self>) {
+        let family = family.trim();
+        if family.is_empty() {
+            return;
+        }
+        self.settings.font_family = family.to_string();
+        let _ = self.settings.save();
+        let fam = family.to_string();
+        let px_size = px(self.settings.font_size);
+        for view in self.terminal_views.values() {
+            let f = fam.clone();
+            view.update(cx, |v, cx| v.set_font(f, px_size, cx));
+        }
+        self.rearm_viewports_for_font_change(cx);
+        cx.notify();
+    }
+
+    /// Line-height apply (D9): clamp 1–2, persist, update live renderers'
+    /// multiplier + cell height in place, re-arm the viewport, notify.
+    pub fn set_terminal_line_height(&mut self, line_height: f32, cx: &mut Context<Self>) {
+        let lh = clamp_line_height(line_height);
+        self.settings.line_height = lh;
+        let _ = self.settings.save();
+        for view in self.terminal_views.values() {
+            view.update(cx, |v, cx| {
+                let r = v.renderer_mut();
+                r.line_height_multiplier = lh;
+                r.cell_height = r.font_size * lh;
+                cx.notify();
+            });
+        }
+        self.rearm_viewports_for_font_change(cx);
+        cx.notify();
+    }
+
+    /// Scrollback apply (D9): clamp 100–50000, persist, recreate each store
+    /// `Terminal` IN PLACE (same `Arc`, so live views follow) preserving
+    /// grid size, reset the exactly-once guards, then `invalidate` +
+    /// `request_pane_capture` per pane (Pitfall 3 — never recreate without
+    /// re-capture; the `ingestedHistory` guard dedupes the replay).
+    pub fn set_scrollback_lines(&mut self, lines: usize, cx: &mut Context<Self>) {
+        let lines = clamp_scrollback(lines);
+        self.settings.scrollback_lines = lines;
+        let _ = self.settings.save();
+        let cfg = TerminalConfig {
+            scrollback_limit: lines,
+        };
+        let panes: Vec<String> = self.terminals.keys().cloned().collect();
+        for pane in &panes {
+            if let Some(entry) = self.terminals.get_mut(pane) {
+                let (cols, rows) = {
+                    let t = entry.terminal.lock();
+                    (t.cols(), t.rows())
+                };
+                *entry.terminal.lock() =
+                    Terminal::with_config(cols, rows, cfg.clone());
+                entry.snapshot_written = false;
+                entry.ingested_history = 0;
+            }
+        }
+        for pane in &panes {
+            self.invalidate_pane_snapshot(pane);
+        }
+        for pane in &panes {
+            let _ = self.request_pane_capture(pane);
+        }
+        cx.notify();
+    }
+
+    /// TUI-scroll-default writer (D9): persists + notifies; per-pane
+    /// overrides keep precedence through `tui_scroll()`.
+    pub fn set_tui_scroll_default(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.settings.tui_scroll_default = enabled;
+        let _ = self.settings.save();
+        cx.notify();
     }
 
     // -- Pure envelope constructors (headless-testable, no socket) ---------

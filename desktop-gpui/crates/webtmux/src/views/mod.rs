@@ -9,6 +9,7 @@ pub mod rename_session_dialog;
 pub mod rename_window_dialog;
 pub mod session_context_menu;
 pub mod session_states;
+pub mod settings;
 pub mod sidebar;
 pub mod status;
 pub mod tab_strip;
