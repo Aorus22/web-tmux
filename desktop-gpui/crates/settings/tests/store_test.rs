@@ -138,6 +138,51 @@ fn test_kill_confirm_defaults() {
 }
 
 #[test]
+fn test_new_pref_defaults() {
+    // FE settingsStore.ts:33-45 parity per D2 (THEME-01/SET-02).
+    let settings = DesktopSettings::default();
+    assert_eq!(settings.tmux_binary, "");
+    assert_eq!(settings.font_family, "JetBrains Mono");
+    assert_eq!(settings.font_size, 14.0);
+    assert_eq!(settings.line_height, 1.35);
+    assert_eq!(settings.scrollback_lines, 2000);
+    assert!(settings.tui_scroll_default);
+    assert_eq!(settings.theme_mode_filter, "all");
+    assert_eq!(settings.theme_preset, "default-dark");
+}
+
+#[test]
+fn test_legacy_settings_back_compat() {
+    // Legacy JSON without the new keys deserializes with FE-parity defaults
+    // (SHELL-04 per D2; mirrors the kill-confirm legacy test shape).
+    let legacy = r#"{"theme":"dark","theme_preset":"default-dark"}"#;
+    let settings: DesktopSettings =
+        serde_json::from_str(legacy).expect("legacy JSON must parse");
+    assert_eq!(settings.tmux_binary, "");
+    assert_eq!(settings.font_family, "JetBrains Mono");
+    assert_eq!(settings.font_size, 14.0);
+    assert_eq!(settings.line_height, 1.35);
+    assert_eq!(settings.scrollback_lines, 2000);
+    assert!(settings.tui_scroll_default);
+    assert_eq!(settings.theme_mode_filter, "all");
+    assert_eq!(settings.theme_preset, "default-dark");
+}
+
+#[test]
+fn test_terminal_pref_clamps() {
+    // FE TerminalSettings.tsx:54-90 parity per D9 (T-06-03).
+    assert_eq!(webtmux_settings::clamp_font_size(4.0), 8.0);
+    assert_eq!(webtmux_settings::clamp_font_size(14.0), 14.0);
+    assert_eq!(webtmux_settings::clamp_font_size(99.0), 32.0);
+    assert_eq!(webtmux_settings::clamp_line_height(0.5), 1.0);
+    assert_eq!(webtmux_settings::clamp_line_height(1.35), 1.35);
+    assert_eq!(webtmux_settings::clamp_line_height(5.0), 2.0);
+    assert_eq!(webtmux_settings::clamp_scrollback(10), 100);
+    assert_eq!(webtmux_settings::clamp_scrollback(2000), 2000);
+    assert_eq!(webtmux_settings::clamp_scrollback(999_999), 50_000);
+}
+
+#[test]
 fn test_kill_confirm_legacy_json() {
     // Phase-1/2 shape: confirm keys absent -> all default true (FE parity).
     let legacy = r#"{"theme":"dark","theme_preset":"default-dark"}"#;
