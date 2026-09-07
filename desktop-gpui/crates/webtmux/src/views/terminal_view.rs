@@ -257,6 +257,17 @@ impl TerminalView {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // Pitfall 1: Ctrl+Shift+P must bubble to `TogglePalette` instead of
+        // entering the pty — early-return before any byte conversion so the
+        // palette opens from terminal focus (DLG-01 per D5).
+        if crate::views::palette::is_palette_keystroke(
+            event.keystroke.modifiers.control,
+            event.keystroke.modifiers.shift,
+            event.keystroke.modifiers.platform,
+            &event.keystroke.key,
+        ) {
+            return;
+        }
         // Clipboard routing via the headless-tested helper (TERM-05):
         // Ctrl+Shift+C / Cmd+C with a selection copies, Ctrl+Shift+V /
         // Cmd+V pastes, everything else (incl. Ctrl+C with an empty

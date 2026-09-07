@@ -2,6 +2,7 @@
 
 //! webtmux desktop client (GPUI) library.
 
+pub mod actions;
 pub mod app_state;
 pub mod bundle;
 pub mod icons;

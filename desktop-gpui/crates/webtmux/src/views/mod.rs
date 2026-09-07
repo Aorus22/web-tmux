@@ -1,6 +1,7 @@
 //! Views module.
 
 pub mod create_session_dialog;
+pub mod palette;
 pub mod pane_context_menu;
 pub mod pane_grid;
 pub mod pane_view;

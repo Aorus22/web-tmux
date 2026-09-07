@@ -6,6 +6,7 @@ use std::time::Instant;
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 use gpui_component::WindowExt as _;
+use gpui_component::command::CommandState;
 use gpui_component::input::{InputEvent, InputState};
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
@@ -501,6 +502,13 @@ pub struct AppState {
     pub tmux_binary_input: Option<Entity<InputState>>,
     /// Enter-to-check subscription for the binary editor (lives with it).
     pub tmux_binary_input_sub: Option<Subscription>,
+
+    // Phase 6 plan 06-02 Task 2: command palette (DLG-01 per D5).
+    /// Palette visibility; the `CommandState` entity below exists exactly
+    /// while open (fresh query per open, FE dialog-unmount parity).
+    pub palette_open: bool,
+    /// Vendored `CommandState` (query/focus/selection); `None` while closed.
+    pub palette_state: Option<Entity<CommandState>>,
 }
 
 impl AppState {
@@ -547,6 +555,8 @@ impl AppState {
             tmux_binary_applied: false,
             tmux_binary_input: None,
             tmux_binary_input_sub: None,
+            palette_open: false,
+            palette_state: None,
         }
     }
 
@@ -652,6 +662,9 @@ impl AppState {
         // Phase 6 startup: fix any legacy theme/theme_preset skew (Pitfall 2)
         // on the one boot path with a live Context (main.rs stays untouched).
         self.resync_theme_on_startup(cx);
+        // Phase 6 palette: register the Ctrl+Shift+P binding once at boot
+        // (App-level keymap; dispatch lands on the root-view action handler).
+        crate::actions::bind_palette_keys(cx);
         let spawn_opts = match self.spawn_opts.clone() {
             Some(opts) => opts,
             None => {
@@ -2007,6 +2020,133 @@ impl AppState {
         self.tmux_binary_input_sub = Some(sub);
     }
 
+    // -- Phase 6 plan 06-02 Task 2: command palette (DLG-01 per D5) ---------
+
+    /// Server-tracked active pane id for palette targets/guards (FE
+    /// `snapshot.activePane` parity). `None` when no session, no snapshot,
+    /// or the id is empty (FE `if (activePane)` guards).
+    pub fn palette_active_pane(&self) -> Option<String> {
+        let name = self.active_session.as_deref()?;
+        let snap = self.sessions.get(name)?.snapshot.as_ref()?;
+        if snap.active_pane.is_empty() {
+            return None;
+        }
+        Some(snap.active_pane.clone())
+    }
+
+    /// Toggle the palette (the `TogglePalette` action handler). Creates the
+    /// vendored `CommandState` on open (needs `Window`) and focuses its query
+    /// field; closing drops the entity so the next open starts query-fresh
+    /// (FE dialog-unmount parity).
+    pub fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.palette_open {
+            self.hide_palette(cx);
+            return;
+        }
+        self.palette_open = true;
+        let state = cx.new(|cx| CommandState::new(window, cx));
+        state.update(cx, |s, cx| s.focus(window, cx));
+        self.palette_state = Some(state);
+        cx.notify();
+    }
+
+    /// Close the palette and drop its `CommandState` (fresh query next open).
+    pub fn hide_palette(&mut self, cx: &mut Context<Self>) {
+        self.palette_open = false;
+        self.palette_state = None;
+        cx.notify();
+    }
+
+    /// Dispatch a confirmed palette row: section 0 = Actions in
+    /// `palette_action_items` order after guard-filtering, section 1 = Open
+    /// Session in tree order. Guard-filtered rows can never be confirmed, and
+    /// every send degrades through the existing miss-safe submits — never a
+    /// raw backend error (T-06-05). The palette hides first so follow-on
+    /// dialogs (New Session) own focus.
+    pub fn confirm_palette_selection(
+        &mut self,
+        section: usize,
+        row: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::views::palette::{palette_action_enabled, palette_action_items};
+
+        if section == 1 {
+            let names: Vec<String> = self
+                .tree
+                .sessions
+                .iter()
+                .map(|n| n.session.name.clone())
+                .collect();
+            let picked = names.get(row).cloned();
+            self.hide_palette(cx);
+            if let Some(name) = picked {
+                let base = self.base_url.clone();
+                self.open_session(&name);
+                if let Some(base) = base {
+                    self.ensure_session_socket(&base, &name, cx);
+                }
+                cx.notify();
+            }
+            return;
+        }
+        if section != 0 {
+            self.hide_palette(cx);
+            return;
+        }
+        let has_session = self.active_session.is_some();
+        let active_pane = self.palette_active_pane();
+        let has_pane = active_pane.is_some();
+        let items: Vec<_> = palette_action_items()
+            .into_iter()
+            .filter(|item| palette_action_enabled(item.id, has_session, has_pane))
+            .map(|item| item.id)
+            .collect();
+        let picked = items.get(row).copied();
+        self.hide_palette(cx);
+        let Some(id) = picked else {
+            return;
+        };
+        match id {
+            crate::views::palette::PaletteActionId::NewSession => {
+                crate::views::create_session_dialog::open_create_session_dialog_from_state(
+                    self, window, cx,
+                );
+            }
+            crate::views::palette::PaletteActionId::NewWindow => {
+                self.submit_window_create(None, cx)
+            }
+            crate::views::palette::PaletteActionId::SplitRight => {
+                if let Some(pane) = active_pane {
+                    self.submit_pane_split(&pane, "horizontal", cx);
+                }
+            }
+            crate::views::palette::PaletteActionId::SplitDown => {
+                if let Some(pane) = active_pane {
+                    self.submit_pane_split(&pane, "vertical", cx);
+                }
+            }
+            crate::views::palette::PaletteActionId::ZoomPane => {
+                if let Some(pane) = active_pane {
+                    self.submit_pane_zoom(&pane, cx);
+                }
+            }
+            crate::views::palette::PaletteActionId::NextLayout => {
+                if let Some(win) = self.active_window_id() {
+                    self.submit_window_layout(&win, "next-layout", cx);
+                }
+            }
+            crate::views::palette::PaletteActionId::KillPane => {
+                // FE parity: the palette kill is direct — no confirm dialog
+                // (`CommandPalette.tsx:91-96` runs `paneKill` via runCommand).
+                if let Some(pane) = active_pane {
+                    self.submit_pane_kill(&pane, cx);
+                }
+            }
+        }
+    }
+
     // -- Pure envelope constructors (headless-testable, no socket) ---------
 
     pub fn build_pane_select(pane_id: &str) -> WsIncoming {
@@ -3162,11 +3302,19 @@ impl Render for AppState {
 
         let is_ready = matches!(status, BackendStatus::Ready(_));
 
+        let palette_open = self.palette_open;
         div()
             .flex()
             .flex_col()
             .size_full()
             .bg(rgb(0x1e1e1e))
+            // Phase 6 palette: Ctrl+Shift+P dispatch lands here from any
+            // focus (the terminal early-returns the keystroke so it bubbles).
+            .on_action(cx.listener(
+                |this, _: &crate::actions::TogglePalette, window, cx| {
+                    this.toggle_palette(window, cx);
+                },
+            ))
             .child(title_bar)
             .child(
                 div()
@@ -3198,5 +3346,10 @@ impl Render for AppState {
                         ))
                     }),
             )
+            // Phase 6 palette overlay floats above the workspace while open
+            // (vendored Command owns filter/focus/keyboard; Esc closes).
+            .when(palette_open, |s| {
+                s.child(crate::views::palette::render_palette(self, cx))
+            })
     }
 }
