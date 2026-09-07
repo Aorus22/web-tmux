@@ -7,6 +7,7 @@ pub mod bundle;
 pub mod icons;
 pub mod pane_geometry;
 pub mod theme;
+pub mod themes_generated;
 pub mod views;
 pub mod window_state;
 
