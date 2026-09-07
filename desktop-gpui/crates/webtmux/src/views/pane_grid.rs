@@ -1,11 +1,14 @@
-//! Workspace pane grid (Phase 5 tracer, PANE-01/02/03).
+//! Workspace pane grid (Phase 5, PANE-01/02/03/04).
 //!
 //! FE parity (`PaneWorkspace.tsx:116-120,261-370`): filter `snapshot.panes`
 //! by `activeWindow`, zoomed window renders only the zoomed pane full-size
 //! with dividers hidden, otherwise `close_pane_gaps` then `pixel_rect` per
 //! pane with absolutely positioned children. Divider handles render from
-//! `divider_layout` as Task-1-tested rects — drag behavior arrives in 05-02,
-//! so the tracer bars are visual only (no mouse handlers, default cursor).
+//! `divider_layout` and arm the D3 drag state machine on `mouse_down`
+//! (40ms throttle + FLIP, incremental `pane.resize` steps, receiver dropped);
+//! grid-level `mouse_move` streams the drag so fast drags past the 4px handle
+//! keep resizing (the pointer-capture equivalent — div listeners cannot reach
+//! `Window::capture_pointer`, which needs a `HitboxId`; see research A2).
 //!
 //! Container measurement: GPUI lays out before paint, so the grid measures
 //! itself with a full-size `canvas` probe (the `TerminalView` measure
@@ -13,14 +16,18 @@
 //! known size (`800x600` before the first measure). The Phase-4 150/325ms
 //! layout-key resync keeps self-debouncing under the new layout via the
 //! existing `observe_layout_key_and_schedule` (first mount skips — each
-//! `TerminalView` already captures initially); this module adds no timers.
+//! `TerminalView` already captures initially); drag steps never arm it
+//! directly, so no drag storms. This module adds no timers.
 
 use gpui::*;
+use gpui::prelude::FluentBuilder;
 use std::sync::Arc;
 use webtmux_backend_client::TmuxPane;
 
 use crate::app_state::AppState;
-use crate::pane_geometry::{cell_pane, close_pane_gaps, divider_layout, pixel_rect};
+use crate::pane_geometry::{
+    DividerHandle, cell_pane, close_pane_gaps, divider_layout, pixel_rect,
+};
 use crate::views::pane_view::render_pane_view;
 use crate::views::terminal_view::TerminalView;
 
@@ -137,24 +144,88 @@ pub fn render_pane_grid(app: &mut AppState, cx: &mut Context<AppState>) -> impl 
         .relative()
         .size_full()
         .bg(rgb(0x1e1e1e))
-        .child(render_workspace_probe(cx));
+        .child(render_workspace_probe(cx))
+        // Grid-level drag streaming (D3): the divider `mouse_down` arms
+        // `AppState::pane_drag`; moves anywhere inside the workspace keep
+        // firing on this container (bubble phase over the full-size hitbox),
+        // so fast drags past the 4px handle keep streaming steps. Paint stays
+        // arm-only — steps send on the owning socket, truth follows via
+        // snapshot deltas, and no notify fires until the snapshot lands.
+        .on_mouse_move(cx.listener(
+            move |this, event: &MouseMoveEvent, _window, _cx| {
+                if event.pressed_button != Some(MouseButton::Left) {
+                    return;
+                }
+                if this.pane_drag.is_none() {
+                    return;
+                }
+                let x: f32 = event.position.x.into();
+                let y: f32 = event.position.y.into();
+                this.stream_pane_drag(x, y);
+            },
+        ))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, _| {
+                this.end_pane_drag();
+            }),
+        )
+        // Releases outside the workspace still end the drag.
+        .on_mouse_up_out(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, _| {
+                this.end_pane_drag();
+            }),
+        );
     for (pane, rect) in &snapshot {
         grid = grid.child(render_pane_view(shared, pane, *rect, can_zoom, cx));
     }
     for d in &dividers {
-        grid = grid.child(
-            div()
-                .absolute()
-                .left(px(d.rect.left))
-                .top(px(d.rect.top))
-                .w(px(d.rect.w.max(0.0)))
-                .h(px(d.rect.h.max(0.0)))
-                .rounded_full()
-                .bg(rgb(0x3c3c3c))
-                .opacity(0.4),
-        );
+        grid = grid.child(render_divider(d, cx));
     }
     grid.into_any_element()
+}
+
+/// Divider handle between adjacent panes (D3): `mouse_down` arms the drag
+/// state machine on `AppState`; the grid-level `mouse_move` above streams it.
+/// Stable `pane-divider/{v|h}-a-b` id (no counters — poll-tick stable),
+/// col-resize / row-resize cursor per axis, hover affordance.
+fn render_divider(d: &DividerHandle, cx: &mut Context<AppState>) -> impl IntoElement {
+    let pane_id = d.pane_id.clone();
+    let direction = d.direction;
+    let cell_px = if d.is_vertical {
+        d.cell_w
+    } else {
+        d.cell_h
+    };
+    let is_vertical = d.is_vertical;
+    div()
+        .id(format!("pane-divider/{}", d.key))
+        .absolute()
+        .left(px(d.rect.left))
+        .top(px(d.rect.top))
+        .w(px(d.rect.w.max(0.0)))
+        .h(px(d.rect.h.max(0.0)))
+        .rounded_full()
+        .bg(rgb(0x3c3c3c))
+        .opacity(0.4)
+        .hover(|s| s.opacity(1.0))
+        .when(is_vertical, |s| s.cursor_col_resize())
+        .when(!is_vertical, |s| s.cursor_row_resize())
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(
+                move |this, event: &MouseDownEvent, _window, _cx| {
+                    let pos: f32 = if is_vertical {
+                        event.position.x.into()
+                    } else {
+                        event.position.y.into()
+                    };
+                    this.begin_pane_drag(&pane_id, direction, pos, cell_px);
+                },
+            ),
+        )
+        .into_any_element()
 }
 
 /// Full-size canvas probe measuring the grid container into

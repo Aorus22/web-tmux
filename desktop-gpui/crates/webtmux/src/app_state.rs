@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
+use std::time::Instant;
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 use gpui_component::WindowExt as _;
@@ -23,6 +24,7 @@ use webtmux_supervisor::{BackendInfo, BackendStatus, SpawnOptions, Supervisor};
 use webtmux_terminal::{apply_capture, scroll_report, AlacPoint, TermMode, Terminal, TerminalEvent};
 use crate::views::terminal_view::TerminalView;
 use crate::views::{status::render_status_page, tab_strip::render_title_bar};
+use crate::pane_geometry::drag_step_throttled;
 
 /// Global multi-thread Tokio runtime entered once at application boot.
 pub static TOKIO_RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
@@ -95,6 +97,23 @@ impl PaneTerminal {
             ingested_history: 0,
         }
     }
+}
+
+/// One in-progress divider drag (Phase 5, D3 per `PaneResizeHandle.tsx`).
+///
+/// `mouse_down` on a divider handle records `(pane_id, direction, start_px)`
+/// with `last_cells = 0` and `last_sent = now`; moves compute the incremental
+/// step and fire throttled `pane.resize` sends. `cell_px` is the dragged
+/// pane's axis cell size (`cell_w` for vertical dividers, `cell_h` for
+/// horizontal ones) so the divider tracks the pointer exactly.
+#[derive(Debug, Clone)]
+pub struct PaneDragState {
+    pub pane_id: String,
+    pub direction: char,
+    pub start_px: f32,
+    pub cell_px: f32,
+    pub last_cells: i64,
+    pub last_sent: Instant,
 }
 
 /// Generation-tagged pending viewport armed by `TerminalView` resize
@@ -435,6 +454,10 @@ pub struct AppState {
     /// Last measured workspace container size in px (Phase 5 grid probe).
     /// `None` before the first measure — the grid falls back to 800x600.
     pub workspace_size: Option<(f32, f32)>,
+    /// In-progress divider drag, if any (Phase 5, D3). `Some` between the
+    /// divider `mouse_down` and the matching `mouse_up`/`mouse_up_out`;
+    /// grid-level `mouse_move` streams positions through it.
+    pub pane_drag: Option<PaneDragState>,
 }
 
 impl AppState {
@@ -472,6 +495,7 @@ impl AppState {
             last_layout_key: None,
             terminal_views: HashMap::new(),
             workspace_size: None,
+            pane_drag: None,
         }
     }
 
@@ -1681,6 +1705,97 @@ impl AppState {
         };
         let _ = handle.send_command(Self::build_pane_resize(pane_id, direction, amount));
         true
+    }
+
+    // -- Phase 5 plan 05-02 Task 1: divider-drag state machine (D3) ---------
+
+    /// Record a divider `mouse_down`: `(pane_id, direction, start_px)` with
+    /// `last_cells = 0` and `last_sent = now`, so the first move inside the
+    /// 40ms window throttles (FE `lastSent: 0` parity is intentionally NOT
+    /// copied — the plan's throttle contract requires the opening window to
+    /// hold). Zero/negative `cell_px` never arms (T-05-02 zero-size guard).
+    pub fn begin_pane_drag(
+        &mut self,
+        pane_id: &str,
+        direction: char,
+        start_px: f32,
+        cell_px: f32,
+    ) {
+        self.begin_pane_drag_at(pane_id, direction, start_px, cell_px, Instant::now());
+    }
+
+    /// Testable half of `begin_pane_drag` with an explicit clock.
+    pub fn begin_pane_drag_at(
+        &mut self,
+        pane_id: &str,
+        direction: char,
+        start_px: f32,
+        cell_px: f32,
+        now: Instant,
+    ) {
+        if cell_px <= 0.0 {
+            return;
+        }
+        self.pane_drag = Some(PaneDragState {
+            pane_id: pane_id.to_string(),
+            direction,
+            start_px,
+            cell_px,
+            last_cells: 0,
+            last_sent: now,
+        });
+    }
+
+    /// Poll the in-progress drag at `pos_px` on the drag axis: applies the
+    /// `step == 0` / 40ms-throttle / FLIP rules and advances `last_cells` +
+    /// `last_sent` only when a step fires. Returns `(pane_id, direction,
+    /// amount)` for the caller to send. `None` when no drag is active or the
+    /// move throttles.
+    pub fn poll_pane_drag(&mut self, now: Instant, pos_px: f32) -> Option<(String, char, i32)> {
+        let elapsed_ms = {
+            let drag = self.pane_drag.as_ref()?;
+            now.saturating_duration_since(drag.last_sent).as_millis() as u64
+        };
+        let (direction, start_px, last_cells, cell_px) = {
+            let drag = self.pane_drag.as_ref()?;
+            (
+                drag.direction,
+                drag.start_px,
+                drag.last_cells,
+                drag.cell_px,
+            )
+        };
+        let (send_dir, amount, new_last) =
+            drag_step_throttled(direction, pos_px, start_px, last_cells, cell_px, elapsed_ms)?;
+        let drag = self.pane_drag.as_mut()?;
+        drag.last_cells = new_last;
+        drag.last_sent = now;
+        Some((drag.pane_id.clone(), send_dir, amount))
+    }
+
+    /// Stream one grid-level `mouse_move` through the drag: polls on the
+    /// drag's own axis and fires the step via `submit_pane_resize`
+    /// (fire-and-forget, receiver dropped — no per-step await). Returns true
+    /// when a step was sent. Never sends `terminal.resize` — the Phase-4
+    /// layout-key timers (150/325ms, self-debouncing mid-drag) own viewport
+    /// resync, and drag steps never arm them directly.
+    pub fn move_pane_drag(&mut self, pos_px: f32) -> bool {
+        let Some((pane_id, dir, amt)) = self.poll_pane_drag(Instant::now(), pos_px) else {
+            return false;
+        };
+        self.submit_pane_resize(&pane_id, dir, amt)
+    }
+
+    /// Stream a grid-level move given in window coords: picks the drag axis
+    /// from the recorded direction (`R`/`L` → x, `U`/`D` → y).
+    pub fn stream_pane_drag(&mut self, pos_x: f32, pos_y: f32) -> bool {
+        let is_vertical = matches!(self.pane_drag.as_ref().map(|d| d.direction), Some('U' | 'D'));
+        self.move_pane_drag(if is_vertical { pos_y } else { pos_x })
+    }
+
+    /// End the drag on `mouse_up` (inside or outside the grid).
+    pub fn end_pane_drag(&mut self) {
+        self.pane_drag = None;
     }
 
     // -- Correlated mutating submits (D5: 10s await + inline error) ---------

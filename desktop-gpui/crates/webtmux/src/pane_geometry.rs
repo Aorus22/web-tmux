@@ -235,6 +235,47 @@ pub fn px_to_cols_rows(width_px: f32, height_px: f32) -> (usize, usize) {
     )
 }
 
+/// Drag send throttle window (`PaneResizeHandle.tsx:87-90`, ~40ms per PRD §19).
+pub const DRAG_THROTTLE_MS: u64 = 40;
+
+/// Throttled incremental drag decision: the pure half of the D3 divider-drag
+/// state machine (`PaneResizeHandle.tsx:80-94`).
+///
+/// `pos_px` is the current pointer position on the drag axis, `start_px` the
+/// position at `mouse_down`, `last_cells` the cumulative cells already sent,
+/// `cell_px` the dragged pane's axis cell size, and `elapsed_ms` the time
+/// since the last sent step. Returns `(send_direction, amount, new_last_cells)`
+/// when a `pane.resize` step should fire, `None` otherwise:
+/// - `step == 0` drops (sub-cell jitter);
+/// - sends inside the 40ms window drop WITHOUT advancing `last_cells`, so the
+///   next command still carries the full pending difference;
+/// - negative steps flip the direction with a positive amount (tmux rejects
+///   negative adjustments — `FLIP = { L:R, R:L, U:D, D:U }`).
+pub fn drag_step_throttled(
+    direction: char,
+    pos_px: f32,
+    start_px: f32,
+    last_cells: i64,
+    cell_px: f32,
+    elapsed_ms: u64,
+) -> Option<(char, i32, i64)> {
+    let step = resize_drag_step(pos_px, start_px, last_cells, cell_px);
+    if step == 0 {
+        return None;
+    }
+    if elapsed_ms < DRAG_THROTTLE_MS {
+        return None;
+    }
+    let new_last_cells = last_cells + step;
+    let (send_dir, amount) = if step < 0 {
+        (flip_direction(direction), step.saturating_abs())
+    } else {
+        (direction, step)
+    };
+    let amount = i32::try_from(amount).unwrap_or(i32::MAX);
+    Some((send_dir, amount, new_last_cells))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
