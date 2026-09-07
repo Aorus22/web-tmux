@@ -28,8 +28,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Workspace Foundation & Backend Sidecar** - desktop-gpui workspace (exact pins + lockfile), supervisor spawn with startup/failed status, settings persistence, custom window controls (completed 2026-09-06)
 - [x] **Phase 2: REST Client, Sidebar & Session Management** - polling session tree, Create Session dialog, empty/error/select states (completed 2026-09-06, override U1 FE-parity accepted, HV advisory → Phase 7)
 - [x] **Phase 3: WebSocket Client & Multi-Session Tabs** - per-session WS lifecycle with generation guard, session tabs + title bar, correlated mutations (completed 2026-09-06, 20/20 passed, 39/39 green)
-- [ ] **Phase 4: Terminal Engine & Live Pane Rendering** - alacritty-backed live terminals with capture replay, byte-safe input, scrollback, selection
-- [ ] **Phase 5: Pane Grid & Workspace Operations** - tmux-geometry pane layout, split/zoom/resize drags, layout presets, pane/window context menus
+- [x] **Phase 4: Terminal Engine & Live Pane Rendering** - alacritty-backed live terminals with capture replay, byte-safe input, scrollback, selection (completed 2026-09-07, 12/12 verified, 82/82 green, HV advisory → Phase 7)
+- [x] **Phase 5: Pane Grid & Workspace Operations** - tmux-geometry pane layout, split/zoom/resize drags, layout presets, pane/window context menus (completed 2026-09-07, 11/13 verified, 101/101 green, HV advisory → Phase 7)
 - [ ] **Phase 6: Theme System, Settings & Chrome Parity** - generated 102+78 theme tables, Settings page, command palette, embedded font/icons
 - [ ] **Phase 7: Resilience, Packaging & Parity Audit** - reconnect surfaces, Windows + Linux dist bundles, Makefile integration, 1:1 acceptance checklist
 
@@ -137,7 +137,10 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Kill-confirmation dialogs honor the three per-surface settings toggles exactly like Electron, and dark/light counterpart themes behave with Electron's dark semantics (colorScheme)
   5. All 102 UI + 78 terminal presets are available as generated files; Ctrl+Shift+P opens a filterable command palette including the Open Session group; all text and icons render from the embedded JetBrains Mono font and embedded lucide SVGs (no system dependencies)
 
-**Plans**: TBD
+**Plans**: 2 plans
+
+- [ ] 06-01-PLAN.md — Generated 102+78 theme tables, settings model, live-apply tracer + Settings page
+- [ ] 06-02-PLAN.md — Binary validation, command palette, kill switches + copy audit
 **UI hint**: yes
 
 ### Phase 7: Resilience, Packaging & Parity Audit
@@ -164,8 +167,8 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 1. Workspace Foundation & Backend Sidecar | 3/3 | Complete    | 2026-09-06 |
 | 2. REST Client, Sidebar & Session Management | 2/2 | Complete | 2026-09-06 |
 | 3. WebSocket Client & Multi-Session Tabs | 2/2 | Complete | 2026-09-06 |
-| 4. Terminal Engine & Live Pane Rendering | 1/2 | In Progress|  |
-| 5. Pane Grid & Workspace Operations | TBD | Not started | - |
+| 4. Terminal Engine & Live Pane Rendering | 2/2 | Complete | 2026-09-07 |
+| 5. Pane Grid & Workspace Operations | 2/2 | Complete | 2026-09-07 |
 | 6. Theme System, Settings & Chrome Parity | TBD | Not started | - |
 | 7. Resilience, Packaging & Parity Audit | TBD | Not started | - |
 
