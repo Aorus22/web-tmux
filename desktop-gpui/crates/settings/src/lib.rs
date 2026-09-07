@@ -45,6 +45,48 @@ fn default_true() -> bool {
     true
 }
 
+fn default_font_family() -> String {
+    "JetBrains Mono".to_string()
+}
+
+fn default_font_size() -> f32 {
+    14.0
+}
+
+fn default_line_height() -> f32 {
+    1.35
+}
+
+fn default_scrollback_lines() -> usize {
+    2000
+}
+
+fn default_theme_mode_filter() -> String {
+    "all".to_string()
+}
+
+/// FE `TerminalSettings.tsx:54-90` parity (T-06-03): font size 8–32.
+/// Non-finite inputs fall back to the FE default (14.0).
+pub fn clamp_font_size(v: f32) -> f32 {
+    if !v.is_finite() {
+        return 14.0;
+    }
+    v.clamp(8.0, 32.0)
+}
+
+/// FE parity: line height 1–2. Non-finite inputs fall back to 1.35.
+pub fn clamp_line_height(v: f32) -> f32 {
+    if !v.is_finite() {
+        return 1.35;
+    }
+    v.clamp(1.0, 2.0)
+}
+
+/// FE parity: scrollback 100–50000 lines.
+pub fn clamp_scrollback(v: usize) -> usize {
+    v.clamp(100, 50_000)
+}
+
 /// Desktop settings store holding UI preferences and window geometry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DesktopSettings {
@@ -69,6 +111,31 @@ pub struct DesktopSettings {
     /// Confirm before killing a window (Phase 5 reads this; struct parity now).
     #[serde(default = "default_true")]
     pub confirm_kill_window: bool,
+    /// Explicit tmux executable. Empty means use the backend's PATH resolver
+    /// (FE `settingsStore.ts` `tmuxBinary: ''` parity, D2).
+    #[serde(default)]
+    pub tmux_binary: String,
+    /// Single embedded family (FE default stack collapses to its first face;
+    /// free text falls back — D8). Labelled honestly in the settings page.
+    #[serde(default = "default_font_family")]
+    pub font_family: String,
+    /// FE `fontSize: 14` with 8–32 clamps (D9).
+    #[serde(default = "default_font_size")]
+    pub font_size: f32,
+    /// FE `lineHeight: 1.35` with 1–2 clamps (D9).
+    #[serde(default = "default_line_height")]
+    pub line_height: f32,
+    /// FE `scrollbackLines: 2000` with 100–50000 clamps (D9).
+    #[serde(default = "default_scrollback_lines")]
+    pub scrollback_lines: usize,
+    /// Default per-pane TUI-scroll when no per-pane override exists (FE
+    /// `tuiScrollPanes` default-ON parity; `AppState::tui_scroll` falls back
+    /// here instead of hardcoded `true`).
+    #[serde(default = "default_true")]
+    pub tui_scroll_default: bool,
+    /// Appearance filter (`all`/`dark`/`light`; reference parity, D4).
+    #[serde(default = "default_theme_mode_filter")]
+    pub theme_mode_filter: String,
 
     #[serde(skip)]
     pub custom_base: Option<PathBuf>,
@@ -85,6 +152,13 @@ impl Default for DesktopSettings {
             confirm_kill_session: true,
             confirm_kill_pane: true,
             confirm_kill_window: true,
+            tmux_binary: String::new(),
+            font_family: default_font_family(),
+            font_size: default_font_size(),
+            line_height: default_line_height(),
+            scrollback_lines: default_scrollback_lines(),
+            tui_scroll_default: true,
+            theme_mode_filter: default_theme_mode_filter(),
             custom_base: None,
         }
     }

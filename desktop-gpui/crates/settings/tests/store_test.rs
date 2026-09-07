@@ -23,6 +23,13 @@ fn roundtrip() {
         confirm_kill_session: true,
         confirm_kill_pane: true,
         confirm_kill_window: true,
+        tmux_binary: String::new(),
+        font_family: "JetBrains Mono".to_string(),
+        font_size: 14.0,
+        line_height: 1.35,
+        scrollback_lines: 2000,
+        tui_scroll_default: true,
+        theme_mode_filter: "all".to_string(),
         custom_base: Some(base.to_path_buf()),
     };
 
@@ -35,6 +42,13 @@ fn roundtrip() {
     assert_eq!(loaded.theme_preset, initial.theme_preset);
     assert_eq!(loaded.window_state, initial.window_state);
     assert_eq!(loaded.last_backend_url, initial.last_backend_url);
+    assert_eq!(loaded.tmux_binary, initial.tmux_binary);
+    assert_eq!(loaded.font_family, initial.font_family);
+    assert_eq!(loaded.font_size, initial.font_size);
+    assert_eq!(loaded.line_height, initial.line_height);
+    assert_eq!(loaded.scrollback_lines, initial.scrollback_lines);
+    assert_eq!(loaded.tui_scroll_default, initial.tui_scroll_default);
+    assert_eq!(loaded.theme_mode_filter, initial.theme_mode_filter);
 }
 
 #[test]
