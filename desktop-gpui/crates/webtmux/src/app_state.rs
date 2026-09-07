@@ -1,8 +1,8 @@
 //! Root application state, polling pump, and supervisor lifecycle.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, LazyLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 use gpui_component::WindowExt as _;
@@ -16,7 +16,7 @@ use webtmux_backend_client::{
     TransportState, TmuxTree,
     WsIncoming, WsOutgoing, EV_CONNECTION_READY, EV_STATE_DELTA, EV_STATE_SNAPSHOT,
     EV_SERVER_ERROR, EV_TERMINAL_OUTPUT, EV_TERMINAL_SNAPSHOT, EV_TMUX_DISCONNECTED,
-    EV_TMUX_RECONNECTING, MSG_PANE_BREAK, MSG_PANE_KILL, MSG_PANE_RENAME, MSG_PANE_RESIZE,
+    EV_TMUX_RECONNECTING, EV_TRANSPORT_LOST, MSG_PANE_BREAK, MSG_PANE_KILL, MSG_PANE_RENAME, MSG_PANE_RESIZE,
     MSG_PANE_SELECT, MSG_PANE_SPLIT, MSG_PANE_SWAP, MSG_PANE_ZOOM, MSG_SESSION_KILL,
     MSG_SESSION_RENAME, MSG_TERMINAL_CAPTURE, MSG_TERMINAL_INPUT, MSG_TERMINAL_RESIZE,
     MSG_WINDOW_BREAK_ACTIVE, MSG_WINDOW_CREATE, MSG_WINDOW_KILL, MSG_WINDOW_LAYOUT,
@@ -57,6 +57,17 @@ pub struct OpenSession {
     pub generation: u64,
     /// Transport state for Phase 7 (STATE-03) rendering; stored since Phase 3.
     pub transport: TransportState,
+    /// Origin bit for the strict 4-way taxonomy (Phase 7 STATE-03, D2).
+    /// The banner NEVER reads bare `TransportState` — always
+    /// `(transport, transport_origin)`, so a dead socket (`Local`) cannot
+    /// render as a tmux-health event (`Server`) and vice versa.
+    pub transport_origin: TransportOrigin,
+    /// 1-based auto-reconnect attempt for the current transport-lost episode
+    /// (0 = no retry armed; increments per BACKOFF ladder step). Displayed
+    /// as `(attempt N)` in the WS-drop banner; always 0 for server-sent
+    /// `tmux.disconnected` (the backend monitor owns that retry — never the
+    /// client).
+    pub reconnect_attempt: u32,
     /// Last committed snapshot (via the triple generation guard).
     pub snapshot: Option<SessionSnapshot>,
     /// Live socket handle; `None` until `ensure_session_socket` connects.
@@ -73,11 +84,173 @@ impl Default for OpenSession {
         Self {
             generation: 0,
             transport: TransportState::Disconnected,
+            transport_origin: TransportOrigin::None,
+            reconnect_attempt: 0,
             snapshot: None,
             handle: None,
             pending: SharedPending::default(),
             last_error: None,
         }
+    }
+}
+
+// --- Phase 7 plan 07-01 Task 1: strict 4-way taxonomy (STATE-03, D2/D3) --
+//
+// The pump conflation (`ws.rs` synthesizing EV_TMUX_DISCONNECTED on any
+// socket close) is split at the pump boundary: close/error arms forward the
+// pump-local EV_TRANSPORT_LOST (a string the server can never send) while
+// the real server events keep their names. Every downstream surface keys
+// off this split: banner copy, toast copy, and the auto-reconnect trigger.
+
+/// Origin bit carried alongside `TransportState` (never render from the
+/// bare state — that reintroduces the conflation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransportOrigin {
+    /// Initial / connected idle (no failing layer to name).
+    #[default]
+    None,
+    /// Local socket died (`transport.lost` pump synthesis) — auto-retry.
+    Local,
+    /// Server-originated tmux-health event (`tmux.disconnected` /
+    /// `tmux.reconnecting`) — monitor owns the retry, client never retries.
+    Server,
+}
+
+/// Auto-reconnect ladder, FE `BACKOFF` verbatim (`fe/src/lib/websocket.ts:27`)
+/// and backend-monitor parity (`be/internal/tmux/monitor.go:332-333`).
+/// Tails at 10s forever like FE (`BACKOFF[5]`); the banner shows attempt N
+/// while the timer keeps the 10s tail (Open Q3).
+pub const RECONNECT_BACKOFF_MS: [u64; 6] = [250, 500, 1000, 2000, 5000, 10_000];
+
+/// Delay for a 1-based reconnect attempt (attempt 1 → 250ms). Attempts past
+/// the ladder tail at 10s forever (FE parity — infinite retry, manual
+/// Reconnect always offered alongside).
+pub fn backoff_delay_ms(attempt: u32) -> u64 {
+    let idx = attempt.saturating_sub(1) as usize;
+    RECONNECT_BACKOFF_MS[idx.min(RECONNECT_BACKOFF_MS.len() - 1)]
+}
+
+/// `Duration` form of [`backoff_delay_ms`] for timer arms.
+pub fn backoff_delay(attempt: u32) -> Duration {
+    Duration::from_millis(backoff_delay_ms(attempt))
+}
+
+/// True only for the pump-local transport-lost signal: the SOLE arm that may
+/// schedule a client retry timer. Server-sent `tmux.disconnected` must never
+/// arm one (double-retry with the backend monitor — Pitfall 1).
+pub fn should_arm_retry(msg_type: &str) -> bool {
+    msg_type == EV_TRANSPORT_LOST
+}
+
+/// Generation guard for retry timers (STATE-04 discipline reused): a retry
+/// armed at `(session, captured_generation)` runs only while the tab still
+/// sits at that generation. Rename/close/re-resolve bumps the generation,
+/// so stale timers die instead of reconnecting the wrong tab (T-07-03).
+pub fn should_run_retry(captured_generation: u64, current_generation: u64) -> bool {
+    captured_generation == current_generation
+}
+
+// --- Phase 7 plan 07-01 Task 1: banner copy table (D2, UI-SPEC BANNER-1) --
+//
+// Fixed strings; the tmux- prefix marks server-originated states so a human
+// can tell which layer failed. Banner NEVER renders from bare
+// `TransportState` — callers pass `(transport, origin, attempt)`.
+
+/// WS-drop banner title with the 1-based attempt count.
+pub fn transport_lost_banner_text(attempt: u32) -> String {
+    format!("Connection lost — retrying… (attempt {})", attempt.max(1))
+}
+
+/// Server `tmux.disconnected` banner copy (manual Reconnect, no auto-retry).
+pub const BANNER_TMUX_DISCONNECTED: &str = "tmux disconnected — waiting for tmux";
+/// Server `tmux.reconnecting` banner copy (amber, transient, no button).
+pub const BANNER_TMUX_RECONNECTING: &str = "Reconnecting to tmux…";
+/// Recovery toast copy (banner unmounts + this fires).
+pub const TOAST_RECONNECTED: &str = "Reconnected";
+
+/// Pure banner model for `(transport, origin, attempt)`: `None` means no
+/// banner (connected / connecting / idle). The bool is "show the manual
+/// Reconnect button" — true on both disconnected states, false on the
+/// transient reconnecting state.
+pub fn banner_copy_for(
+    transport: TransportState,
+    origin: TransportOrigin,
+    attempt: u32,
+) -> Option<(String, bool)> {
+    match (transport, origin) {
+        (TransportState::Disconnected, TransportOrigin::Local) => {
+            Some((transport_lost_banner_text(attempt), true))
+        }
+        // Retry dial in flight: keep the banner persistent as "retrying…"
+        // (FE shows `connecting` here; the attempt count names the ladder
+        // step being tried). Always offers manual Reconnect (Open Q3).
+        (TransportState::Connecting, TransportOrigin::Local) => {
+            Some((transport_lost_banner_text(attempt), true))
+        }
+        (TransportState::Disconnected, TransportOrigin::Server) => {
+            Some((BANNER_TMUX_DISCONNECTED.to_string(), true))
+        }
+        (TransportState::Reconnecting, _) => Some((BANNER_TMUX_RECONNECTING.to_string(), false)),
+        _ => None,
+    }
+}
+
+// --- Phase 7 plan 07-01 Task 2: bounded toast overlay queue (STATE-03, D1)
+//
+// Hand-rolled `VecDeque` (cap 5, drop-oldest, dedupe key per kind+session,
+// autohide 5s errors / 3s success+info [A1-tunable]) — NOT gpui-component
+// `Root`/`push_notification` adoption (mid-milestone replumb). Matches the
+// hand-rolled-divs convention; headless-testable as a pure queue model.
+
+/// Maximum visible toasts (drop-oldest past this; flap-safe by construction).
+pub const TOAST_QUEUE_CAP: usize = 5;
+/// Autohide lifetimes (UAT-tunable guesses, A1 — the 07-03 audit may adjust).
+pub const TOAST_AUTOHIDE_ERROR_MS: u64 = 5_000;
+pub const TOAST_AUTOHIDE_SUCCESS_MS: u64 = 3_000;
+pub const TOAST_AUTOHIDE_INFO_MS: u64 = 3_000;
+
+/// Toast severity (visually typed with a kind icon prefix per T-07-01 so a
+/// backend-verbatim string can never mimic app chrome).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind {
+    Error,
+    Success,
+    Info,
+}
+
+/// One queued toast: backend-verbatim text rendered as plain text only
+/// (never markup/commands — T-07-01), prefixed with its kind icon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Toast {
+    pub kind: ToastKind,
+    pub session: String,
+    pub message: String,
+    pub created: Instant,
+}
+
+impl Toast {
+    pub fn new(kind: ToastKind, session: &str, message: &str) -> Self {
+        Self {
+            kind,
+            session: session.to_string(),
+            message: message.to_string(),
+            created: Instant::now(),
+        }
+    }
+
+    /// Dedupe key per (kind + session): reconnect flaps collapse instead of
+    /// stacking (Pitfall 3). The newest message wins (refresh on re-push).
+    pub fn dedupe_key(&self) -> (ToastKind, String) {
+        (self.kind, self.session.clone())
+    }
+}
+
+/// Autohide lifetime for a toast kind.
+pub fn toast_timeout(kind: ToastKind) -> Duration {
+    match kind {
+        ToastKind::Error => Duration::from_millis(TOAST_AUTOHIDE_ERROR_MS),
+        ToastKind::Success => Duration::from_millis(TOAST_AUTOHIDE_SUCCESS_MS),
+        ToastKind::Info => Duration::from_millis(TOAST_AUTOHIDE_INFO_MS),
     }
 }
 
@@ -518,6 +691,13 @@ pub struct AppState {
     pub palette_open: bool,
     /// Vendored `CommandState` (query/focus/selection); `None` while closed.
     pub palette_state: Option<Entity<CommandState>>,
+
+    // Phase 7 plan 07-01 Task 2: bounded toast overlay queue (STATE-03, D1).
+    /// Toast queue (cap [`TOAST_QUEUE_CAP`], drop-oldest, dedupe key per
+    /// kind+session). Pushed by `note_session_error` (command.error/timeout),
+    /// `server.error`, and recovery (`Reconnected`); rendered by
+    /// `views/toasts.rs` as a bottom-right overlay stack.
+    pub toasts: VecDeque<Toast>,
 }
 
 impl AppState {
@@ -566,6 +746,7 @@ impl AppState {
             tmux_binary_input_sub: None,
             palette_open: false,
             palette_state: None,
+            toasts: VecDeque::new(),
         }
     }
 
@@ -802,6 +983,10 @@ impl AppState {
         if let Some(idx) = self.open_sessions.iter().position(|s| s == name) {
             self.open_sessions.remove(idx);
             self.sessions.remove(name);
+            // Stale retry timers die on the tab-liveness guard; drop any
+            // queued toasts for the closed tab so a later same-named tab
+            // never inherits them.
+            self.toasts.retain(|t| t.session != name);
             if self.active_session.as_deref() == Some(name) {
                 self.active_session = if self.open_sessions.is_empty() {
                     None
@@ -829,6 +1014,8 @@ impl AppState {
         entry.generation += 1;
         entry.handle = None;
         entry.transport = TransportState::Connecting;
+        entry.transport_origin = TransportOrigin::None;
+        entry.reconnect_attempt = 0;
         self.sessions.insert(new.to_string(), entry);
         for item in self.open_sessions.iter_mut() {
             if item == old {
@@ -840,6 +1027,13 @@ impl AppState {
         }
         if self.expanded_sessions.remove(old) {
             self.expanded_sessions.insert(new.to_string());
+        }
+        // Queued toasts follow the rename so the new tab keeps its surfaces;
+        // the generation bump already killed stale retry timers (T-07-03).
+        for toast in self.toasts.iter_mut() {
+            if toast.session == old {
+                toast.session = new.to_string();
+            }
         }
         true
     }
@@ -873,13 +1067,22 @@ impl AppState {
                     Some(s) => s,
                     None => return false,
                 };
-                let was_connected = self
+                let (was_connected, had_origin) = self
                     .sessions
                     .get(session)
-                    .is_some_and(|e| e.transport == TransportState::Connected);
+                    .map(|e| {
+                        (
+                            e.transport == TransportState::Connected,
+                            e.transport_origin != TransportOrigin::None
+                                || e.reconnect_attempt > 0,
+                        )
+                    })
+                    .unwrap_or((false, false));
                 if let Some(entry) = self.sessions.get_mut(session) {
                     entry.snapshot = Some(snap.clone());
                     entry.transport = TransportState::Connected;
+                    entry.transport_origin = TransportOrigin::None;
+                    entry.reconnect_attempt = 0;
                 }
                 // D7 attribution + retirement scoped to this session: other
                 // sessions' panes are untouched (TERM-07).
@@ -889,6 +1092,15 @@ impl AppState {
                     self.attribute_pane(session, pane);
                 }
                 self.retire_stale_panes(session, &present);
+                // Recovery surface: a snapshot closing a named failure
+                // episode clears the banner (state above) and fires the
+                // `Reconnected` success toast (SC1). The initial bootstrap
+                // snapshot has no origin/attempt, so it stays silent. The
+                // socket-Ok arm preserves the episode markers, so recovery
+                // via retry still toasts here (not on socket open).
+                if had_origin {
+                    self.push_toast(ToastKind::Success, session, TOAST_RECONNECTED);
+                }
                 // D6: transition into Connected re-arms + re-captures this
                 // session's registered panes (idempotent via the gate; a
                 // fresh first snapshot has no registered panes → no-op).
@@ -923,15 +1135,42 @@ impl AppState {
                 true
             }
             EV_TMUX_DISCONNECTED => {
+                // Server-sent tmux loss: same Disconnected pixels as a dead
+                // socket but a distinct origin and NO client retry (the
+                // backend monitor owns that ladder — D3).
                 entry.transport = TransportState::Disconnected;
+                entry.transport_origin = TransportOrigin::Server;
+                entry.reconnect_attempt = 0;
                 true
             }
             EV_TMUX_RECONNECTING => {
+                // Server-sent transient: amber banner, no retry timer (the
+                // monitor drives recovery; the client just renders).
                 entry.transport = TransportState::Reconnecting;
+                entry.transport_origin = TransportOrigin::Server;
+                true
+            }
+            EV_TRANSPORT_LOST => {
+                // Pump-local socket death (never server-sent): Disconnected
+                // + Local origin + armed BACKOFF retry (first attempt = 1;
+                // repeat syntheses keep the running count so the banner's
+                // attempt N tracks the ladder, not the frame count).
+                entry.transport = TransportState::Disconnected;
+                entry.transport_origin = TransportOrigin::Local;
+                if entry.reconnect_attempt == 0 {
+                    entry.reconnect_attempt = 1;
+                }
                 true
             }
             EV_SERVER_ERROR => {
                 entry.last_error = msg.message.clone();
+                // Open Q2: surface as an error toast (FE only console.errors
+                // it); backend-verbatim text as plain text (T-07-01).
+                if let Some(text) = msg.message.clone() {
+                    if !text.is_empty() {
+                        self.push_toast(ToastKind::Error, session, &text);
+                    }
+                }
                 true
             }
             _ => true, // connection.ready, command acks, unknown: nothing to commit
@@ -3152,10 +3391,151 @@ impl AppState {
 
     /// Record a kill/rename transport error on the tab for later surfaces.
     /// No-op when the entry is gone (the poll already shows the truth).
+    ///
+    /// Phase 7 STATE-03: every recorded error ALSO enqueues an error toast
+    /// with the backend-verbatim message (D2 — `command.error`/10s timeout
+    /// parity with FE's ~13 `toast.error` call sites). The inline
+    /// `last_error` lines (toolbar/dialogs) stay untouched — toasts are
+    /// additive, never a replacement.
     pub fn note_session_error(&mut self, target: &str, err: String) {
         if let Some(entry) = self.sessions.get_mut(target) {
-            entry.last_error = Some(err);
+            entry.last_error = Some(err.clone());
+        } else {
+            return;
         }
+        if !err.is_empty() {
+            self.push_toast(ToastKind::Error, target, &err);
+        }
+    }
+
+    // -- Phase 7 plan 07-01 Task 2: toast queue model (D1) ------------------
+
+    /// Push a toast (cap [`TOAST_QUEUE_CAP`], drop-oldest, dedupe key per
+    /// kind+session with newest-wins refresh). Every push path funnels here
+    /// so no caller can grow the queue unbounded (T-07-02).
+    pub fn push_toast(&mut self, kind: ToastKind, session: &str, message: &str) {
+        let incoming = Toast::new(kind, session, message);
+        let key = incoming.dedupe_key();
+        // Collapse an existing same-key toast (refresh message + recency).
+        if let Some(pos) = self.toasts.iter().position(|t| t.dedupe_key() == key) {
+            self.toasts.remove(pos);
+        }
+        self.toasts.push_back(incoming);
+        while self.toasts.len() > TOAST_QUEUE_CAP {
+            self.toasts.pop_front();
+        }
+    }
+
+    /// Drop toasts older than their kind lifetime at `now` (autohide model).
+    /// Views call this per render tick; headless tests drive it with a fake
+    /// `now` to assert expiry without sleeping.
+    pub fn expire_toasts(&mut self, now: Instant) {
+        self.toasts.retain(|t| {
+            now.duration_since(t.created) < toast_timeout(t.kind)
+        });
+    }
+
+    /// Visible toasts for the overlay (insertion order, oldest first).
+    pub fn visible_toasts(&self) -> Vec<Toast> {
+        self.toasts.iter().cloned().collect()
+    }
+
+    // -- Phase 7 plan 07-01 Task 3: generation-guarded retry (D3, T-07-03) --
+
+    /// Advance the reconnect attempt for `session` (ladder step) and return
+    /// the delay to wait before the next try. Pure + headless-testable: the
+    /// timer arms in `schedule_transport_retry` call this, tests assert the
+    /// count increments per step with the verbatim ladder behind it.
+    pub fn advance_reconnect_attempt(&mut self, session: &str) -> Option<Duration> {
+        let entry = self.sessions.get_mut(session)?;
+        // Only transport-lost episodes retry (never server-sent states).
+        if entry.transport != TransportState::Disconnected
+            || entry.transport_origin != TransportOrigin::Local
+        {
+            return None;
+        }
+        entry.reconnect_attempt = entry.reconnect_attempt.saturating_add(1).max(1);
+        Some(backoff_delay(entry.reconnect_attempt))
+    }
+
+    /// Manual Reconnect (FE `reconnectSession` parity): close the stale
+    /// socket and re-ensure on the current generation. Used by the banner
+    /// Reconnect button on both disconnected states and by retry timers as
+    /// the per-attempt dial path. No-op without a configured `base_url`.
+    pub fn manual_reconnect(&mut self, session: &str, cx: &mut Context<Self>) {
+        let base = match self.base_url.clone() {
+            Some(b) => b,
+            None => return,
+        };
+        // Close the stale socket (abort pumps) without dropping the tab:
+        // clearing the handle lets `ensure_session_socket` dial fresh while
+        // the generation bump there retires any in-flight stale events.
+        if let Some(entry) = self.sessions.get_mut(session) {
+            entry.handle = None;
+        } else {
+            return;
+        }
+        self.ensure_session_socket(&base, session, cx);
+    }
+
+    /// Arm one BACKOFF retry step for a transport-lost episode. Captures
+    /// `(session, generation, attempt)` now; at fire time drops when the tab
+    /// is gone, re-resolved, or already recovered, else dials via the
+    /// close+ensure path and chains the next step on continued failure.
+    /// Timers sleep on the GPUI async executor (never block the GPUI thread)
+    /// while the dial itself stays on `TOKIO_RT` inside `ensure_session_socket`.
+    pub fn schedule_transport_retry(&mut self, session: &str, cx: &mut Context<Self>) {
+        let (generation, attempt) = match self.sessions.get(session) {
+            Some(e)
+                if e.transport == TransportState::Disconnected
+                    && e.transport_origin == TransportOrigin::Local =>
+            {
+                (e.generation, e.reconnect_attempt.max(1))
+            }
+            _ => return,
+        };
+        let delay = backoff_delay(attempt);
+        let session_name = session.to_string();
+        cx.spawn(move |view_weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let cx_handle = cx.clone();
+            async move {
+                tokio::time::sleep(delay).await;
+                let _ = cx_handle.update(|cx: &mut App| {
+                    if let Some(entity) = view_weak.upgrade() {
+                        entity.update(cx, |this, cx| {
+                            // Generation + liveness gate (T-07-03): stale
+                            // timers die on rename/close/re-resolve.
+                            let live = match this.sessions.get(&session_name) {
+                                Some(e) => {
+                                    e.generation == generation
+                                        && e.transport == TransportState::Disconnected
+                                        && e.transport_origin == TransportOrigin::Local
+                                }
+                                None => false,
+                            };
+                            if !live {
+                                return;
+                            }
+                            // Bump the attempt for the banner BEFORE dialing
+                            // so `(attempt N)` tracks the ladder step being
+                            // tried (first fire re-tries as attempt+1 only
+                            // when a prior attempt already displayed).
+                            if let Some(entry) = this.sessions.get_mut(&session_name) {
+                                entry.reconnect_attempt =
+                                    entry.reconnect_attempt.saturating_add(1).max(1);
+                            }
+                            this.manual_reconnect(&session_name.clone(), cx);
+                            // No self-chain: the next ladder step arms from
+                            // the next failure event (connect-Err arm or the
+                            // forward-pump transport-lost arm). Chaining here
+                            // as well would double-arm every step.
+                            cx.notify();
+                        });
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     fn set_kill_error(&mut self, message: Option<String>, cx: &mut Context<Self>) {
@@ -3193,8 +3573,20 @@ impl AppState {
         if entry.handle.is_some() {
             return;
         }
+        // Preserve a running transport-lost episode across redials (retry
+        // chain + manual Reconnect): the banner keeps showing `(attempt N)`
+        // through the dial and the count stays monotonic. Any other previous
+        // state starts a fresh episode (no banner during a fresh dial).
+        let (prev_origin, prev_attempt) = (entry.transport_origin, entry.reconnect_attempt);
         entry.generation += 1;
         entry.transport = TransportState::Connecting;
+        if prev_origin == TransportOrigin::Local && prev_attempt > 0 {
+            entry.transport_origin = TransportOrigin::Local;
+            entry.reconnect_attempt = prev_attempt;
+        } else {
+            entry.transport_origin = TransportOrigin::None;
+            entry.reconnect_attempt = 0;
+        }
         entry.last_error = None;
 
         let gen = entry.generation;
@@ -3234,6 +3626,9 @@ impl AppState {
                                     if let Some(entry) = this.sessions.get_mut(&key) {
                                         entry.handle = Some(handle);
                                         entry.transport = TransportState::Connected;
+                                        // Preserve the episode markers for the
+                                        // snapshot recovery toast (fresh
+                                        // connects already carry None/0).
                                     }
                                     // Flush a rename pended while this socket
                                     // was connecting (D5).
@@ -3262,6 +3657,8 @@ impl AppState {
                                     }
                                     cx.notify();
                                     // Forward pump: tagged events → guarded apply.
+                                    // Transport-lost arms the next BACKOFF step
+                                    // (server-sent tmux events never arm — D3).
                                     cx.spawn(
                                         move |fwd_weak: WeakEntity<Self>, cx: &mut AsyncApp| {
                                             let fwd_handle = cx.clone();
@@ -3270,11 +3667,19 @@ impl AppState {
                                                     let _ = fwd_handle.update(|cx: &mut App| {
                                                         if let Some(ent) = fwd_weak.upgrade() {
                                                             ent.update(cx, |t, cx| {
+                                                                let was_lost = ev.msg.msg_type
+                                                                    == EV_TRANSPORT_LOST;
+                                                                let sess = ev.session.clone();
                                                                 t.apply_event(
                                                                     &ev.session,
                                                                     ev.generation,
                                                                     &ev.msg,
                                                                 );
+                                                                if was_lost {
+                                                                    t.schedule_transport_retry(
+                                                                        &sess, cx,
+                                                                    );
+                                                                }
                                                                 cx.notify();
                                                             });
                                                         }
@@ -3286,12 +3691,28 @@ impl AppState {
                                     .detach();
                                 }
                                 Err(err) => {
-                                    if let Some(entry) = this.sessions.get_mut(&session_name) {
+                                    // Connect failure is a local transport
+                                    // failure (same banner + retry as a dead
+                                    // socket — never the tmux copy). Preserve
+                                    // the running attempt so the ladder stays
+                                    // monotonic, then arm the next step.
+                                    let arm_retry = if let Some(entry) =
+                                        this.sessions.get_mut(&session_name)
+                                    {
                                         if entry.generation == gen {
                                             entry.transport = TransportState::Disconnected;
+                                            entry.transport_origin = TransportOrigin::Local;
+                                            if entry.reconnect_attempt == 0 {
+                                                entry.reconnect_attempt = 1;
+                                            }
                                             entry.last_error = Some(err.clone());
+                                            true
+                                        } else {
+                                            false
                                         }
-                                    }
+                                    } else {
+                                        false
+                                    };
                                     // A pended rename dies with the connect —
                                     // inline error, flag never sticks (T-03-07).
                                     if this
@@ -3307,6 +3728,10 @@ impl AppState {
                                         this.set_rename_submitting(false, cx);
                                     }
                                     cx.notify();
+                                    if arm_retry {
+                                        let retry_session = session_name.clone();
+                                        this.schedule_transport_retry(&retry_session, cx);
+                                    }
                                 }
                             }
                         });
@@ -3331,6 +3756,22 @@ impl Render for AppState {
         let is_ready = matches!(status, BackendStatus::Ready(_));
 
         let palette_open = self.palette_open;
+        // Phase 7 STATE-03: the reconnect banner docks full-width directly
+        // above the workspace (below the title bar); the toast stack floats
+        // bottom-right above the workspace but below the palette modal.
+        let show_banner = self
+            .active_session
+            .as_deref()
+            .and_then(|s| self.sessions.get(s))
+            .and_then(|e| {
+                crate::app_state::banner_copy_for(
+                    e.transport,
+                    e.transport_origin,
+                    e.reconnect_attempt,
+                )
+            })
+            .is_some();
+        let show_toasts = !self.toasts.is_empty();
         div()
             .flex()
             .flex_col()
@@ -3344,6 +3785,9 @@ impl Render for AppState {
                 },
             ))
             .child(title_bar)
+            .when(show_banner, |s| {
+                s.child(crate::views::reconnect_banner::render_reconnect_banner(self, cx))
+            })
             .child(
                 div()
                     .flex()
@@ -3376,6 +3820,10 @@ impl Render for AppState {
             )
             // Phase 6 palette overlay floats above the workspace while open
             // (vendored Command owns filter/focus/keyboard; Esc closes).
+            // Phase 7 toasts stack below the palette modal in z-order.
+            .when(show_toasts, |s| {
+                s.child(crate::views::toasts::render_toasts(self, cx))
+            })
             .when(palette_open, |s| {
                 s.child(crate::views::palette::render_palette(self, cx))
             })

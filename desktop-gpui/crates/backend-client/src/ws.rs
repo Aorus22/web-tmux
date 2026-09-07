@@ -47,6 +47,14 @@ pub const EV_TMUX_DISCONNECTED: &str = "tmux.disconnected";
 pub const EV_TMUX_RECONNECTING: &str = "tmux.reconnecting";
 pub const EV_SERVER_ERROR: &str = "server.error";
 
+/// Pump-local transport-lost signal (Phase 7 STATE-03, D2).
+///
+/// Forwarded ONLY by the read-pump close/error arms below when the socket
+/// itself dies. Never serialized on the wire and never sent by the server,
+/// so `apply_event` can distinguish "connection to backend dropped (retry)"
+/// from server-sent `tmux.disconnected` (manual reconnect, monitor retries).
+pub const EV_TRANSPORT_LOST: &str = "transport.lost";
+
 fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
@@ -435,8 +443,12 @@ pub async fn connect_session_with_pending(
             let msg = match stream.next().await {
                 Some(Ok(m)) => m,
                 Some(Err(_)) | None => {
+                    // Transport drop (not tmux-health): forward the
+                    // pump-local signal so the banner can name the failing
+                    // layer. NEVER synthesize EV_TMUX_DISCONNECTED here
+                    // (Pitfall 1 — SC1 conflation gate).
                     forward(WsOutgoing {
-                        msg_type: EV_TMUX_DISCONNECTED.to_string(),
+                        msg_type: EV_TRANSPORT_LOST.to_string(),
                         session: Some(read_session.clone()),
                         ..Default::default()
                     });
@@ -483,8 +495,11 @@ pub async fn connect_session_with_pending(
                     }
                 }
                 tokio_tungstenite::tungstenite::Message::Close(_) => {
+                    // Same transport-lost split as the error arm above:
+                    // a clean close still means the socket died, not that
+                    // tmux lost its server (Pitfall 1 gate).
                     forward(WsOutgoing {
-                        msg_type: EV_TMUX_DISCONNECTED.to_string(),
+                        msg_type: EV_TRANSPORT_LOST.to_string(),
                         session: Some(read_session.clone()),
                         ..Default::default()
                     });
