@@ -137,10 +137,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Kill-confirmation dialogs honor the three per-surface settings toggles exactly like Electron, and dark/light counterpart themes behave with Electron's dark semantics (colorScheme)
   5. All 102 UI + 78 terminal presets are available as generated files; Ctrl+Shift+P opens a filterable command palette including the Open Session group; all text and icons render from the embedded JetBrains Mono font and embedded lucide SVGs (no system dependencies)
 
-**Plans**: 2 plans
+**Plans**: 1/2 plans executed
 
-- [ ] 06-01-PLAN.md — Generated 102+78 theme tables, settings model, live-apply tracer + Settings page
+- [x] 06-01-PLAN.md — Generated 102+78 theme tables, settings model, live-apply tracer + Settings page
 - [ ] 06-02-PLAN.md — Binary validation, command palette, kill switches + copy audit
+
 **UI hint**: yes
 
 ### Phase 7: Resilience, Packaging & Parity Audit
@@ -169,7 +170,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. WebSocket Client & Multi-Session Tabs | 2/2 | Complete | 2026-09-06 |
 | 4. Terminal Engine & Live Pane Rendering | 2/2 | Complete | 2026-09-07 |
 | 5. Pane Grid & Workspace Operations | 2/2 | Complete | 2026-09-07 |
-| 6. Theme System, Settings & Chrome Parity | TBD | Not started | - |
+| 6. Theme System, Settings & Chrome Parity | 1/2 | In Progress|  |
 | 7. Resilience, Packaging & Parity Audit | TBD | Not started | - |
 
 ---

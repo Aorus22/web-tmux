@@ -2,20 +2,20 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: Desktop GPUI
-current_phase: 4
-current_phase_name: Terminal Engine & Live Pane Rendering
+current_phase: 6
+current_phase_name: Theme System, Settings & Chrome Parity
 status: executing
-stopped_at: Completed 04-01-PLAN.md
-last_updated: "2026-09-06T18:16:32.254Z"
-last_activity: 2026-09-06
-last_activity_desc: Phase 3 verified passed, transitioned to Phase 04
-state_head: b66d3cd76a9e37e7172fbdd0eb3ed35747debeb4
+stopped_at: Completed 06-01-PLAN.md (tracer, 109/109 green)
+last_updated: "2026-09-07T04:41:10.538Z"
+last_activity: 2026-09-07
+last_activity_desc: Phase 5 verified passed, transitioned to Phase 06
+state_head: 76a5bdccc736b6105330da24646e74bcacd7aaa0
 progress:
   total_phases: 7
-  completed_phases: 3
-  total_plans: 9
-  completed_plans: 8
-  percent: 43
+  completed_phases: 4
+  total_plans: 13
+  completed_plans: 12
+  percent: 57
 ---
 
 # Project State
@@ -29,12 +29,12 @@ See: .planning/PROJECT.md (updated 2026-09-06)
 
 ## Current Position
 
-Phase: 4 (Terminal Engine & Live Pane Rendering) — READY TO DISCUSS
-Plan: Not started
-Status: Ready to execute (autonomous, user sleeping)
-Last activity: 2026-09-06 — Phase 3 complete (WS per-session map + triple guard, 39/39 green), transitioned to Phase 04
+Phase: 6 (Theme System, Settings & Chrome Parity) — wave 1 tracer complete
+Plan: 01 complete (02 expansion pending)
+Status: Executing (autonomous lane; 06-01 SUMMARY complete, workspace 109/109 green)
+Last activity: 2026-09-07 — 06-01 tracer complete (102+78 theme tables, settings model, set_theme_preset live-apply, Settings page; 109/109 green)
 
-Progress: [████░░░░░░] 43%
+Progress: [██████░░░░] 57%
 
 ## Performance Metrics
 
@@ -61,6 +61,7 @@ Progress: [████░░░░░░] 43%
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 04-terminal-engine-live-rendering P01 | 70min | 3 tasks | 18 files |
+| Phase 06-theme-settings-chrome-parity P01 | 60min | 3 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,7 @@ Decisions are logged in PROJECT.md Key Decisions table. Recent decisions affecti
 - [Phase 2, user-accepted 2026-09-06]: SelectSessionView has NO Create-dialog trigger (FE parity; UI-SPEC triggers = Plus + EmptyState CTA, shortcuts deferred EXTRA-02) — override in 02-VERIFICATION.md, re-audit in Phase 7
 - [Phase 2, deferred advisory]: HV-1..HV-5 screen checks (sidebar pixels, dialog typing/picker live, double-submit, state pages, race stress) deferred to Phase 7 parity audit — code+wiring verified, GPUI not headless-renderable
 - [Phase 4]: Phase 4 tracer: Arc-shared store-owned Terminals with dumb views holding clones; pane-session attribution scopes D7 retirement per session
+- [Phase 6]: 06-01: UiThemePreset keeps all 17 FE color fields (plan text miscounted 15); steppers replace InputState/Switch; startup resync hooks start_supervisor; dialog/menu chrome deferred to 06-02
 
 ### Pending Todos
 
@@ -102,8 +104,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-06T18:16:31.760Z
-Stopped at: Completed 04-01-PLAN.md
+Last session: 2026-09-07T04:41:09.434Z
+Stopped at: Completed 06-01-PLAN.md (tracer, 109/109 green)
 Resume file: None
 
 ## Deferred Verification
