@@ -9,7 +9,7 @@ pub use models::{
     ApiErrorResponse, CreateSessionRequest, CreateSessionResponse, HealthResponse, HealthTmux,
     SessionTreeNode, TmuxInfo, TmuxPane, TmuxSession, TmuxTree, TmuxWindow, WindowTreeNode,
 };
-pub use rest::{RestClient, RestError};
+pub use rest::{binary_status_copy, RestClient, RestError};
 pub use validation::{validate_session_name, ValidationError};
 pub use ws::{
     connect_session, connect_session_with_pending, normalize_ws_url, request_id, CommandResult,

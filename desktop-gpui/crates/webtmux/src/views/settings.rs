@@ -8,8 +8,9 @@
 //! section (font-size/line-height/scrollback steppers with FE clamps,
 //! TUI-scroll-default toggle, honest single-family label).
 //!
-//! - tmux-binary rows and kill-confirm switches arrive in 06-02; clearly
-//!   marked section anchors below hold their place (no dead controls).
+//! - tmux-binary validation rows ship in 06-02 (SET-03 per D6); the
+//!   kill-confirm switches keep their clearly marked anchor until Task 3
+//!   (no dead controls).
 //! - One preset read per render, no cached colors: every token goes through
 //!   the `theme::preset_*` helpers so `cx.notify()` repaints everything.
 //! - FE copy preserved verbatim: `"Filter by dark or light appearance"`,
@@ -18,6 +19,8 @@
 
 use gpui::*;
 use gpui::prelude::{InteractiveElement, StatefulInteractiveElement};
+use gpui_component::input::Input;
+use webtmux_backend_client::binary_status_copy;
 use crate::app_state::AppState;
 use crate::icons::{CHECK_SVG, PAINTBRUSH_SVG};
 use crate::themes_generated::UI_THEMES;
@@ -50,7 +53,6 @@ pub fn render_settings(app: &mut AppState, cx: &mut Context<AppState>) -> impl I
                 .gap(px(24.0))
                 .child(render_appearance(app, cx))
                 .child(render_terminal(app, cx))
-                .child(render_binary_anchor(muted_fg))
                 .child(render_kill_anchor(muted_fg))
                 .child(render_back_button(fg, border, muted, cx))
                 .into_any_element(),
@@ -337,6 +339,9 @@ fn render_terminal(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoE
                 .bg(card)
                 .px(px(16.0))
                 .py(px(12.0))
+                // tmux-binary validation first (FE TerminalSettings order,
+                // SET-03 per D6); explicit Check/Enter only.
+                .child(render_binary_block(app, cx))
                 // Honest single-family label (D8): embedded JetBrains Mono,
                 // free text falls back — no font-stack parsing.
                 .child(
@@ -548,13 +553,100 @@ fn step_button(
         .into_any_element()
 }
 
-/// 06-02 anchor: tmux-binary validation rows land here (D6).
-fn render_binary_anchor(muted_fg: Rgba) -> impl IntoElement {
-    div()
-        .text_xs()
-        .text_color(muted_fg)
-        .child("tmux binary validation arrives in 06-02 (POST /api/tmux/binary).")
-        .into_any_element()
+/// tmux-binary validation block (SET-03 per D6, 06-02): path input +
+/// explicit Check button + status line. Typing only edits the draft held by
+/// the `InputState` editor — validation POSTs on Check/Enter only (never
+/// per-keystroke). Status shows `Using {binary} ({version})` or the raw
+/// backend error via `binary_status_copy`.
+fn render_binary_block(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let preset_name = app.settings.theme_preset.clone();
+    let fg = crate::theme::preset_fg(&preset_name);
+    let muted_fg = crate::theme::preset_muted_fg(&preset_name);
+    let border = crate::theme::preset_border(&preset_name);
+    let primary = crate::theme::preset_primary(&preset_name);
+    let primary_fg = crate::theme::preset_primary_fg(&preset_name);
+
+    let status: Option<String> = app
+        .tmux_binary_status
+        .as_ref()
+        .map(binary_status_copy);
+    let editor = app.tmux_binary_input.clone();
+    let editor_for_check = editor.clone();
+
+    let mut col = div().flex().flex_col().gap(px(6.0)).w_full();
+
+    col = col.child(
+        div()
+            .text_sm()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(fg)
+            .child("tmux binary (Windows)"),
+    );
+
+    // Input row: editor (flex-1) + explicit Check button. The editor entity
+    // is ensured on the settings render path; the fallback text below only
+    // covers the impossible first-frame gap.
+    col = col.child(
+        div().flex().flex_row().items_center().gap(px(8.0)).w_full()
+            .child(
+                div().flex_1().children(editor.clone().map(|state| {
+                    Input::new(&state).w_full().into_any_element()
+                })),
+            )
+            .child(
+                div()
+                    .px(px(14.0))
+                    .py(px(6.0))
+                    .rounded(px(6.0))
+                    .bg(primary)
+                    .text_color(primary_fg)
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .cursor_pointer()
+                    .hover(|s| s.opacity(0.9))
+                    .child("Check")
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            let Some(state) = editor_for_check.clone() else {
+                                return;
+                            };
+                            let value = state.read(cx).value().to_string();
+                            this.set_tmux_binary_path(value, cx);
+                            this.check_tmux_binary(cx);
+                        }),
+                    ),
+            ),
+    );
+
+    // FE copy preserved verbatim (TerminalSettings.tsx).
+    col = col.child(
+        div()
+            .text_xs()
+            .text_color(muted_fg)
+            .child("Choose the same tmux installation that contains your sessions. You can paste a full path or use tmux for PATH lookup."),
+    );
+
+    if editor.is_none() {
+        col = col.child(
+            div()
+                .text_xs()
+                .text_color(muted_fg)
+                .child(format!("Current: {}", app.settings.tmux_binary)),
+        );
+    }
+
+    if let Some(line) = status {
+        col = col.child(
+            div()
+                .text_xs()
+                .text_color(muted_fg)
+                .child(line)
+                .border_color(border),
+        );
+    }
+
+    col.into_any_element()
 }
 
 /// 06-02 anchor: kill-confirm switch rows land here (D7).

@@ -6,11 +6,13 @@ use std::time::Instant;
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 use gpui_component::WindowExt as _;
+use gpui_component::input::{InputEvent, InputState};
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
 use webtmux_backend_client::{
     connect_session, connect_session_with_pending, validate_session_name, RestClient,
-    CommandResult, SessionSnapshot, SessionWsHandle, SharedPending, TransportState, TmuxTree,
+    CommandResult, RestError, SessionSnapshot, SessionWsHandle, SharedPending, TmuxInfo,
+    TransportState, TmuxTree,
     WsIncoming, WsOutgoing, EV_CONNECTION_READY, EV_STATE_DELTA, EV_STATE_SNAPSHOT,
     EV_SERVER_ERROR, EV_TERMINAL_OUTPUT, EV_TERMINAL_SNAPSHOT, EV_TMUX_DISCONNECTED,
     EV_TMUX_RECONNECTING, MSG_PANE_BREAK, MSG_PANE_KILL, MSG_PANE_RENAME, MSG_PANE_RESIZE,
@@ -484,6 +486,21 @@ pub struct AppState {
     /// divider `mouse_down` and the matching `mouse_up`/`mouse_up_out`;
     /// grid-level `mouse_move` streams positions through it.
     pub pane_drag: Option<PaneDragState>,
+
+    // Phase 6 plan 06-02 Task 1: tmux-binary validation (SET-03 per D6).
+    /// Binary validation status: `None` = never checked (poll re-renders
+    /// never clear it); `Some(Ok)` = backend-accepted; `Some(Err)` = the
+    /// `Checking…` transient or the raw backend error string.
+    pub tmux_binary_status: Option<Result<TmuxInfo, String>>,
+    /// Apply-once-on-ready guard (FE `App.tsx:120-127` parity): the stored
+    /// `tmux_binary` posts once after the backend connects.
+    pub tmux_binary_applied: bool,
+    /// Settings-page binary editor, created lazily on the first settings
+    /// render (the only plan-file site with both `Window` + `Context`); kept
+    /// across settings open/close so an unchecked draft survives navigation.
+    pub tmux_binary_input: Option<Entity<InputState>>,
+    /// Enter-to-check subscription for the binary editor (lives with it).
+    pub tmux_binary_input_sub: Option<Subscription>,
 }
 
 impl AppState {
@@ -526,6 +543,10 @@ impl AppState {
             terminal_views: HashMap::new(),
             workspace_size: None,
             pane_drag: None,
+            tmux_binary_status: None,
+            tmux_binary_applied: false,
+            tmux_binary_input: None,
+            tmux_binary_input_sub: None,
         }
     }
 
@@ -701,6 +722,9 @@ impl AppState {
                                         this.backend_status = BackendStatus::Ready(info);
                                         this.trigger_poll(cx);
                                         this.start_polling_loop(cx);
+                                        // Phase 6 SET-03: post the stored
+                                        // binary once (FE App.tsx:120-127).
+                                        this.maybe_apply_stored_tmux_binary(cx);
                                     }
                                     SupervisorEvent::Failed { reason, stderr_tail } => {
                                         this.backend_status = BackendStatus::Failed {
@@ -1888,6 +1912,101 @@ impl AppState {
         cx.notify();
     }
 
+    // -- Phase 6 plan 06-02 Task 1: tmux-binary validation (SET-03 per D6) --
+
+    /// Binary path writer: stores the raw string + persists (FE `onChange`
+    /// parity). Never validates — validation fires on explicit Check/Enter
+    /// only (prohibition: no per-keystroke `tmux -V`).
+    pub fn set_tmux_binary_path(&mut self, path: String, cx: &mut Context<Self>) {
+        self.settings.tmux_binary = path;
+        let _ = self.settings.save();
+        cx.notify();
+    }
+
+    /// Explicit Check/Enter validation: POSTs the trimmed path and commits
+    /// `Using {binary} ({version})` or the raw backend error into
+    /// `tmux_binary_status`. The `Api` error message is the backend string
+    /// verbatim (never a generic code); transport/decode failures fall back
+    /// to their `Display`. Poll re-renders never clear the status.
+    pub fn check_tmux_binary(&mut self, cx: &mut Context<Self>) {
+        let path = self.settings.tmux_binary.trim().to_string();
+        let Some(client) = self.rest_client.clone() else {
+            self.tmux_binary_status =
+                Some(Err("Backend is not ready yet. Try again in a moment.".to_string()));
+            cx.notify();
+            return;
+        };
+        self.tmux_binary_status = Some(Err("Checking…".to_string()));
+        cx.notify();
+        cx.spawn(|view_weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let cx_handle = cx.clone();
+            async move {
+                let result = client.set_tmux_binary(&path).await;
+                let _ = cx_handle.update(|cx: &mut App| {
+                    if let Some(entity) = view_weak.upgrade() {
+                        entity.update(cx, |this, cx| {
+                            this.tmux_binary_status = Some(result.map_err(|e| match e {
+                                RestError::Api { message, .. } => message,
+                                other => other.to_string(),
+                            }));
+                            cx.notify();
+                        });
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Apply-once-on-ready (FE `App.tsx:120-127` parity): after the backend
+    /// connects, the stored `tmux_binary` (if non-empty) posts once. Called
+    /// from the supervisor `Ready` event; the flag keeps reconnects cheap.
+    pub fn maybe_apply_stored_tmux_binary(&mut self, cx: &mut Context<Self>) {
+        if self.tmux_binary_applied {
+            return;
+        }
+        self.tmux_binary_applied = true;
+        if self.settings.tmux_binary.trim().is_empty() {
+            return;
+        }
+        self.check_tmux_binary(cx);
+    }
+
+    /// Lazily create the settings binary editor + its Enter-to-check
+    /// subscription. Runs on the settings render path (the only plan-file
+    /// site with both `&mut Window` and `&mut Context<Self>`); once-guarded
+    /// so the entity — and any unchecked draft — outlives settings closes.
+    /// Prefills from the persisted path once; later edits live in the editor
+    /// until the next explicit Check/Enter.
+    pub fn ensure_tmux_binary_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tmux_binary_input.is_some() {
+            return;
+        }
+        let prefill = self.settings.tmux_binary.clone();
+        let input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("C:\\path\\to\\tmux.exe (empty = PATH)")
+        });
+        input.update(cx, |state, cx| {
+            state.set_value(prefill, window, cx);
+        });
+        let sub = cx.subscribe(
+            &input,
+            move |this: &mut Self,
+                  input: Entity<InputState>,
+                  event: &InputEvent,
+                  cx: &mut Context<Self>| {
+                if !matches!(event, InputEvent::PressEnter { .. }) {
+                    return;
+                }
+                let value = input.read(cx).value().to_string();
+                this.set_tmux_binary_path(value, cx);
+                this.check_tmux_binary(cx);
+            },
+        );
+        self.tmux_binary_input = Some(input);
+        self.tmux_binary_input_sub = Some(sub);
+    }
+
     // -- Pure envelope constructors (headless-testable, no socket) ---------
 
     pub fn build_pane_select(pane_id: &str) -> WsIncoming {
@@ -3032,7 +3151,12 @@ impl AppState {
 }
 
 impl Render for AppState {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Phase 6 SET-03: the settings binary editor needs `Window` + `App`
+        // at creation; this render path is the only plan-file site with both.
+        if self.showing_settings {
+            self.ensure_tmux_binary_input(window, cx);
+        }
         let title_bar = render_title_bar(self, cx);
         let status = self.backend_status.clone();
 
