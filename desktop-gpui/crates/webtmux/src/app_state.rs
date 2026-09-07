@@ -432,6 +432,9 @@ pub struct AppState {
     /// owns geometry). Views hold only a shared terminal clone — the store
     /// above stays the owner, so hidden sessions keep ingesting.
     pub terminal_views: HashMap<String, Entity<TerminalView>>,
+    /// Last measured workspace container size in px (Phase 5 grid probe).
+    /// `None` before the first measure — the grid falls back to 800x600.
+    pub workspace_size: Option<(f32, f32)>,
 }
 
 impl AppState {
@@ -468,6 +471,7 @@ impl AppState {
             resize_seq: 0,
             last_layout_key: None,
             terminal_views: HashMap::new(),
+            workspace_size: None,
         }
     }
 

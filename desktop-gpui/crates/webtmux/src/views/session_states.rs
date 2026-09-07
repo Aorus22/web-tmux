@@ -4,10 +4,8 @@
 
 use gpui::*;
 use gpui::prelude::InteractiveElement;
-use std::sync::Arc;
 use crate::app_state::AppState;
 use crate::icons::{ALERT_TRIANGLE_SVG, SQUARE_TERMINAL_SVG, TERMINAL_SQUARE_SVG};
-use crate::views::terminal_view::TerminalView;
 
 /// Represents the active state of the central workspace body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,67 +402,10 @@ pub fn render_settings_placeholder(_app: &mut AppState, cx: &mut Context<AppStat
                 })),
         )
 }
-/// Renders the active session workspace: one live `TerminalView` per pane of
-/// the active window (Phase-4 tracer layout — stacked full-width; Phase 5
-/// owns cell geometry). Panes without a committed snapshot yet show the
-/// connecting fallback; empty/error/select routing is untouched.
+/// Renders the active session workspace through the Phase-5 geometry grid:
+/// absolutely positioned panes with headers re-hosting the Phase-4
+/// `TerminalView`s (empty/single-pane windows render without dividers/zoom).
+/// Empty/error/select routing is untouched.
 fn render_active_session_placeholder(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
-    let muted_text = rgb(0x808080);
-
-    let panes = app.active_window_pane_ids();
-    if panes.is_empty() {
-        return div()
-            .flex()
-            .items_center()
-            .justify_center()
-            .size_full()
-            .text_sm()
-            .text_color(muted_text)
-            .child(match &app.active_session {
-                Some(name) => format!("Active session: {}", name),
-                None => "Select a session".to_string(),
-            })
-            .into_any_element();
-    }
-
-    app.prune_terminal_views();
-    let app_weak = cx.entity().downgrade();
-    let mut views = Vec::with_capacity(panes.len());
-    for pane_id in &panes {
-        // Store entry first so the view clones the OWNED handle (views never
-        // create terminals — the store stays the owner).
-        app.pane_entry(pane_id);
-        if !app.terminal_views.contains_key(pane_id) {
-            let term_arc = Arc::clone(
-                &app.terminals
-                    .get(pane_id)
-                    .expect("entry ensured above")
-                    .terminal,
-            );
-            let weak = app_weak.clone();
-            let pid = pane_id.clone();
-            let view = cx.new(|cx| TerminalView::new(pid, term_arc, weak, cx));
-            app.terminal_views.insert(pane_id.clone(), view);
-            // FE initial-capture parity: the blank grid becomes replayed
-            // history as soon as the capture reply lands.
-            app.request_pane_capture(pane_id);
-        }
-        views.push(
-            app.terminal_views
-                .get(pane_id)
-                .expect("view ensured above")
-                .clone(),
-        );
-    }
-
-    div()
-        .flex()
-        .flex_col()
-        .size_full()
-        .children(
-            views
-                .into_iter()
-                .map(|v| div().flex_1().size_full().min_h(px(0.0)).child(v)),
-        )
-        .into_any_element()
+    crate::views::pane_grid::render_pane_grid(app, cx).into_any_element()
 }
