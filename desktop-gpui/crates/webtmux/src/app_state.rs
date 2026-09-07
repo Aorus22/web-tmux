@@ -442,6 +442,13 @@ pub struct AppState {
     /// Kill-confirm dialog form entity for panes (Phase 5, PANE-05 per D7).
     pub kill_pane_form:
         Option<gpui::Entity<crate::views::pane_context_menu::KillPaneForm>>,
+    /// DLG1 Rename Window dialog form entity (Phase 5, PANE-08 + DLG-02).
+    /// Same lifetime as the session rename form: replaced on every open,
+    /// `None` on dismiss.
+    pub rename_window_form:
+        Option<gpui::Entity<crate::views::rename_window_dialog::RenameWindowForm>>,
+    /// Kill-confirm dialog form entity for windows (Phase 5, PANE-08 per D7).
+    pub kill_window_form: Option<gpui::Entity<crate::views::tab_strip::KillWindowForm>>,
     // Phase 4: pane-id-keyed terminal store (TERM-01/02/03/07). Owns every
     // pane's `Terminal`; views borrow/render the active session's entries.
     pub terminals: HashMap<String, PaneTerminal>,
@@ -501,6 +508,8 @@ impl AppState {
             pending_rename: None,
             rename_pane_form: None,
             kill_pane_form: None,
+            rename_window_form: None,
+            kill_window_form: None,
             terminals: HashMap::new(),
             pane_session: HashMap::new(),
             tui_scroll: HashMap::new(),

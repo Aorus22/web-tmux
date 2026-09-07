@@ -6,6 +6,7 @@ pub mod pane_grid;
 pub mod pane_view;
 pub mod rename_pane_dialog;
 pub mod rename_session_dialog;
+pub mod rename_window_dialog;
 pub mod session_context_menu;
 pub mod session_states;
 pub mod sidebar;
