@@ -387,6 +387,15 @@ pub struct SwapCandidate {
     pub label: String,
 }
 
+/// Kill-confirm surface selector (FE `shouldConfirm(kind)` dispatch parity,
+/// `commands.ts:40-50` — one writer over the three flags, Phase 6 Task 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KillConfirmKind {
+    Pane,
+    Window,
+    Session,
+}
+
 /// Kill transport route per D6 (see `AppState::kill_route`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KillRoute {    /// Victim's own socket is live — kill rides it (no explicit field).
@@ -1662,6 +1671,25 @@ impl AppState {
     /// `confirm_kill_window`.
     pub fn kill_requires_confirm_window(&self) -> bool {
         self.settings.confirm_kill_window
+    }
+
+    /// Kill-switch writer (SET-04 per D7): apply-then-save synchronously in
+    /// the same handler. The kill gates read settings live, so toggling flips
+    /// the next kill flow immediately (dialog vs direct) with no restart and
+    /// no dialog-behavior change.
+    pub fn set_confirm_kill(
+        &mut self,
+        kind: KillConfirmKind,
+        value: bool,
+        cx: &mut Context<Self>,
+    ) {
+        match kind {
+            KillConfirmKind::Pane => self.settings.confirm_kill_pane = value,
+            KillConfirmKind::Window => self.settings.confirm_kill_window = value,
+            KillConfirmKind::Session => self.settings.confirm_kill_session = value,
+        }
+        let _ = self.settings.save();
+        cx.notify();
     }
 
     /// Split-direction vocabulary (PANE-02 pitfall lock): Split right →

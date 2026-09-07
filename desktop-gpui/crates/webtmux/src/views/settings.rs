@@ -8,9 +8,8 @@
 //! section (font-size/line-height/scrollback steppers with FE clamps,
 //! TUI-scroll-default toggle, honest single-family label).
 //!
-//! - tmux-binary validation rows ship in 06-02 (SET-03 per D6); the
-//!   kill-confirm switches keep their clearly marked anchor until Task 3
-//!   (no dead controls).
+//! - tmux-binary validation rows ship in 06-02 Task 1 (SET-03 per D6);
+//!   the three kill-confirm `Switch` rows ship in Task 3 (SET-04 per D7).
 //! - One preset read per render, no cached colors: every token goes through
 //!   the `theme::preset_*` helpers so `cx.notify()` repaints everything.
 //! - FE copy preserved verbatim: `"Filter by dark or light appearance"`,
@@ -20,8 +19,9 @@
 use gpui::*;
 use gpui::prelude::{InteractiveElement, StatefulInteractiveElement};
 use gpui_component::input::Input;
+use gpui_component::switch::Switch;
 use webtmux_backend_client::binary_status_copy;
-use crate::app_state::AppState;
+use crate::app_state::{AppState, KillConfirmKind};
 use crate::icons::{CHECK_SVG, PAINTBRUSH_SVG};
 use crate::themes_generated::UI_THEMES;
 
@@ -30,7 +30,6 @@ pub fn render_settings(app: &mut AppState, cx: &mut Context<AppState>) -> impl I
     let preset_name = app.settings.theme_preset.clone();
     let bg = crate::theme::preset_bg(&preset_name);
     let fg = crate::theme::preset_fg(&preset_name);
-    let muted_fg = crate::theme::preset_muted_fg(&preset_name);
     let border = crate::theme::preset_border(&preset_name);
     let muted = crate::theme::preset_muted(&preset_name);
 
@@ -53,7 +52,7 @@ pub fn render_settings(app: &mut AppState, cx: &mut Context<AppState>) -> impl I
                 .gap(px(24.0))
                 .child(render_appearance(app, cx))
                 .child(render_terminal(app, cx))
-                .child(render_kill_anchor(muted_fg))
+                .child(render_kill_switches(app, cx))
                 .child(render_back_button(fg, border, muted, cx))
                 .into_any_element(),
         )
@@ -649,12 +648,107 @@ fn render_binary_block(app: &mut AppState, cx: &mut Context<AppState>) -> impl I
     col.into_any_element()
 }
 
-/// 06-02 anchor: kill-confirm switch rows land here (D7).
-fn render_kill_anchor(muted_fg: Rgba) -> impl IntoElement {
+/// Kill-confirmation switches (SET-04 per D7, 06-02 Task 3): the three
+/// `Switch` rows with FE labels verbatim (`TerminalSettings.tsx:91-108`),
+/// persisting through the existing `save()` path. Toggling flips the next
+/// kill flow immediately (dialog vs direct) — the gates read settings live,
+/// no restart, no dialog-behavior change.
+fn render_kill_switches(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let preset_name = app.settings.theme_preset.clone();
+    let card = crate::theme::preset_card(&preset_name);
+    let fg = crate::theme::preset_fg(&preset_name);
+    let border = crate::theme::preset_border(&preset_name);
+
+    let pane = app.settings.confirm_kill_pane;
+    let window = app.settings.confirm_kill_window;
+    let session = app.settings.confirm_kill_session;
+
     div()
-        .text_xs()
-        .text_color(muted_fg)
-        .child("Kill-confirmation switches arrive in 06-02.")
+        .flex()
+        .flex_col()
+        .gap(px(12.0))
+        .w_full()
+        .child(
+            div()
+                .text_base()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(fg)
+                .child("Safety"),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(12.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(border)
+                .bg(card)
+                .px(px(16.0))
+                .py(px(12.0))
+                .child(render_kill_row(
+                    "Confirm before killing pane",
+                    "kill-confirm-pane",
+                    KillConfirmKind::Pane,
+                    pane,
+                    fg,
+                    cx,
+                ))
+                .child(render_kill_row(
+                    "Confirm before killing window",
+                    "kill-confirm-window",
+                    KillConfirmKind::Window,
+                    window,
+                    fg,
+                    cx,
+                ))
+                .child(render_kill_row(
+                    "Confirm before killing session",
+                    "kill-confirm-session",
+                    KillConfirmKind::Session,
+                    session,
+                    fg,
+                    cx,
+                )),
+        )
+        .into_any_element()
+}
+
+/// One kill-confirm row: FE label left, functional `Switch` right. The click
+/// handler flips the CURRENT settings value (rather than trusting the passed
+/// bool) so either `on_click` semantic converges, then apply-then-saves
+/// synchronously in the same handler.
+fn render_kill_row(
+    label: &str,
+    id: &'static str,
+    kind: KillConfirmKind,
+    checked: bool,
+    fg: Rgba,
+    cx: &mut Context<AppState>,
+) -> impl IntoElement {
+    let app_weak = cx.weak_entity();
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .child(div().text_sm().text_color(fg).child(label.to_string()))
+        .child(
+            Switch::new(id)
+                .checked(checked)
+                .on_click(move |_, _, cx: &mut App| {
+                    if let Some(app) = app_weak.upgrade() {
+                        app.update(cx, |this, cx| {
+                            let next = match kind {
+                                KillConfirmKind::Pane => !this.settings.confirm_kill_pane,
+                                KillConfirmKind::Window => !this.settings.confirm_kill_window,
+                                KillConfirmKind::Session => !this.settings.confirm_kill_session,
+                            };
+                            this.set_confirm_kill(kind, next, cx);
+                        });
+                    }
+                }),
+        )
         .into_any_element()
 }
 

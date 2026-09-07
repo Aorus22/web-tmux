@@ -242,7 +242,9 @@ pub fn open_kill_pane_dialog(
                 DialogTitle::new()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(rgb(0xd4d4d4))
-                    .child(format!("Kill pane \"{}\"?", build_form.read(cx).target)),
+                    // FE verbatim (`PaneContextMenu.tsx:211` /
+                    // `PaneHeader.tsx:172`): no quotes around the pane id.
+                    .child(format!("Kill pane {}?", build_form.read(cx).target)),
             )
             .child(render_kill_pane_body(&build_form, cx))
             .footer(render_kill_pane_footer(&build_form, cx))

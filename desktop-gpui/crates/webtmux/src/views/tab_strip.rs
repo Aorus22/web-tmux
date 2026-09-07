@@ -476,7 +476,9 @@ pub fn open_kill_window_dialog(
                 DialogTitle::new()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(rgb(0xd4d4d4))
-                    .child(format!("Kill window \"{}\"?", build_form.read(cx).target)),
+                    // FE verbatim (`WindowTabs.tsx:223`): the window dialog
+                    // carries no target name ("Close window?").
+                    .child("Close window?"),
             )
             .child(render_kill_window_body(&build_form, cx))
             .footer(render_kill_window_footer(&build_form, cx))
