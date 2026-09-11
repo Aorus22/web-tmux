@@ -4,8 +4,10 @@
 #   make install-electron pasang dependency Electron ke desktop/node_modules
 #   make fe               build frontend -> be/internal/web/dist
 #   make be               build backend -> tmux-gui-server[.exe] di root
-#   make desktop-gtk      build binary aplikasi desktop GTK ke compiled
-#   make desktop-electron build aplikasi Electron
+#   make desktop-gpui      build GPUI desktop (release) ke desktop-gpui/target
+#   make dev-gpui           jalankan GPUI desktop dari source (cargo run)
+#   make package-gpui-windows  bundel dist Windows (tmux-gui-windows-x64)
+#   make package-gpui-linux    bundel dist Linux - jalankan di Linux
 
 .DEFAULT_GOAL := help
 
@@ -42,7 +44,7 @@ else
     COPY_ELECTRON_ASSETS = mkdir -p desktop/resources && rm -rf desktop/resources/fe-dist && cp -r be/internal/web/dist desktop/resources/fe-dist && cp -f tmux-gui-server desktop/resources/tmux-gui-server
 endif
 
-.PHONY: help install install-electron fe be desktop-gtk desktop-electron build-fe build-be build build-desktop build-gtk build-gtk-windows package-gtk-windows dev-web dev-desktop dev-gtk test test-be test-fe test-gtk clean
+.PHONY: help install install-electron fe be desktop-gtk desktop-electron desktop-gpui dev-gpui package-gpui-windows package-gpui-linux build-fe build-be build build-desktop build-gtk build-gtk-windows package-gtk-windows dev-web dev-desktop dev-gtk test test-be test-fe test-gtk clean
 
 help:
 	@echo Target yang tersedia:
@@ -52,6 +54,10 @@ help:
 	@echo   make be               - build backend menjadi tmux-gui-server$(EXE_EXT)
 	@echo   make desktop-gtk      - build binary GTK ke compiled
 	@echo   make desktop-electron - build aplikasi Electron
+	@echo   make desktop-gpui     - build GPUI desktop (release)
+	@echo   make dev-gpui         - jalankan GPUI desktop dari source
+	@echo   make package-gpui-windows - bundel dist Windows tmux-gui-windows-x64
+	@echo   make package-gpui-linux   - bundel dist Linux (jalankan di Linux)
 	@echo   make dev-web          - jalankan backend + Vite
 	@echo   make dev-desktop      - jalankan Vite + Electron
 
@@ -98,6 +104,32 @@ build-gtk-windows:
 
 package-gtk-windows:
 	powershell -NoProfile -ExecutionPolicy Bypass -File "desktop-gtk/scripts/build-windows.ps1"
+
+# GPUI desktop (PKG-03): same HOST_OS-dispatch shape as desktop-gtk.
+# Windows recipes stay one-line powershell -File delegations (Pitfall 6) -
+# no standalone build-gpui.ps1 in scope, so desktop-gpui reuses the tested
+# 3-step package path with -SkipBackend (release client build, no Go rebuild).
+ifeq ($(HOST_OS),windows)
+desktop-gpui:
+	powershell -NoProfile -ExecutionPolicy Bypass -File "desktop-gpui/scripts/package-gpui-windows.ps1" -Release -SkipBackend
+else
+desktop-gpui:
+	cargo build --release --manifest-path desktop-gpui/Cargo.toml --package webtmux
+endif
+
+dev-gpui:
+	cargo run --manifest-path desktop-gpui/Cargo.toml -p webtmux
+
+package-gpui-windows:
+	powershell -NoProfile -ExecutionPolicy Bypass -File "desktop-gpui/scripts/package-gpui-windows.ps1" -Release
+
+ifeq ($(HOST_OS),windows)
+package-gpui-linux:
+	@echo package-gpui-linux: run on Linux - no cross-build from Windows (Pitfall 7)
+else
+package-gpui-linux:
+	./desktop-gpui/scripts/package-gpui-linux.sh
+endif
 
 dev-web:
 	./scripts/dev-web.sh

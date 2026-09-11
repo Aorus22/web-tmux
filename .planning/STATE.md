@@ -2,20 +2,20 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: Desktop GPUI
-current_phase: 6
-current_phase_name: Theme System, Settings & Chrome Parity
+current_phase: 7
+current_phase_name: Resilience, Packaging & Parity Audit
 status: executing
-stopped_at: Completed 06-01-PLAN.md (tracer, 109/109 green)
-last_updated: "2026-09-07T04:41:10.538Z"
+stopped_at: Phase 6 complete (13/15 verified, 116/116 green, HV advisory → Phase 7), ready for Phase 7
+last_updated: "2026-09-07T05:00:00.000Z"
 last_activity: 2026-09-07
-last_activity_desc: Phase 5 verified passed, transitioned to Phase 06
-state_head: 76a5bdccc736b6105330da24646e74bcacd7aaa0
+last_activity_desc: Phase 6 verified (human_needed advisory, code 13/15), transitioned to Phase 07
+state_head: b7a145e
 progress:
   total_phases: 7
-  completed_phases: 4
+  completed_phases: 6
   total_plans: 13
-  completed_plans: 12
-  percent: 57
+  completed_plans: 13
+  percent: 86
 ---
 
 # Project State
@@ -29,12 +29,12 @@ See: .planning/PROJECT.md (updated 2026-09-06)
 
 ## Current Position
 
-Phase: 6 (Theme System, Settings & Chrome Parity) — wave 1 tracer complete
-Plan: 01 complete (02 expansion pending)
-Status: Executing (autonomous lane; 06-01 SUMMARY complete, workspace 109/109 green)
-Last activity: 2026-09-07 — 06-01 tracer complete (102+78 theme tables, settings model, set_theme_preset live-apply, Settings page; 109/109 green)
+Phase: 7 (Resilience, Packaging & Parity Audit) — READY TO DISCUSS
+Plan: Not started
+Status: Ready to execute (autonomous, user sleeping)
+Last activity: 2026-09-07 — Phase 6 complete (themes + settings + palette, 116/116 green, HV advisory), transitioned to Phase 07
 
-Progress: [██████░░░░] 57%
+Progress: [████████░░] 86%
 
 ## Performance Metrics
 

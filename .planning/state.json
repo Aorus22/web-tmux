@@ -1,0 +1,48 @@
+{
+  "contract": "1.0.0",
+  "flavor": "core",
+  "milestone": "v1.0 — Desktop GPUI",
+  "phases": [
+    {
+      "number": "1",
+      "name": "Workspace Foundation & Backend Sidecar",
+      "status": "complete"
+    },
+    {
+      "number": "2",
+      "name": "REST Client, Sidebar & Session Management",
+      "status": "pending"
+    },
+    {
+      "number": "3",
+      "name": "WebSocket Client & Multi-Session Tabs",
+      "status": "pending"
+    },
+    {
+      "number": "4",
+      "name": "Terminal Engine & Live Pane Rendering",
+      "status": "pending"
+    },
+    {
+      "number": "5",
+      "name": "Pane Grid & Workspace Operations",
+      "status": "pending"
+    },
+    {
+      "number": "6",
+      "name": "Theme System, Settings & Chrome Parity",
+      "status": "pending"
+    },
+    {
+      "number": "7",
+      "name": "Resilience, Packaging & Parity Audit",
+      "status": "pending"
+    }
+  ],
+  "next": {
+    "command": "/gsd:progress --next",
+    "label": "Advance to the next step",
+    "reason": "Phase 2 of 7 · 14% · executing"
+  },
+  "updated_at": "2026-09-06T12:34:51.568Z"
+}
