@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Tmux GUI
+GenericName=Terminal Multiplexer Frontend
+Comment=Graphical control surface for tmux
+Exec=webtmux %U
+Icon=webtmux-gpui
+StartupWMClass=webtmux-gpui
+Terminal=false
+Categories=Utility;TerminalEmulator;System;
+StartupNotify=true
