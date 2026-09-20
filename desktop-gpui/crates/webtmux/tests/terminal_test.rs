@@ -486,9 +486,10 @@ fn test_selection_text() {
         let mut term = entry.terminal.lock();
         term.start_selection(
             AlacPoint::new(Line(0), Column(0)),
+            webtmux_terminal::Side::Left,
             webtmux_terminal::selection_type_from_clicks(1),
         );
-        term.update_selection(AlacPoint::new(Line(0), Column(14)));
+        term.update_selection(AlacPoint::new(Line(0), Column(14)), webtmux_terminal::Side::Right);
     }
     let text = app
         .pane_selection_text("%0")

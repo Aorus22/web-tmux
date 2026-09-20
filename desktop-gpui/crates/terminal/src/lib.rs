@@ -20,13 +20,13 @@ pub use colors::ColorPalette;
 pub use event::{GpuiEventProxy, TerminalEvent};
 pub use input::keystroke_to_bytes;
 pub use mouse::{
-    modifiers_to_mouse_code, mouse_button_report, pixel_to_cell, scroll_report,
-    selection_type_from_clicks,
+    modifiers_to_mouse_code, mouse_button_report, pixel_to_cell, pixel_to_cell_with_side,
+    scroll_report, selection_type_from_clicks,
 };
 pub use render::{BackgroundRect, BatchedTextRun, CellDimensions, TerminalRenderer};
 pub use terminal::{TermDimensions, Terminal, TerminalConfig};
 
 // Re-exported alacritty geometry/mode types so app crates can name them
 // without adding a direct dependency (pins unchanged, no new packages).
-pub use alacritty_terminal::index::{Column, Line, Point as AlacPoint};
+pub use alacritty_terminal::index::{Column, Line, Point as AlacPoint, Side};
 pub use alacritty_terminal::term::TermMode;

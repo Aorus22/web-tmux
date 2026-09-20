@@ -19,8 +19,9 @@ use gpui::*;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use webtmux_terminal::{
-    keystroke_to_bytes, modifiers_to_mouse_code, mouse_button_report, pixel_to_cell,
-    selection_type_from_clicks, AlacPoint, ColorPalette, Column, Line, Terminal, TerminalRenderer,
+    keystroke_to_bytes, modifiers_to_mouse_code, mouse_button_report, pixel_to_cell_with_side,
+    selection_type_from_clicks, AlacPoint, ColorPalette, Column, Line, Side, Terminal,
+    TerminalRenderer,
 };
 
 pub type InputCallback = Arc<dyn Fn(&[u8]) + Send + Sync>;
@@ -36,6 +37,11 @@ pub struct TerminalView {
     terminal: Arc<Mutex<Terminal>>,
     app: WeakEntity<AppState>,
     renderer: TerminalRenderer,
+    /// Whether font metrics in `renderer` have been measured from the text
+    /// system. Font measurement requires a `&mut Window`, which is only
+    /// available in `Render::render` — so measurement is deferred to the next
+    /// frame after construction or any `set_*` mutation.
+    renderer_needs_measure: bool,
     focus_handle: FocusHandle,
     padding: Edges<Pixels>,
     is_selecting: bool,
@@ -73,6 +79,7 @@ impl TerminalView {
             terminal,
             app,
             renderer,
+            renderer_needs_measure: true,
             focus_handle,
             padding: Edges::all(px(4.0)),
             is_selecting: false,
@@ -92,6 +99,7 @@ impl TerminalView {
     /// Attach custom terminal renderer.
     pub fn with_renderer(mut self, renderer: TerminalRenderer) -> Self {
         self.renderer = renderer;
+        self.renderer_needs_measure = true;
         self
     }
 
@@ -177,20 +185,74 @@ impl TerminalView {
     }
 
     /// Dynamically update the font size used by this terminal view.
+    ///
+    /// Cell dimensions are set to a rough estimate and re-measured from the
+    /// text system on the next render pass, so mouse hit-testing and painting
+    /// always share the same real metrics.
     pub fn set_font_size(&mut self, size: Pixels, cx: &mut Context<Self>) {
         self.renderer.font_size = size;
         self.renderer.cell_width = size * 0.6;
         self.renderer.cell_height = size * self.renderer.line_height_multiplier;
+        self.renderer_needs_measure = true;
         cx.notify();
     }
 
     /// Dynamically update font family and font size used by this terminal view.
+    ///
+    /// Cell dimensions are set to a rough estimate and re-measured from the
+    /// text system on the next render pass, so mouse hit-testing and painting
+    /// always share the same real metrics.
     pub fn set_font(&mut self, family: String, size: Pixels, cx: &mut Context<Self>) {
         self.renderer.font_family = family;
         self.renderer.font_size = size;
         self.renderer.cell_width = size * 0.6;
         self.renderer.cell_height = size * self.renderer.line_height_multiplier;
+        self.renderer_needs_measure = true;
         cx.notify();
+    }
+
+    /// Convert a window pixel position into a terminal grid point plus the
+    /// cell side under the pointer.
+    ///
+    /// Lazily refreshes `self.renderer`'s font metrics, then maps pixels to
+    /// grid cells using the exact geometry the paint pass uses (this
+    /// renderer's paint does not shift rows by the scrollback display offset,
+    /// so the mouse mapping must not either).
+    fn pixel_to_term_point(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+    ) -> (AlacPoint, Side) {
+        if self.renderer_needs_measure {
+            self.renderer.measure_cell(window);
+            self.renderer_needs_measure = false;
+        }
+        self.pixel_to_term_point_measured(position)
+    }
+
+    /// Like [`Self::pixel_to_term_point`], but uses the renderer's current
+    /// metrics without re-measuring. Safe once at least one paint pass has
+    /// synced the measured metrics (the paint pass syncs them every frame).
+    fn pixel_to_term_point_measured(&self, position: Point<Pixels>) -> (AlacPoint, Side) {
+        let bounds = *self.last_bounds.lock();
+        let Some(bounds) = bounds else {
+            return (AlacPoint::new(Line(0), Column(0)), Side::Left);
+        };
+
+        let origin = Point {
+            x: bounds.origin.x + self.padding.left,
+            y: bounds.origin.y + self.padding.top,
+        };
+
+        let term = self.terminal.lock();
+        pixel_to_cell_with_side(
+            position,
+            origin,
+            self.renderer.cell_width,
+            self.renderer.cell_height,
+            term.cols(),
+            term.rows(),
+        )
     }
 
     /// Focus handle for keyboard input routing.
@@ -321,23 +383,11 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus_handle, cx);
-        let bounds = *self.last_bounds.lock();
 
-        if let Some(bounds) = bounds {
-            let origin = Point {
-                x: bounds.origin.x + self.padding.left,
-                y: bounds.origin.y + self.padding.top,
-            };
+        if self.last_bounds.lock().is_some() {
+            let (pt, side) = self.pixel_to_term_point(event.position, window);
+
             let mut term = self.terminal.lock();
-            let pt = pixel_to_cell(
-                event.position,
-                origin,
-                self.renderer.cell_width,
-                self.renderer.cell_height,
-                term.cols(),
-                term.rows(),
-            );
-
             let mode = term.mode();
             let mouse_mods = modifiers_to_mouse_code(&event.modifiers);
 
@@ -346,7 +396,7 @@ impl TerminalView {
                 self.write_to_pty(&bytes, cx);
             } else if event.button == MouseButton::Left {
                 let sel_type = selection_type_from_clicks(event.click_count);
-                term.start_selection(pt, sel_type);
+                term.start_selection(pt, side, sel_type);
                 self.is_selecting = true;
             }
         }
@@ -357,27 +407,15 @@ impl TerminalView {
     fn on_mouse_move(
         &mut self,
         event: &MouseMoveEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let bounds = *self.last_bounds.lock();
-        if let Some(bounds) = bounds {
-            let origin = Point {
-                x: bounds.origin.x + self.padding.left,
-                y: bounds.origin.y + self.padding.top,
-            };
-            let mut term = self.terminal.lock();
-            let pt = pixel_to_cell(
-                event.position,
-                origin,
-                self.renderer.cell_width,
-                self.renderer.cell_height,
-                term.cols(),
-                term.rows(),
-            );
+        if self.last_bounds.lock().is_some() {
+            let (pt, side) = self.pixel_to_term_point(event.position, window);
 
+            let mut term = self.terminal.lock();
             if self.is_selecting {
-                term.update_selection(pt);
+                term.update_selection(pt, side);
                 cx.notify();
             } else if let Some(button) = event.pressed_button {
                 let mode = term.mode();
@@ -390,23 +428,36 @@ impl TerminalView {
         }
     }
 
-    fn on_mouse_up(&mut self, event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        let bounds = *self.last_bounds.lock();
-        if let Some(bounds) = bounds {
-            let origin = Point {
-                x: bounds.origin.x + self.padding.left,
-                y: bounds.origin.y + self.padding.top,
-            };
-            let term = self.terminal.lock();
-            let pt = pixel_to_cell(
-                event.position,
-                origin,
-                self.renderer.cell_width,
-                self.renderer.cell_height,
-                term.cols(),
-                term.rows(),
-            );
+    /// Window-level drag continuation for text selection.
+    ///
+    /// Registered from the canvas paint pass via `window.on_mouse_event` while
+    /// a selection drag is active, so pointer movement outside the terminal
+    /// bounds (e.g. over the sidebar) keeps updating the selection. X11 and
+    /// Wayland both deliver pointer events to the window during an implicit
+    /// button-press grab — including the release — so the drag always
+    /// terminates on mouse up.
+    fn on_drag_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if self.is_selecting {
+            let (pt, side) = self.pixel_to_term_point_measured(event.position);
+            self.terminal.lock().update_selection(pt, side);
+            cx.notify();
+        }
+    }
 
+    /// Window-level counterpart of [`Self::on_drag_mouse_move`]: ends any
+    /// active selection drag no matter where the pointer was released.
+    fn on_drag_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
+        if event.button == MouseButton::Left && self.is_selecting {
+            self.is_selecting = false;
+            cx.notify();
+        }
+    }
+
+    fn on_mouse_up(&mut self, event: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.last_bounds.lock().is_some() {
+            let (pt, _) = self.pixel_to_term_point(event.position, window);
+
+            let term = self.terminal.lock();
             let mode = term.mode();
             let mouse_mods = modifiers_to_mouse_code(&event.modifiers);
             if let Some(bytes) = mouse_button_report(event.button, false, pt, mouse_mods, mode) {
@@ -425,7 +476,7 @@ impl TerminalView {
     fn on_scroll(
         &mut self,
         event: &ScrollWheelEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // FE-parity wheel policy (TERM-04): convert to the headless
@@ -441,24 +492,7 @@ impl TerminalView {
             }
         };
         let cell_h: f32 = self.renderer.cell_height.into();
-        let bounds = *self.last_bounds.lock();
-        let pt = if let Some(bounds) = bounds {
-            let origin = Point {
-                x: bounds.origin.x + self.padding.left,
-                y: bounds.origin.y + self.padding.top,
-            };
-            let term = self.terminal.lock();
-            pixel_to_cell(
-                event.position,
-                origin,
-                self.renderer.cell_width,
-                self.renderer.cell_height,
-                term.cols(),
-                term.rows(),
-            )
-        } else {
-            AlacPoint::new(Line(0), Column(0))
-        };
+        let (pt, _) = self.pixel_to_term_point(event.position, window);
         let mouse_mods = modifiers_to_mouse_code(&event.modifiers);
         let pane = self.pane_id.clone();
         let _ = self.app.update(cx, |app, cx| {
@@ -493,6 +527,8 @@ impl Render for TerminalView {
         let app_weak = self.app.clone();
         let pane_id = self.pane_id.clone();
         let resize_cb = self.resize_callback.clone();
+        let view_handle = cx.entity().downgrade();
+        let is_selecting = self.is_selecting;
 
         div()
             .size_full()
@@ -516,6 +552,44 @@ impl Render for TerminalView {
                         // "M"-advance measure per paint (D2: 14px JetBrains Mono).
                         let mut measured = renderer.clone();
                         measured.measure_cell(window);
+
+                        // Keep the view's renderer in sync with the measured
+                        // cell metrics so mouse hit-testing uses exactly the
+                        // same geometry as this paint pass.
+                        let _ = view_handle.update(cx, |this, cx| {
+                            if this.renderer_needs_measure
+                                || this.renderer.cell_width != measured.cell_width
+                                || this.renderer.cell_height != measured.cell_height
+                            {
+                                this.renderer.cell_width = measured.cell_width;
+                                this.renderer.cell_height = measured.cell_height;
+                                this.renderer_needs_measure = false;
+                                cx.notify();
+                            }
+                        });
+
+                        // While a selection drag is active, listen for mouse
+                        // move/up at the window level so the drag continues
+                        // and terminates even when the pointer leaves the
+                        // terminal bounds (e.g. over the sidebar).
+                        if is_selecting {
+                            let drag_view = view_handle.clone();
+                            window.on_mouse_event(
+                                move |event: &MouseMoveEvent, _phase, _window, cx| {
+                                    let _ = drag_view.update(cx, |this, cx| {
+                                        this.on_drag_mouse_move(event, cx);
+                                    });
+                                },
+                            );
+                            let drag_view = view_handle.clone();
+                            window.on_mouse_event(
+                                move |event: &MouseUpEvent, _phase, _window, cx| {
+                                    let _ = drag_view.update(cx, |this, cx| {
+                                        this.on_drag_mouse_up(event, cx);
+                                    });
+                                },
+                            );
+                        }
 
                         let avail_w: f32 =
                             (bounds.size.width - padding.left - padding.right).into();

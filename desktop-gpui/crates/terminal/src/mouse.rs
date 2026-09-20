@@ -2,7 +2,7 @@
 //!
 //! Provides coordinate conversion, selection type determination, and SGR mouse reporting.
 
-use alacritty_terminal::index::{Column, Line, Point as AlacPoint};
+use alacritty_terminal::index::{Column, Line, Point as AlacPoint, Side};
 use alacritty_terminal::selection::SelectionType;
 use alacritty_terminal::term::TermMode;
 use gpui::{Modifiers, MouseButton, Pixels, Point};
@@ -16,13 +16,43 @@ pub fn pixel_to_cell(
     max_cols: usize,
     max_rows: usize,
 ) -> AlacPoint {
-    let col = ((position.x - origin.x) / cell_width).floor();
-    let col = (col.max(0.0) as usize).min(max_cols.saturating_sub(1));
+    pixel_to_cell_with_side(position, origin, cell_width, cell_height, max_cols, max_rows).0
+}
+
+/// Convert pixel coordinate to a terminal grid point plus the cell `Side`
+/// (which half of the cell the pointer is in).
+///
+/// Alacritty selection anchors use the side to decide whether the boundary
+/// cell itself is included: a boundary anchor with `Side::Left` sits at the
+/// cell's left edge, `Side::Right` at its right edge. Without this, drags
+/// that end towards the top-left always exclude the cell under the cursor.
+pub fn pixel_to_cell_with_side(
+    position: Point<Pixels>,
+    origin: Point<Pixels>,
+    cell_width: Pixels,
+    cell_height: Pixels,
+    max_cols: usize,
+    max_rows: usize,
+) -> (AlacPoint, Side) {
+    let raw_col = (position.x - origin.x) / cell_width;
+    let col = (raw_col.floor().max(0.0) as usize).min(max_cols.saturating_sub(1));
+
+    // Past the left edge the cursor logically sits at the left edge of col 0;
+    // past the right edge at the right edge of the last column.
+    let side = if raw_col < 0.0 {
+        Side::Left
+    } else if raw_col >= max_cols as f32 {
+        Side::Right
+    } else if raw_col - raw_col.floor() < 0.5 {
+        Side::Left
+    } else {
+        Side::Right
+    };
 
     let row = ((position.y - origin.y) / cell_height).floor();
     let row = (row.max(0.0) as i32).min(max_rows.saturating_sub(1) as i32);
 
-    AlacPoint::new(Line(row), Column(col))
+    (AlacPoint::new(Line(row), Column(col)), side)
 }
 
 /// Map mouse click count into an Alacritty SelectionType (1 = simple, 2 = semantic word, 3+ = line).
@@ -155,6 +185,33 @@ mod tests {
         let pt = pixel_to_cell(pos, origin, cell_w, cell_h, 80, 24);
         assert_eq!(pt.column.0, 79);
         assert_eq!(pt.line.0, 23);
+    }
+
+    #[test]
+    fn test_pixel_to_cell_with_side() {
+        let origin = point(px(0.0), px(0.0));
+        let cell_w = px(10.0);
+        let cell_h = px(20.0);
+
+        // Left half of col 2 -> Left, right half -> Right.
+        let (pt, side) = pixel_to_cell_with_side(point(px(24.0), px(5.0)), origin, cell_w, cell_h, 80, 24);
+        assert_eq!(pt.column.0, 2);
+        assert_eq!(side, Side::Left);
+
+        let (pt, side) = pixel_to_cell_with_side(point(px(27.0), px(5.0)), origin, cell_w, cell_h, 80, 24);
+        assert_eq!(pt.column.0, 2);
+        assert_eq!(side, Side::Right);
+
+        // Beyond the left edge: col 0 with Side::Left, so up-left drags
+        // ending in the margin still include the corner cell.
+        let (pt, side) = pixel_to_cell_with_side(point(px(-30.0), px(5.0)), origin, cell_w, cell_h, 80, 24);
+        assert_eq!(pt.column.0, 0);
+        assert_eq!(side, Side::Left);
+
+        // Beyond the right edge: last column with Side::Right (fully selected).
+        let (pt, side) = pixel_to_cell_with_side(point(px(10000.0), px(5.0)), origin, cell_w, cell_h, 80, 24);
+        assert_eq!(pt.column.0, 79);
+        assert_eq!(side, Side::Right);
     }
 
     #[test]
