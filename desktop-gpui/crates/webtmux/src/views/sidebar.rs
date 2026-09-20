@@ -12,7 +12,11 @@ use gpui::prelude::{FluentBuilder, InteractiveElement, StatefulInteractiveElemen
 use crate::app_state::AppState;
 use crate::icons::{CHEVRON_DOWN_SVG, CHEVRON_RIGHT_SVG, PLUS_SVG, REFRESH_CW_SVG, SETTINGS_SVG};
 
-pub fn render_sidebar(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+pub fn render_sidebar(
+    app: &mut AppState,
+    framed: bool,
+    cx: &mut Context<AppState>,
+) -> impl IntoElement {
     let sidebar_open = app.sidebar_open;
     // Phase 6: chrome reads the active preset per render (no cached colors).
     let preset_name = app.settings.theme_preset.clone();
@@ -30,12 +34,14 @@ pub fn render_sidebar(app: &mut AppState, cx: &mut Context<AppState>) -> impl In
     div()
         .id("app-sidebar")
         .flex_shrink_0()
+        .relative()
         .overflow_hidden()
         .w(width_val)
         .h_full()
         .bg(bg_color)
         .border_r_1()
         .border_color(border_color)
+        .when(framed, |d| d.rounded_bl(crate::app_state::FRAME_ROUNDING))
         .child(
             div()
                 .flex()
@@ -49,6 +55,7 @@ pub fn render_sidebar(app: &mut AppState, cx: &mut Context<AppState>) -> impl In
                         .flex_row()
                         .items_center()
                         .justify_between()
+                        .flex_none()
                         .h(px(36.0))
                         .px(px(12.0))
                         .child(
@@ -67,6 +74,7 @@ pub fn render_sidebar(app: &mut AppState, cx: &mut Context<AppState>) -> impl In
                                 // Refresh Button (20x20 ghost)
                                 .child(
                                     div()
+                                        .id("sidebar/refresh")
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -88,6 +96,7 @@ pub fn render_sidebar(app: &mut AppState, cx: &mut Context<AppState>) -> impl In
                                 // Plus Button (20x20 ghost)
                                 .child(
                                     div()
+                                        .id("sidebar/create")
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -115,9 +124,11 @@ pub fn render_sidebar(app: &mut AppState, cx: &mut Context<AppState>) -> impl In
                     div()
                         .id("sessions-scroll-area")
                         .flex_1()
+                        .min_h_0()
                         .overflow_y_scroll()
                         .px(px(6.0))
-                        .pb(px(12.0))
+                        // Room for the floating footer below.
+                        .pb(px(60.0))
                         .children(if app.tree.sessions.is_empty() {
                             vec![
                                 div()
@@ -287,42 +298,50 @@ pub fn render_sidebar(app: &mut AppState, cx: &mut Context<AppState>) -> impl In
                             }).collect()
                         }),
                 )
-                // Footer (1px top border, Settings ghost button)
+            )
+        // Footer floats above the tree (absolute) so list growth or flex
+        // quirks can never push it out of view.
+        .child(
+            div()
+                .absolute()
+                .bottom_0()
+                .left_0()
+                .right_0()
+                .bg(bg_color)
+                .border_t_1()
+                .border_color(border_color)
+                .when(framed, |d| d.rounded_bl(crate::app_state::FRAME_ROUNDING))
+                .p(px(6.0))
                 .child(
                     div()
-                        .border_t_1()
-                        .border_color(border_color)
-                        .p(px(6.0))
+                        .id("sidebar/settings")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .w_full()
+                        .rounded(px(6.0))
+                        .px(px(8.0))
+                        .py(px(6.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(hover_bg))
+                        .child(
+                            svg()
+                                .data(SETTINGS_SVG)
+                                .size(px(14.0))
+                                .text_color(muted_text),
+                        )
                         .child(
                             div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(8.0))
-                                .w_full()
-                                .rounded(px(6.0))
-                                .px(px(8.0))
-                                .py(px(6.0))
-                                .cursor_pointer()
-                                .hover(|s| s.bg(hover_bg))
-                                .child(
-                                    svg()
-                                        .data(SETTINGS_SVG)
-                                        .size(px(14.0))
-                                        .text_color(muted_text),
-                                )
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(foreground_text)
-                                        .child("Settings"),
-                                )
-                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _window, cx| {
-                                    this.active_session = None;
-                                    this.showing_settings = true;
-                                    cx.notify();
-                                })),
-                        ),
-                ),
+                                .text_sm()
+                                .text_color(foreground_text)
+                                .child("Settings"),
+                        )
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _window, cx| {
+                            this.active_session = None;
+                            this.showing_settings = true;
+                            cx.notify();
+                        })),
+        )
         )
 }

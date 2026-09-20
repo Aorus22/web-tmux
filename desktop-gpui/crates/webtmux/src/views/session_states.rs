@@ -95,6 +95,7 @@ pub fn render_empty_state(app: &mut AppState, cx: &mut Context<AppState>) -> imp
         // Primary CTA Button: "Create Session"
         .child(
             div()
+                .id("empty-state/create-session")
                 .mt(px(4.0))
                 .px(px(16.0))
                 .py(px(8.0))
@@ -175,6 +176,7 @@ pub fn render_error_state(app: &mut AppState, cx: &mut Context<AppState>) -> imp
         // Outline CTA Button: "Retry"
         .child(
             div()
+                .id("error-state/retry")
                 .mt(px(4.0))
                 .px(px(16.0))
                 .py(px(8.0))
@@ -295,6 +297,7 @@ pub fn render_select_session_view(app: &mut AppState, cx: &mut Context<AppState>
                                             let name_for_click = name.clone();
                                             row = row.child(
                                                 div()
+                                                    .id(format!("select-session/{}", name_str))
                                                     .flex_1()
                                                     .flex()
                                                     .flex_row()

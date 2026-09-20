@@ -105,7 +105,12 @@ pub fn render_window_toolbar(app: &AppState, cx: &mut Context<AppState>) -> impl
                     s.cursor_pointer().hover(|h| h.bg(rgb(0x2d2d2d)))
                 })
                 .when(!enabled, |s| s.opacity(0.4))
-                .child(svg().data(preset.icon).size(px(14.0)))
+                .child(
+                    svg()
+                        .data(preset.icon)
+                        .size(px(14.0))
+                        .text_color(if enabled { idle_icon } else { muted_text })
+                )
                 .when(enabled, |s| {
                     s.on_mouse_down(
                         MouseButton::Left,
@@ -145,7 +150,12 @@ pub fn render_window_toolbar(app: &AppState, cx: &mut Context<AppState>) -> impl
                     s.cursor_pointer().hover(|h| h.bg(rgb(0x2d2d2d)))
                 })
                 .when(!enabled, |s| s.opacity(0.4))
-                .child(svg().data(ARROW_RIGHT_LEFT_SVG).size(px(14.0)))
+                .child(
+                    svg()
+                        .data(ARROW_RIGHT_LEFT_SVG)
+                        .size(px(14.0))
+                        .text_color(if enabled { idle_icon } else { muted_text })
+                )
                 .when(enabled, |s| {
                     s.on_mouse_down(
                         MouseButton::Left,

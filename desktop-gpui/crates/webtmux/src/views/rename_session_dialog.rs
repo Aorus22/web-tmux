@@ -206,6 +206,7 @@ fn render_rename_footer(form: &Entity<RenameSessionForm>, cx: &mut App) -> Dialo
     DialogFooter::new()
         .child(
             div()
+                .id("rename-session/cancel")
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))
@@ -229,6 +230,7 @@ fn render_rename_footer(form: &Entity<RenameSessionForm>, cx: &mut App) -> Dialo
         )
         .child(
             div()
+                .id("rename-session/submit")
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))

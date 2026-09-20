@@ -28,7 +28,7 @@ use crate::icons::{
     MAXIMIZE2_SVG, SPLIT_SQUARE_HORIZONTAL_SVG, SPLIT_SQUARE_VERTICAL_SVG, X_SVG,
 };
 use crate::pane_geometry::PxRect;
-use crate::views::pane_context_menu::{request_kill_pane, with_pane_context_menu};
+use crate::views::pane_context_menu::with_pane_context_menu;
 
 /// Render one positioned pane at its `pixel_rect` rect.
 pub fn render_pane_view(
@@ -196,8 +196,11 @@ pub fn render_pane_view(
                             |_this, pid, window, cx| {
                                 // Kill-confirm gate (PANE-05 per D7): dialog
                                 // when `confirm_kill_pane`, direct kill else.
-                                let app = cx.entity();
-                                request_kill_pane(&app, pid, window, cx);
+                                // Lease-safe variant: this runs inside an
+                                // AppState update.
+                                crate::views::pane_context_menu::request_kill_pane_from_state(
+                                    _this, pid, window, cx,
+                                );
                             },
                             cx,
                         )),
@@ -232,7 +235,7 @@ fn header_action_button(
         .cursor_pointer()
         .text_color(rgb(0x808080))
         .hover(move |s| s.bg(rgb(0x2d2d2d)).text_color(rgb(hover_fg)))
-        .child(svg().data(icon).size(px(12.0)))
+        .child(svg().data(icon).size(px(12.0)).text_color(rgb(0x808080)))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, window, cx| {

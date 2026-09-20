@@ -211,6 +211,7 @@ fn render_rename_pane_footer(form: &Entity<RenamePaneForm>, cx: &mut App) -> Dia
     DialogFooter::new()
         .child(
             div()
+                .id("rename-pane/cancel")
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))
@@ -234,6 +235,7 @@ fn render_rename_pane_footer(form: &Entity<RenamePaneForm>, cx: &mut App) -> Dia
         )
         .child(
             div()
+                .id("rename-pane/submit")
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))

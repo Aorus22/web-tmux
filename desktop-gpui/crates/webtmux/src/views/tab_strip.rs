@@ -31,7 +31,15 @@ use crate::views::rename_window_dialog::open_rename_window_dialog;
 
 /// Render the minimal S1 title bar with app identity, drag area, WindowTabs of
 /// the active session, Settings gear, and custom window controls.
-pub fn render_title_bar(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+///
+/// `framed` rounds the top corners (Zed-style titlebar): this bar owns them
+/// since it floats over the full width. Skipped when maximized/tiled so
+/// edges stay flush.
+pub fn render_title_bar(
+    app: &mut AppState,
+    framed: bool,
+    cx: &mut Context<AppState>,
+) -> impl IntoElement {
     // Phase 6: chrome reads the active preset per render (no cached colors).
     let preset_name = app.settings.theme_preset.clone();
     let bar_bg = crate::theme::preset_bg(&preset_name);
@@ -55,6 +63,10 @@ pub fn render_title_bar(app: &mut AppState, cx: &mut Context<AppState>) -> impl 
         .border_b_1()
         .border_color(border_color)
         .px_3()
+        .when(framed, |d| {
+            d.rounded_tl(crate::app_state::FRAME_ROUNDING)
+                .rounded_tr(crate::app_state::FRAME_ROUNDING)
+        })
         // Left: Sidebar Toggle button (PanelLeft 16px, 40x32 button) + Identity icon + "Tmux GUI"
         .child(
             div()
@@ -65,6 +77,7 @@ pub fn render_title_bar(app: &mut AppState, cx: &mut Context<AppState>) -> impl 
                 // Sidebar toggle button (SHELL-03)
                 .child(
                     div()
+                        .id("titlebar/sidebar-toggle")
                         .flex()
                         .items_center()
                         .justify_center()
@@ -117,19 +130,26 @@ pub fn render_title_bar(app: &mut AppState, cx: &mut Context<AppState>) -> impl 
             )
             .child(render_window_tabs(app, cx))
         })
-        // Center: Native Drag control area (full flex when no tabs, spacer
-        // while tabs take the middle so the bar stays draggable).
+        // Center: Draggable Title Bar Area
+        // NOTE (linux): gpui-pre 0.3.3 ignores WindowControlArea hit-test on
+        // X11/Wayland (on_hit_test_window_control is a no-op), so the
+        // declarative Drag area alone never moves the window. The explicit
+        // start_window_move() below is what actually drags on Linux; it is a
+        // harmless duplicate on Windows/macOS.
         .child(
             div()
+                .flex_1()
                 .h_full()
                 .window_control_area(WindowControlArea::Drag)
-                .when(has_active, |s| s.flex_none().w(px(8.0)))
-                .when(!has_active, |s| s.flex_1()),
+                .on_mouse_down(MouseButton::Left, |_, window, _| {
+                    window.start_window_move();
+                }),
         )
         // Settings gear (SHELL-01): unfocus the tab and show the honest
         // Phase-6 placeholder; tabs stay open underneath.
         .child(
             div()
+                .id("titlebar/settings")
                 .flex()
                 .items_center()
                 .justify_center()
@@ -171,6 +191,7 @@ pub fn render_title_bar(app: &mut AppState, cx: &mut Context<AppState>) -> impl 
                 // Minimize Button
                 .child(
                     div()
+                        .id("titlebar/minimize")
                         .flex()
                         .items_center()
                         .justify_center()
@@ -192,6 +213,7 @@ pub fn render_title_bar(app: &mut AppState, cx: &mut Context<AppState>) -> impl 
                 // Maximize / Restore Button
                 .child(
                     div()
+                        .id("titlebar/maximize")
                         .flex()
                         .items_center()
                         .justify_center()
@@ -219,6 +241,7 @@ pub fn render_title_bar(app: &mut AppState, cx: &mut Context<AppState>) -> impl 
                 // Close Button (Destructive hover #7F1D1D / white icon)
                 .child(
                     div()
+                        .id("titlebar/close")
                         .flex()
                         .items_center()
                         .justify_center()
@@ -309,7 +332,7 @@ fn render_window_tabs(app: &AppState, cx: &mut Context<AppState>) -> impl IntoEl
                 .cursor_pointer()
                 .text_color(idle_text)
                 .hover(|s| s.bg(hover_bg).text_color(active_text))
-                .child(svg().data(PLUS_SVG).size(px(14.0)))
+                .child(svg().data(PLUS_SVG).size(px(14.0)).text_color(idle_text))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -561,6 +584,7 @@ fn render_kill_window_footer(form: &Entity<KillWindowForm>, cx: &mut App) -> Dia
     DialogFooter::new()
         .child(
             div()
+                .id("kill-window/cancel")
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))
@@ -584,6 +608,7 @@ fn render_kill_window_footer(form: &Entity<KillWindowForm>, cx: &mut App) -> Dia
         )
         .child(
             div()
+                .id("kill-window/close")
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))

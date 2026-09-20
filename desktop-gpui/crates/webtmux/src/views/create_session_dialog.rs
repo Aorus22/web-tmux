@@ -54,8 +54,25 @@ pub fn open_create_session_dialog(
         return;
     }
 
-    let app_weak = app_entity.downgrade();
     let rest_client = app_entity.read(cx).rest_client.clone();
+    let form = open_with(rest_client, app_entity.downgrade(), window, cx);
+
+    // Keep the form entity + subscriptions alive across the dialog lifetime.
+    app_entity.update(cx, |app, cx| {
+        app.create_session_form = Some(form);
+        cx.notify();
+    });
+}
+
+/// Shared dialog construction that never touches the `AppState` entity
+/// itself, so it is safe to call while `&mut AppState` is borrowed (e.g.
+/// from inside a `cx.listener`). The caller stores the returned form.
+fn open_with(
+    rest_client: Option<RestClient>,
+    app_weak: WeakEntity<AppState>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<CreateSessionForm> {
     let window_handle = window.window_handle();
 
     let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("dev"));
@@ -123,22 +140,28 @@ pub fn open_create_session_dialog(
     // Autofocus the Name field on dialog open (fe parity).
     name_input.update(cx, |state, cx| state.focus(window, cx));
 
-    // Keep the form entity + subscriptions alive across the dialog lifetime.
-    app_entity.update(cx, |app, cx| {
-        app.create_session_form = Some(form);
-        cx.notify();
-    });
+    form
 }
 
-/// Listener-friendly trigger used by the sidebar Plus button and EmptyState CTA.
+/// Listener-friendly trigger used by the sidebar Plus button, the EmptyState
+/// CTA, and the command palette. Takes `&mut AppState` directly instead of
+/// the entity so it stays safe inside an active update lease.
 pub fn open_create_session_dialog_from_state(
     app: &mut AppState,
     window: &mut Window,
     cx: &mut Context<AppState>,
 ) {
-    let _ = app;
-    let entity = cx.entity();
-    open_create_session_dialog(&entity, window, cx);
+    // No stacked DLG1: a second click on Plus must not open a second dialog.
+    if window.has_active_dialog(cx) {
+        return;
+    }
+
+    let rest_client = app.rest_client.clone();
+    let form = open_with(rest_client, cx.entity().downgrade(), window, cx);
+
+    // Keep the form entity + subscriptions alive across the dialog lifetime.
+    app.create_session_form = Some(form);
+    cx.notify();
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +229,7 @@ fn render_dialog_body(form: &Entity<CreateSessionForm>, _window: &mut Window, cx
                     .child(Input::new(&cwd_input).flex_1())
                     .child(
                         div()
+                            .id("create-session/browse")
                             .flex_shrink_0()
                             .flex()
                             .items_center()
@@ -290,6 +314,7 @@ fn render_dialog_footer(form: &Entity<CreateSessionForm>, cx: &mut App) -> Dialo
     DialogFooter::new()
         .child(
             div()
+                .id("create-session/cancel")
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))
@@ -313,6 +338,7 @@ fn render_dialog_footer(form: &Entity<CreateSessionForm>, cx: &mut App) -> Dialo
         )
         .child(
             div()
+                .id("create-session/submit")
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))

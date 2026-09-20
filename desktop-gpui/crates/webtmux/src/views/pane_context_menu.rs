@@ -214,7 +214,46 @@ pub fn open_kill_pane_dialog(
         return;
     }
 
-    let app_weak = app_entity.downgrade();
+    let form = open_kill_pane_core(app_entity.downgrade(), target, window, cx);
+
+    // Keep the form entity alive across the dialog lifetime.
+    app_entity.update(cx, |app, cx| {
+        app.kill_pane_form = Some(form);
+        cx.notify();
+    });
+}
+
+/// Listener-safe kill entry used by the pane header button, which runs
+/// inside an `AppState` update lease where touching the entity would panic.
+/// Reads the confirm gate off `&mut AppState` directly.
+pub fn request_kill_pane_from_state(
+    app: &mut AppState,
+    target: &str,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) {
+    if app.kill_requires_confirm_pane() {
+        // No stacked dialogs.
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        let form = open_kill_pane_core(cx.entity().downgrade(), target, window, cx);
+        app.kill_pane_form = Some(form);
+        cx.notify();
+    } else {
+        app.submit_pane_kill(target, cx);
+    }
+}
+
+/// Shared dialog construction that never touches the `AppState` entity
+/// itself, so it is safe to call while `&mut AppState` is borrowed. The
+/// caller stores the returned form.
+fn open_kill_pane_core(
+    app_weak: WeakEntity<AppState>,
+    target: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<KillPaneForm> {
     let target_id = target.to_string();
     let window_handle = window.window_handle();
 
@@ -262,11 +301,7 @@ pub fn open_kill_pane_dialog(
             })
     });
 
-    // Keep the form entity alive across the dialog lifetime.
-    app_entity.update(cx, |app, cx| {
-        app.kill_pane_form = Some(form);
-        cx.notify();
-    });
+    form
 }
 
 /// Dialog body: the destructive description, the inline error line, and the
@@ -327,6 +362,7 @@ fn render_kill_pane_footer(form: &Entity<KillPaneForm>, cx: &mut App) -> DialogF
     DialogFooter::new()
         .child(
             div()
+                .id("kill-pane/cancel")
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))
@@ -350,6 +386,7 @@ fn render_kill_pane_footer(form: &Entity<KillPaneForm>, cx: &mut App) -> DialogF
         )
         .child(
             div()
+                .id("kill-pane/confirm")
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))

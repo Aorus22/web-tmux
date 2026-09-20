@@ -137,6 +137,7 @@ pub fn render_status_page<V: 'static>(
                                 .justify_end()
                                 .child(
                                     div()
+                                        .id("status/quit")
                                         .px_4()
                                         .py_2()
                                         .bg(rgb(0x1e1e1e))
@@ -155,6 +156,7 @@ pub fn render_status_page<V: 'static>(
                                 )
                                 .child(
                                     div()
+                                        .id("status/retry")
                                         .px_4()
                                         .py_2()
                                         .bg(rgb(0xd4d4d4))

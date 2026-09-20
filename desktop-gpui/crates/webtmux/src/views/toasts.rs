@@ -126,6 +126,7 @@ pub fn render_toasts(app: &mut AppState, cx: &mut Context<AppState>) -> impl Int
                 )
                 .child(
                     div()
+                        .id(format!("toast-dismiss/{session}/{kind_label}"))
                         .text_xs()
                         .text_color(muted)
                         .cursor_pointer()

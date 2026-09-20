@@ -211,6 +211,7 @@ fn render_rename_window_footer(form: &Entity<RenameWindowForm>, cx: &mut App) ->
     DialogFooter::new()
         .child(
             div()
+                .id("rename-window/cancel")
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))
@@ -234,6 +235,7 @@ fn render_rename_window_footer(form: &Entity<RenameWindowForm>, cx: &mut App) ->
         )
         .child(
             div()
+                .id("rename-window/submit")
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))

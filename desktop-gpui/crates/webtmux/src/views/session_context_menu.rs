@@ -222,6 +222,7 @@ fn render_kill_footer(form: &Entity<KillSessionForm>, cx: &mut App) -> DialogFoo
     DialogFooter::new()
         .child(
             div()
+                .id("kill-session/cancel")
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))
@@ -245,6 +246,7 @@ fn render_kill_footer(form: &Entity<KillSessionForm>, cx: &mut App) -> DialogFoo
         )
         .child(
             div()
+                .id("kill-session/confirm")
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))

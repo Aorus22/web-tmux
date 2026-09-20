@@ -11,6 +11,31 @@ use webtmux::window_state;
 use webtmux_settings::DesktopSettings;
 use webtmux_supervisor::SpawnOptions;
 
+fn fit_bounds_to_display(bounds: WindowBounds, cx: &mut App) -> WindowBounds {
+    let WindowBounds::Windowed(b) = bounds else {
+        return bounds;
+    };
+    let Some(display) = cx.primary_display() else {
+        return WindowBounds::Windowed(b);
+    };
+    let db = display.bounds();
+    // Reserve room for the OS top bar + dock.
+    let avail_w = (f32::from(db.size.width) - 64.0).max(800.0);
+    let avail_h = (f32::from(db.size.height) - 96.0).max(500.0);
+    let w: f32 = f32::from(b.size.width).min(avail_w);
+    let h: f32 = f32::from(b.size.height).min(avail_h);
+    let max_x = (f32::from(db.origin.x) + f32::from(db.size.width) - w - 16.0)
+        .max(f32::from(db.origin.x));
+    let max_y = (f32::from(db.origin.y) + f32::from(db.size.height) - h - 16.0)
+        .max(f32::from(db.origin.y));
+    let x = f32::from(b.origin.x).clamp(f32::from(db.origin.x), max_x);
+    let y = f32::from(b.origin.y).clamp(f32::from(db.origin.y), max_y);
+    WindowBounds::Windowed(Bounds {
+        origin: Point { x: px(x), y: px(y) },
+        size: size(px(w), px(h)),
+    })
+}
+
 fn main() {
     // 0. Enter Tokio runtime context so all Tokio primitives (timers, channels, reqwest)
     // work across the main GPUI thread and foreground async tasks.
@@ -22,7 +47,7 @@ fn main() {
     let spawn_opts = Some(SpawnOptions::new(backend_path));
 
     // 2. Initial window geometry restored via window_state module (default 1200x800)
-    let initial_bounds = window_state::restore(&settings).unwrap_or_else(|| {
+    let restored_bounds = window_state::restore(&settings).unwrap_or_else(|| {
         WindowBounds::Windowed(Bounds {
             origin: Point {
                 x: px(window_state::DEFAULT_ORIGIN_X),
@@ -47,9 +72,24 @@ fn main() {
         gpui_component::init(cx);
         theme::apply_theme(settings.theme, cx);
 
+        // Clamp the initial windowed bounds to the primary display so a
+        // first-run window never opens taller than the screen (which hides
+        // the sidebar footer behind the dock). Maximized restores pass
+        // through untouched.
+        let initial_bounds = fit_bounds_to_display(restored_bounds, cx);
+
         let window_options = WindowOptions {
             window_bounds: Some(initial_bounds),
             window_min_size: Some(size(px(800.0), px(500.0))),
+            // Must match StartupWMClass/Icon in dist/webtmux-gpui.desktop so
+            // docks (GNOME/KDE) group the window and show the app icon.
+            app_id: Some("webtmux-gpui".to_string()),
+            // Transparent + client decorations: the root view draws its own
+            // CSD frame (see AppState::render), giving compositor shadow on
+            // Linux instead of a fused rectangle. Without client decorations
+            // the WM owns the frame and a custom titlebar breaks move/resize.
+            window_background: WindowBackgroundAppearance::Transparent,
+            window_decorations: Some(WindowDecorations::Client),
             titlebar: Some(TitlebarOptions {
                 title: Some("Tmux GUI".into()),
                 appears_transparent: true,
@@ -60,6 +100,13 @@ fn main() {
 
         let settings_for_observe = settings_arc.clone();
         let _ = cx.open_window(window_options, move |window, cx| {
+            // Field diagnostics: startup geometry for move/resize/footer
+            // reports. Visible in the tmux-pane stderr log.
+            eprintln!(
+                "[webtmux] window opened viewport={:?} maximized={}",
+                window.viewport_size(),
+                window.is_maximized(),
+            );
             #[cfg(target_os = "windows")]
             {
                 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -89,7 +136,16 @@ fn main() {
             app_state.update(cx, |this, cx| {
                 this.start_supervisor(cx);
             });
-            app_state
+            // Wrap in a gpui-component Root so the dialog/sheet APIs
+            // (`Root::read`/`update` behind `open_dialog`, `close_dialog`,
+            // `has_active_dialog`) resolve: they require the window root to
+            // be a `Root`, otherwise they panic on the downcast. Transparent
+            // bg + no border keeps our own CSD frame intact.
+            cx.new(|cx| {
+                gpui_component::Root::new(app_state, window, cx)
+                    .bordered(false)
+                    .bg(gpui::transparent_black())
+            })
         });
     });
 }

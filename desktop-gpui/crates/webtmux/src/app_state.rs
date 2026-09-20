@@ -698,6 +698,16 @@ pub struct AppState {
     /// `server.error`, and recovery (`Reconnected`); rendered by
     /// `views/toasts.rs` as a bottom-right overlay stack.
     pub toasts: VecDeque<Toast>,
+    /// Persistent scroll state for the Settings page, driving its visual
+    /// scrollbar overlay (web-term parity).
+    pub settings_scroll: ScrollHandle,
+    /// Virtualized scroll state for the Settings theme-preset grid
+    /// (uniform_list only renders visible rows).
+    pub settings_themes_scroll: UniformListScrollHandle,
+    /// Theme-mode dropdown popover visibility (web-term parity).
+    pub show_theme_mode_picker: bool,
+    /// Terminal font family dropdown popover visibility.
+    pub show_font_picker: bool,
 }
 
 impl AppState {
@@ -747,6 +757,10 @@ impl AppState {
             palette_open: false,
             palette_state: None,
             toasts: VecDeque::new(),
+            settings_scroll: ScrollHandle::default(),
+            settings_themes_scroll: UniformListScrollHandle::new(),
+            show_theme_mode_picker: false,
+            show_font_picker: false,
         }
     }
 
@@ -952,6 +966,9 @@ impl AppState {
     /// Open a session as a workspace tab: append to `open_sessions` (if new)
     /// and activate. Pure state only — socket connect is `ensure_session_socket`.
     pub fn open_session(&mut self, name: &str) {
+        // Leaving the settings page when jumping straight into a session
+        // (web-term parity — no Back button needed).
+        self.showing_settings = false;
         if !self.sessions.contains_key(name) {
             self.sessions.insert(name.to_string(), OpenSession::default());
         }
@@ -2070,6 +2087,7 @@ impl AppState {
         if !matches!(filter, "all" | "dark" | "light") {
             return;
         }
+        self.show_theme_mode_picker = false;
         if self.settings.theme_mode_filter == filter {
             return;
         }
@@ -2120,6 +2138,7 @@ impl AppState {
         if family.is_empty() {
             return;
         }
+        self.show_font_picker = false;
         self.settings.font_family = family.to_string();
         let _ = self.settings.save();
         let fam = family.to_string();
@@ -3750,7 +3769,15 @@ impl Render for AppState {
         if self.showing_settings {
             self.ensure_tmux_binary_input(window, cx);
         }
-        let title_bar = render_title_bar(self, cx);
+        // CSD framing (web-term parity): square full-bleed when
+        // maximized/tiled, floating rounded frame with resize zones
+        // otherwise. Computed up front so leaves can own their corners.
+        let framed = !window.is_maximized()
+            && !matches!(
+                window.window_decorations(),
+                Decorations::Client { tiling } if tiling.is_tiled()
+            );
+        let title_bar = render_title_bar(self, framed, cx);
         let status = self.backend_status.clone();
 
         let is_ready = matches!(status, BackendStatus::Ready(_));
@@ -3772,11 +3799,13 @@ impl Render for AppState {
             })
             .is_some();
         let show_toasts = !self.toasts.is_empty();
-        div()
+        // NOTE: no .bg here — the root must stay transparent so CSD rounded
+        // corners (title bar / sidebar / workspace leaves) show real
+        // transparency instead of a square opaque backdrop (web-term parity).
+        let content: AnyElement = div()
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x1e1e1e))
             // Phase 6 palette: Ctrl+Shift+P dispatch lands here from any
             // focus (the terminal early-returns the keystroke so it bubbles).
             .on_action(cx.listener(
@@ -3793,29 +3822,41 @@ impl Render for AppState {
                     .flex()
                     .flex_row()
                     .flex_1()
-                    .size_full()
+                    .min_h_0()
+                    .w_full()
                     .when(is_ready, |s| {
-                        s.child(crate::views::sidebar::render_sidebar(self, cx))
+                        s.child(crate::views::sidebar::render_sidebar(self, framed, cx))
                             .child(
                                 div()
                                     .flex_1()
-                                    .size_full()
+                                    .min_w_0()
+                                    .h_full()
                                     .bg(rgb(0x1e1e1e))
+                                    .overflow_hidden()
+                                    .when(framed, |s| s.rounded_br(FRAME_ROUNDING))
                                     .child(crate::views::session_states::render_workspace_body(self, cx))
                             )
                     })
                     .when(!is_ready, |s| {
-                        s.child(render_status_page(
-                            &status,
-                            |this, _, _window, cx| {
-                                this.start_supervisor(cx);
-                            },
-                            |this, _, _window, cx| {
-                                this.stop_supervisor();
-                                cx.quit();
-                            },
-                            cx,
-                        ))
+                        s.child(
+                            div()
+                                .size_full()
+                                .overflow_hidden()
+                                .when(framed, |s| {
+                                    s.rounded_bl(FRAME_ROUNDING).rounded_br(FRAME_ROUNDING)
+                                })
+                                .child(render_status_page(
+                                    &status,
+                                    |this, _, _window, cx| {
+                                        this.start_supervisor(cx);
+                                    },
+                                    |this, _, _window, cx| {
+                                        this.stop_supervisor();
+                                        cx.quit();
+                                    },
+                                    cx,
+                                )),
+                        )
                     }),
             )
             // Phase 6 palette overlay floats above the workspace while open
@@ -3827,5 +3868,162 @@ impl Render for AppState {
             .when(palette_open, |s| {
                 s.child(crate::views::palette::render_palette(self, cx))
             })
+            // gpui-component dialog layer: dialogs opened via `open_dialog`
+            // only reach the screen if the host renders this layer — without
+            // it an opened dialog looks exactly like one that never opened.
+            .children(gpui_component::Root::render_dialog_layer(window, cx))
+            .into_any_element();
+
+        // CSD window frame (ported from web-term AppState::render): transparent
+        // shadow padding around the panel plus edge/corner resize hit zones.
+        // Without this the window is neither resizable nor shadowed on Linux —
+        // the WM only resizes server-decorated windows. Square full-bleed when
+        // maximized/tiled (`framed == false`, computed above).
+        if !framed {
+            return div().size_full().child(content);
+        }
+
+        let tiling = match window.window_decorations() {
+            Decorations::Client { tiling } => tiling,
+            _ => Tiling::default(),
+        };
+        div().relative().size_full().child(
+            div()
+                .relative()
+                .size_full()
+                .p(SHADOW_PADDING)
+                .on_mouse_down(MouseButton::Left, move |_, window, _| {
+                    let size = window.window_bounds().get_bounds().size;
+                    let pos = window.mouse_position();
+                    if let Some(edge) = resize_edge_at(pos, size, &tiling) {
+                        // Field diagnostics: log presses that land on an edge
+                        // so a broken resize can be told apart from a missed
+                        // hit band. Visible in the tmux-pane stderr log.
+                        let x: f32 = pos.x.into();
+                        let y: f32 = pos.y.into();
+                        let w: f32 = size.width.into();
+                        let h: f32 = size.height.into();
+                        eprintln!(
+                            "[webtmux] resize press at ({x:.0},{y:.0}) window {w:.0}x{h:.0} edge={edge:?}"
+                        );
+                        window.start_window_resize(edge);
+                    }
+                })
+                .child(div().size_full().shadow_xl().child(content)),
+        )
+        // Resize zones attach to the outer window box (not the padded middle)
+        // so the bands sit on the true window edges. Painted last = on top.
+        .child(resize_hit_zones(&tiling))
     }
+}
+
+/// Transparent margin around the panel so the compositor/app shadow has room.
+const SHADOW_PADDING: Pixels = px(12.0);
+/// Width of the resize hit band at window edges (must stay within padding).
+/// 8px (vs web-term's 6px) so the band is easier to grab.
+const RESIZE_HIT: f32 = 8.0;
+/// Corner rounding for CSD leaves (mirrors Zed's 10px).
+pub const FRAME_ROUNDING: Pixels = px(10.0);
+
+/// Which window edge/corner the pointer is over, if any.
+fn resize_edge_at(pos: Point<Pixels>, size: Size<Pixels>, tiling: &Tiling) -> Option<ResizeEdge> {
+    let x: f32 = pos.x.into();
+    let y: f32 = pos.y.into();
+    let w: f32 = size.width.into();
+    let h: f32 = size.height.into();
+    let left = x < RESIZE_HIT && !tiling.left;
+    let right = x > w - RESIZE_HIT && !tiling.right;
+    let top = y < RESIZE_HIT && !tiling.top;
+    let bottom = y > h - RESIZE_HIT && !tiling.bottom;
+    match (top, bottom, left, right) {
+        (true, _, true, _) => Some(ResizeEdge::TopLeft),
+        (true, _, _, true) => Some(ResizeEdge::TopRight),
+        (_, true, true, _) => Some(ResizeEdge::BottomLeft),
+        (_, true, _, true) => Some(ResizeEdge::BottomRight),
+        (true, _, _, _) => Some(ResizeEdge::Top),
+        (_, true, _, _) => Some(ResizeEdge::Bottom),
+        (_, _, true, _) => Some(ResizeEdge::Left),
+        (_, _, _, true) => Some(ResizeEdge::Right),
+        _ => None,
+    }
+}
+
+fn cursor_for_edge(edge: ResizeEdge) -> CursorStyle {
+    match edge {
+        ResizeEdge::Top | ResizeEdge::Bottom => CursorStyle::ResizeUpDown,
+        ResizeEdge::Left | ResizeEdge::Right => CursorStyle::ResizeLeftRight,
+        ResizeEdge::TopLeft | ResizeEdge::BottomRight => CursorStyle::ResizeUpLeftDownRight,
+        ResizeEdge::TopRight | ResizeEdge::BottomLeft => CursorStyle::ResizeUpRightDownLeft,
+    }
+}
+
+/// Transparent overlay strips on untiled edges/corners. Each zone owns its
+/// edge: hover shows the resize cursor and press starts the resize. The
+/// mouse handler is what creates the hitbox — cursor style alone does not.
+/// Zones stay inside the shadow padding so content (e.g. the session list
+/// scrollbar) stays clickable.
+fn resize_hit_zones(tiling: &Tiling) -> impl IntoElement {
+    let hit = px(RESIZE_HIT);
+    let mut zones: Vec<AnyElement> = Vec::new();
+    let mut edge_zone = |edge: ResizeEdge, el: Div| {
+        zones.push(
+            el.cursor(cursor_for_edge(edge))
+                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    eprintln!("[webtmux] resize zone press edge={edge:?}");
+                    window.start_window_resize(edge);
+                    // Zones live in the padding; nothing below needs the press.
+                    cx.stop_propagation();
+                })
+                .into_any_element(),
+        );
+    };
+    if !tiling.top {
+        edge_zone(
+            ResizeEdge::Top,
+            div().absolute().top_0().left_0().right_0().h(hit),
+        );
+        if !tiling.left {
+            edge_zone(
+                ResizeEdge::TopLeft,
+                div().absolute().top_0().left_0().w(hit).h(hit),
+            );
+        }
+        if !tiling.right {
+            edge_zone(
+                ResizeEdge::TopRight,
+                div().absolute().top_0().right_0().w(hit).h(hit),
+            );
+        }
+    }
+    if !tiling.bottom {
+        edge_zone(
+            ResizeEdge::Bottom,
+            div().absolute().bottom_0().left_0().right_0().h(hit),
+        );
+        if !tiling.left {
+            edge_zone(
+                ResizeEdge::BottomLeft,
+                div().absolute().bottom_0().left_0().w(hit).h(hit),
+            );
+        }
+        if !tiling.right {
+            edge_zone(
+                ResizeEdge::BottomRight,
+                div().absolute().bottom_0().right_0().w(hit).h(hit),
+            );
+        }
+    }
+    if !tiling.left {
+        edge_zone(
+            ResizeEdge::Left,
+            div().absolute().left_0().top_0().bottom_0().w(hit),
+        );
+    }
+    if !tiling.right {
+        edge_zone(
+            ResizeEdge::Right,
+            div().absolute().right_0().top_0().bottom_0().w(hit),
+        );
+    }
+    div().absolute().size_full().children(zones)
 }
