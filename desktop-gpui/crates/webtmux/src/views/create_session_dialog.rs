@@ -36,6 +36,9 @@ pub struct CreateSessionForm {
     pub cmd_input: Entity<InputState>,
     pub is_submitting: bool,
     pub error_message: Option<String>,
+    /// UI preset active when the dialog opened (modals block settings, so it
+    /// cannot change mid-dialog). Render sites theme through this.
+    pub theme_preset: String,
     rest_client: Option<RestClient>,
     app: WeakEntity<AppState>,
     window_handle: AnyWindowHandle,
@@ -55,7 +58,8 @@ pub fn open_create_session_dialog(
     }
 
     let rest_client = app_entity.read(cx).rest_client.clone();
-    let form = open_with(rest_client, app_entity.downgrade(), window, cx);
+    let preset_name = app_entity.read(cx).settings.theme_preset.clone();
+    let form = open_with(rest_client, preset_name, app_entity.downgrade(), window, cx);
 
     // Keep the form entity + subscriptions alive across the dialog lifetime.
     app_entity.update(cx, |app, cx| {
@@ -69,6 +73,7 @@ pub fn open_create_session_dialog(
 /// from inside a `cx.listener`). The caller stores the returned form.
 fn open_with(
     rest_client: Option<RestClient>,
+    theme_preset: String,
     app_weak: WeakEntity<AppState>,
     window: &mut Window,
     cx: &mut App,
@@ -85,6 +90,7 @@ fn open_with(
         cmd_input: cmd_input.clone(),
         is_submitting: false,
         error_message: None,
+        theme_preset,
         rest_client,
         app: app_weak.clone(),
         window_handle,
@@ -108,17 +114,21 @@ fn open_with(
     let on_close_app = app_weak;
     let build_form = form.clone();
     window.open_dialog(cx, move |dialog, window, cx| {
+        let preset = build_form.read(cx).theme_preset.clone();
+        let card = crate::theme::preset_card(&preset);
+        let fg = crate::theme::preset_fg(&preset);
+        let border = crate::theme::preset_border(&preset);
         dialog
             .w(px(440.0))
             .p(px(20.0))
             .rounded(px(8.0))
-            .bg(rgb(0x1e1e1e))
-            .border_color(rgb(0x3c3c3c))
+            .bg(card)
+            .border_color(border)
             .border_1()
             .title(
                 DialogTitle::new()
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(0xd4d4d4))
+                    .text_color(fg)
                     .child("Create Session"),
             )
             .child(render_dialog_body(&build_form, window, cx))
@@ -157,7 +167,8 @@ pub fn open_create_session_dialog_from_state(
     }
 
     let rest_client = app.rest_client.clone();
-    let form = open_with(rest_client, cx.entity().downgrade(), window, cx);
+    let preset_name = app.settings.theme_preset.clone();
+    let form = open_with(rest_client, preset_name, cx.entity().downgrade(), window, cx);
 
     // Keep the form entity + subscriptions alive across the dialog lifetime.
     app.create_session_form = Some(form);
@@ -171,8 +182,13 @@ pub fn open_create_session_dialog_from_state(
 /// Dialog body: description, the three form fields, the optional inline error
 /// line, and the in-flight hint while submitting.
 fn render_dialog_body(form: &Entity<CreateSessionForm>, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-    let muted_text = rgb(0x808080);
-    let foreground_text = rgb(0xd4d4d4);
+    let preset = form.read(cx).theme_preset.clone();
+    let muted_text = crate::theme::preset_muted_fg(&preset);
+    let foreground_text = crate::theme::preset_fg(&preset);
+    let border = crate::theme::preset_border(&preset);
+    let hover_bg = crate::theme::preset_muted(&preset);
+    let destructive = crate::theme::preset_destructive(&preset);
+    let destructive_fg = crate::theme::preset_destructive_fg(&preset);
 
     let (is_submitting, error) = {
         let f = form.read(cx);
@@ -238,9 +254,9 @@ fn render_dialog_body(form: &Entity<CreateSessionForm>, _window: &mut Window, cx
                             .h(px(32.0))
                             .rounded(px(6.0))
                             .border_1()
-                            .border_color(rgb(0x3c3c3c))
+                            .border_color(border)
                             .cursor_pointer()
-                            .hover(|s| s.bg(rgb(0x262626)))
+                            .hover(|s| s.bg(hover_bg))
                             .child(
                                 svg()
                                     .data(FOLDER_OPEN_SVG)
@@ -279,11 +295,11 @@ fn render_dialog_body(form: &Entity<CreateSessionForm>, _window: &mut Window, cx
         body = body.child(
             div()
                 .rounded(px(4.0))
-                .bg(rgb(0x7F1D1D))
+                .bg(destructive)
                 .px(px(8.0))
                 .py(px(6.0))
                 .text_xs()
-                .text_color(rgb(0xffffff))
+                .text_color(destructive_fg)
                 .child(error.clone()),
         );
     }
@@ -303,9 +319,12 @@ fn render_dialog_body(form: &Entity<CreateSessionForm>, _window: &mut Window, cx
 /// Footer: Cancel (outline) and Create (primary `#d4d4d4` fill). Create is
 /// disabled while the name is empty or the request is in flight.
 fn render_dialog_footer(form: &Entity<CreateSessionForm>, cx: &mut App) -> DialogFooter {
-    let foreground_text = rgb(0xd4d4d4);
-    let border_color = rgb(0x3c3c3c);
-    let hover_bg = rgb(0x262626);
+    let preset = form.read(cx).theme_preset.clone();
+    let foreground_text = crate::theme::preset_fg(&preset);
+    let border_color = crate::theme::preset_border(&preset);
+    let hover_bg = crate::theme::preset_muted(&preset);
+    let primary = crate::theme::preset_primary(&preset);
+    let primary_fg = crate::theme::preset_primary_fg(&preset);
 
     let state = form.read(cx);
     let name_empty = state.name_input.read(cx).value().trim().is_empty();
@@ -342,10 +361,10 @@ fn render_dialog_footer(form: &Entity<CreateSessionForm>, cx: &mut App) -> Dialo
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))
-                .bg(rgb(0xd4d4d4))
+                .bg(primary)
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(rgb(0x1e1e1e))
+                .text_color(primary_fg)
                 .when(is_submitting || name_empty, |s| {
                     s.opacity(0.4).cursor_default()
                 })

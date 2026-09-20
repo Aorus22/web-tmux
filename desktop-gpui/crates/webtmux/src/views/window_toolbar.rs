@@ -63,9 +63,14 @@ pub const NEXT_LAYOUT_LABEL: &str = "Next Layout";
 /// Render the h-8 preset bar for the active window. Buttons disable (muted,
 /// no handler) when no active window is committed yet.
 pub fn render_window_toolbar(app: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
-    let border_color = rgb(0x3c3c3c);
-    let muted_text = rgb(0x808080);
-    let idle_icon = rgb(0x9d9d9d);
+    // Phase 6: chrome reads the active preset per render (no cached colors).
+    let preset_name = app.settings.theme_preset.clone();
+    let bar_bg = crate::theme::preset_bg(&preset_name);
+    let border_color = crate::theme::preset_border(&preset_name);
+    let muted_text = crate::theme::preset_muted_fg(&preset_name);
+    let idle_icon = crate::theme::preset_muted_fg(&preset_name);
+    let hover_fg = crate::theme::preset_fg(&preset_name);
+    let hover_bg = crate::theme::preset_muted(&preset_name);
 
     let active_window = app.active_window_id();
     let last_error = app
@@ -83,7 +88,7 @@ pub fn render_window_toolbar(app: &AppState, cx: &mut Context<AppState>) -> impl
         .h(px(32.0))
         .gap(px(2.0))
         .px(px(8.0))
-        .bg(rgb(0x1e1e1e))
+        .bg(bar_bg)
         .border_b_1()
         .border_color(border_color);
 
@@ -102,7 +107,8 @@ pub fn render_window_toolbar(app: &AppState, cx: &mut Context<AppState>) -> impl
                 .rounded(px(4.0))
                 .text_color(if enabled { idle_icon } else { muted_text })
                 .when(enabled, |s| {
-                    s.cursor_pointer().hover(|h| h.bg(rgb(0x2d2d2d)))
+                    s.cursor_pointer()
+                        .hover(|h| h.bg(hover_bg).text_color(hover_fg))
                 })
                 .when(!enabled, |s| s.opacity(0.4))
                 .child(
@@ -116,6 +122,7 @@ pub fn render_window_toolbar(app: &AppState, cx: &mut Context<AppState>) -> impl
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
                             if let Some(win) = target.clone() {
+                                eprintln!("[webtmux] layout click win={win} layout={layout}");
                                 this.submit_window_layout(&win, &layout, cx);
                             }
                         }),
@@ -147,7 +154,8 @@ pub fn render_window_toolbar(app: &AppState, cx: &mut Context<AppState>) -> impl
                 .rounded(px(4.0))
                 .text_color(if enabled { idle_icon } else { muted_text })
                 .when(enabled, |s| {
-                    s.cursor_pointer().hover(|h| h.bg(rgb(0x2d2d2d)))
+                    s.cursor_pointer()
+                        .hover(|h| h.bg(hover_bg).text_color(hover_fg))
                 })
                 .when(!enabled, |s| s.opacity(0.4))
                 .child(
@@ -161,6 +169,7 @@ pub fn render_window_toolbar(app: &AppState, cx: &mut Context<AppState>) -> impl
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
                             if let Some(win) = target.clone() {
+                                eprintln!("[webtmux] layout click win={win} layout={}", NEXT_LAYOUT_ID);
                                 this.submit_window_layout(&win, NEXT_LAYOUT_ID, cx);
                             }
                         }),
@@ -177,7 +186,7 @@ pub fn render_window_toolbar(app: &AppState, cx: &mut Context<AppState>) -> impl
                 .flex_1()
                 .truncate()
                 .text_xs()
-                .text_color(rgb(0xf87171))
+                .text_color(crate::theme::preset_danger_text(&preset_name))
                 .child(error),
         );
     }

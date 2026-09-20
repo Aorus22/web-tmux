@@ -57,6 +57,14 @@ pub fn with_pane_context_menu(
         let break_target = pane_id.clone();
         let kill_weak = app_weak.clone();
         let kill_target = pane_id.clone();
+        // Danger text readable on the menu surface in both modes.
+        let kill_text = kill_weak
+            .upgrade()
+            .map(|a| {
+                let preset = a.read(cx).settings.theme_preset.clone();
+                crate::theme::preset_danger_text(&preset)
+            })
+            .unwrap_or(rgb(0xf87171));
 
         let menu = menu
             .item(PopupMenuItem::new("Split Right").on_click(
@@ -151,11 +159,11 @@ pub fn with_pane_context_menu(
         ))
         .separator()
         .item(
-            PopupMenuItem::element(|_, _| {
+            PopupMenuItem::element(move |_, _| {
                 div()
                     .flex_1()
                     .text_sm()
-                    .text_color(rgb(0xf87171))
+                    .text_color(kill_text)
                     .child("Kill")
             })
             .on_click(move |_, window, cx| {
@@ -198,6 +206,8 @@ pub struct KillPaneForm {
     pub target: String,
     pub is_submitting: bool,
     pub error_message: Option<String>,
+    /// UI preset active when the dialog opened (modals block settings).
+    pub theme_preset: String,
     pub app: WeakEntity<AppState>,
     pub window_handle: AnyWindowHandle,
 }
@@ -214,7 +224,13 @@ pub fn open_kill_pane_dialog(
         return;
     }
 
-    let form = open_kill_pane_core(app_entity.downgrade(), target, window, cx);
+    let form = open_kill_pane_core(
+        app_entity.downgrade(),
+        &app_entity.read(cx).settings.theme_preset.clone(),
+        target,
+        window,
+        cx,
+    );
 
     // Keep the form entity alive across the dialog lifetime.
     app_entity.update(cx, |app, cx| {
@@ -237,7 +253,8 @@ pub fn request_kill_pane_from_state(
         if window.has_active_dialog(cx) {
             return;
         }
-        let form = open_kill_pane_core(cx.entity().downgrade(), target, window, cx);
+        let preset_name = app.settings.theme_preset.clone();
+        let form = open_kill_pane_core(cx.entity().downgrade(), &preset_name, target, window, cx);
         app.kill_pane_form = Some(form);
         cx.notify();
     } else {
@@ -250,6 +267,7 @@ pub fn request_kill_pane_from_state(
 /// caller stores the returned form.
 fn open_kill_pane_core(
     app_weak: WeakEntity<AppState>,
+    theme_preset: &str,
     target: &str,
     window: &mut Window,
     cx: &mut App,
@@ -261,6 +279,7 @@ fn open_kill_pane_core(
         target: target_id,
         is_submitting: false,
         error_message: None,
+        theme_preset: theme_preset.to_string(),
         app: app_weak.clone(),
         window_handle,
     });
@@ -270,17 +289,21 @@ fn open_kill_pane_core(
     let on_close_app = app_weak;
     let build_form = form.clone();
     window.open_dialog(cx, move |dialog, _window, cx| {
+        let preset = build_form.read(cx).theme_preset.clone();
+        let card = crate::theme::preset_card(&preset);
+        let fg = crate::theme::preset_fg(&preset);
+        let border = crate::theme::preset_border(&preset);
         dialog
             .w(px(440.0))
             .p(px(20.0))
             .rounded(px(8.0))
-            .bg(rgb(0x1e1e1e))
-            .border_color(rgb(0x3c3c3c))
+            .bg(card)
+            .border_color(border)
             .border_1()
             .title(
                 DialogTitle::new()
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(0xd4d4d4))
+                    .text_color(fg)
                     // FE verbatim (`PaneContextMenu.tsx:211` /
                     // `PaneHeader.tsx:172`): no quotes around the pane id.
                     .child(format!("Kill pane {}?", build_form.read(cx).target)),
@@ -307,7 +330,10 @@ fn open_kill_pane_core(
 /// Dialog body: the destructive description, the inline error line, and the
 /// in-flight hint while the correlated kill is outstanding.
 fn render_kill_pane_body(form: &Entity<KillPaneForm>, cx: &mut App) -> impl IntoElement {
-    let muted_text = rgb(0x808080);
+    let preset = form.read(cx).theme_preset.clone();
+    let muted_text = crate::theme::preset_muted_fg(&preset);
+    let destructive = crate::theme::preset_destructive(&preset);
+    let destructive_fg = crate::theme::preset_destructive_fg(&preset);
 
     let (is_submitting, error) = {
         let f = form.read(cx);
@@ -328,11 +354,11 @@ fn render_kill_pane_body(form: &Entity<KillPaneForm>, cx: &mut App) -> impl Into
         body = body.child(
             div()
                 .rounded(px(4.0))
-                .bg(rgb(0x7F1D1D))
+                .bg(destructive)
                 .px(px(8.0))
                 .py(px(6.0))
                 .text_xs()
-                .text_color(rgb(0xffffff))
+                .text_color(destructive_fg)
                 .child(error.clone()),
         );
     }
@@ -353,9 +379,12 @@ fn render_kill_pane_body(form: &Entity<KillPaneForm>, cx: &mut App) -> impl Into
 /// matches the S1 close-button hover). Kill is disabled while a request is in
 /// flight.
 fn render_kill_pane_footer(form: &Entity<KillPaneForm>, cx: &mut App) -> DialogFooter {
-    let foreground_text = rgb(0xd4d4d4);
-    let border_color = rgb(0x3c3c3c);
-    let hover_bg = rgb(0x262626);
+    let preset = form.read(cx).theme_preset.clone();
+    let foreground_text = crate::theme::preset_fg(&preset);
+    let border_color = crate::theme::preset_border(&preset);
+    let hover_bg = crate::theme::preset_muted(&preset);
+    let destructive = crate::theme::preset_destructive(&preset);
+    let destructive_fg = crate::theme::preset_destructive_fg(&preset);
 
     let is_submitting = form.read(cx).is_submitting;
 
@@ -390,10 +419,10 @@ fn render_kill_pane_footer(form: &Entity<KillPaneForm>, cx: &mut App) -> DialogF
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))
-                .bg(rgb(0x7F1D1D))
+                .bg(destructive)
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(rgb(0xffffff))
+                .text_color(destructive_fg)
                 .when(is_submitting, |s| s.opacity(0.4).cursor_default())
                 .when(!is_submitting, |s| {
                     s.cursor_pointer()

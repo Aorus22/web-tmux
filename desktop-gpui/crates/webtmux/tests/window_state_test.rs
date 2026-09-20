@@ -1,7 +1,7 @@
 //! STATE.md-gap clamp-guard coverage (D9).
 //!
 //! Covers only the pure `restore` paths that need no `Window`:
-//! widths clamp 800..3840, heights 500..2160, -10000 sentinel passes through
+//! widths clamp 800..3840, heights 540..2160, -10000 sentinel passes through
 //! to the default origin, maximized bounds preserved.
 
 use webtmux::window_state::{DEFAULT_HEIGHT, DEFAULT_WIDTH};
@@ -46,7 +46,7 @@ fn test_window_state_clamps() {
     };
     assert_eq!(size.width, gpui::px(3840.0));
 
-    // Height clamps 500..2160.
+    // Height clamps 540..2160.
     let s = settings_with(WindowState {
         x: Some(100),
         y: Some(100),
@@ -60,7 +60,7 @@ fn test_window_state_clamps() {
         | gpui::WindowBounds::Maximized(b)
         | gpui::WindowBounds::Fullscreen(b) => b.size,
     };
-    assert_eq!(size.height, gpui::px(500.0));
+    assert_eq!(size.height, gpui::px(540.0));
     let s = settings_with(WindowState {
         x: Some(100),
         y: Some(100),

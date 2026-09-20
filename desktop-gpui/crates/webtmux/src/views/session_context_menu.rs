@@ -35,11 +35,19 @@ pub fn with_session_context_menu(
     session_name: String,
     app_weak: WeakEntity<AppState>,
 ) -> impl IntoElement {
-    row.context_menu(move |menu, _window, _cx| {
+    row.context_menu(move |menu, _window, cx| {
             let rename_weak = app_weak.clone();
             let rename_target = session_name.clone();
             let kill_weak = app_weak.clone();
             let kill_target = session_name.clone();
+            // Danger text readable on the menu surface in both modes.
+            let kill_text = kill_weak
+                .upgrade()
+                .map(|a| {
+                    let preset = a.read(cx).settings.theme_preset.clone();
+                    crate::theme::preset_danger_text(&preset)
+                })
+                .unwrap_or(rgb(0xf87171));
             menu.item(PopupMenuItem::new("Rename").on_click(
                 move |_, window, cx| {
                     if let Some(app) = rename_weak.upgrade() {
@@ -49,11 +57,11 @@ pub fn with_session_context_menu(
             ))
             .separator()
             .item(
-                PopupMenuItem::element(|_, _| {
+                PopupMenuItem::element(move |_, _| {
                     div()
                         .flex_1()
                         .text_sm()
-                        .text_color(rgb(0xf87171))
+                        .text_color(kill_text)
                         .child("Kill Session")
                 })
                 .on_click(move |_, window, cx| {
@@ -95,6 +103,8 @@ pub struct KillSessionForm {
     pub target: String,
     pub is_submitting: bool,
     pub error_message: Option<String>,
+    /// UI preset active when the dialog opened (modals block settings).
+    pub theme_preset: String,
     pub app: WeakEntity<AppState>,
     pub window_handle: AnyWindowHandle,
 }
@@ -114,11 +124,13 @@ pub fn open_kill_confirm_dialog(
     let app_weak = app_entity.downgrade();
     let target_name = target.to_string();
     let window_handle = window.window_handle();
+    let preset_name = app_entity.read(cx).settings.theme_preset.clone();
 
     let form = cx.new(|_cx| KillSessionForm {
         target: target_name,
         is_submitting: false,
         error_message: None,
+        theme_preset: preset_name,
         app: app_weak.clone(),
         window_handle,
     });
@@ -128,17 +140,21 @@ pub fn open_kill_confirm_dialog(
     let on_close_app = app_weak;
     let build_form = form.clone();
     window.open_dialog(cx, move |dialog, _window, cx| {
+        let preset = build_form.read(cx).theme_preset.clone();
+        let card = crate::theme::preset_card(&preset);
+        let fg = crate::theme::preset_fg(&preset);
+        let border = crate::theme::preset_border(&preset);
         dialog
             .w(px(440.0))
             .p(px(20.0))
             .rounded(px(8.0))
-            .bg(rgb(0x1e1e1e))
-            .border_color(rgb(0x3c3c3c))
+            .bg(card)
+            .border_color(border)
             .border_1()
             .title(
                 DialogTitle::new()
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(0xd4d4d4))
+                    .text_color(fg)
                     .child(format!("Kill session \"{}\"?", build_form.read(cx).target)),
             )
             .child(render_kill_body(&build_form, cx))
@@ -167,7 +183,10 @@ pub fn open_kill_confirm_dialog(
 /// Dialog body: the destructive description, the inline error line, and the
 /// in-flight hint while the correlated kill is outstanding.
 fn render_kill_body(form: &Entity<KillSessionForm>, cx: &mut App) -> impl IntoElement {
-    let muted_text = rgb(0x808080);
+    let preset = form.read(cx).theme_preset.clone();
+    let muted_text = crate::theme::preset_muted_fg(&preset);
+    let destructive = crate::theme::preset_destructive(&preset);
+    let destructive_fg = crate::theme::preset_destructive_fg(&preset);
 
     let (is_submitting, error) = {
         let f = form.read(cx);
@@ -188,11 +207,11 @@ fn render_kill_body(form: &Entity<KillSessionForm>, cx: &mut App) -> impl IntoEl
         body = body.child(
             div()
                 .rounded(px(4.0))
-                .bg(rgb(0x7F1D1D))
+                .bg(destructive)
                 .px(px(8.0))
                 .py(px(6.0))
                 .text_xs()
-                .text_color(rgb(0xffffff))
+                .text_color(destructive_fg)
                 .child(error.clone()),
         );
     }
@@ -213,9 +232,12 @@ fn render_kill_body(form: &Entity<KillSessionForm>, cx: &mut App) -> impl IntoEl
 /// matches the S1 close-button hover). Kill is disabled while a request is in
 /// flight.
 fn render_kill_footer(form: &Entity<KillSessionForm>, cx: &mut App) -> DialogFooter {
-    let foreground_text = rgb(0xd4d4d4);
-    let border_color = rgb(0x3c3c3c);
-    let hover_bg = rgb(0x262626);
+    let preset = form.read(cx).theme_preset.clone();
+    let foreground_text = crate::theme::preset_fg(&preset);
+    let border_color = crate::theme::preset_border(&preset);
+    let hover_bg = crate::theme::preset_muted(&preset);
+    let destructive = crate::theme::preset_destructive(&preset);
+    let destructive_fg = crate::theme::preset_destructive_fg(&preset);
 
     let is_submitting = form.read(cx).is_submitting;
 
@@ -250,10 +272,10 @@ fn render_kill_footer(form: &Entity<KillSessionForm>, cx: &mut App) -> DialogFoo
                 .px(px(14.0))
                 .py(px(6.0))
                 .rounded(px(6.0))
-                .bg(rgb(0x7F1D1D))
+                .bg(destructive)
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(rgb(0xffffff))
+                .text_color(destructive_fg)
                 .when(is_submitting, |s| s.opacity(0.4).cursor_default())
                 .when(!is_submitting, |s| {
                     s.cursor_pointer()

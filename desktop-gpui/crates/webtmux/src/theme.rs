@@ -75,3 +75,13 @@ pub fn preset_ring(name: &str) -> Rgba { rgb(ui_preset_by_name(name).ring) }
 pub fn preset_is_dark(name: &str) -> bool {
     ui_preset_by_name(name).is_dark
 }
+
+/// Danger/red text readable on the card surface in both modes: bright red
+/// carries on dark surfaces, the deep destructive tone on light ones.
+pub fn preset_danger_text(name: &str) -> Rgba {
+    if ui_preset_by_name(name).is_dark {
+        rgb(0xf87171)
+    } else {
+        rgb(ui_preset_by_name(name).destructive)
+    }
+}
