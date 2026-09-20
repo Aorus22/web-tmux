@@ -21,7 +21,7 @@ fn fit_bounds_to_display(bounds: WindowBounds, cx: &mut App) -> WindowBounds {
     let db = display.bounds();
     // Reserve room for the OS top bar + dock.
     let avail_w = (f32::from(db.size.width) - 64.0).max(800.0);
-    let avail_h = (f32::from(db.size.height) - 96.0).max(500.0);
+    let avail_h = (f32::from(db.size.height) - 96.0).max(540.0);
     let w: f32 = f32::from(b.size.width).min(avail_w);
     let h: f32 = f32::from(b.size.height).min(avail_h);
     let max_x = (f32::from(db.origin.x) + f32::from(db.size.width) - w - 16.0)
@@ -80,7 +80,7 @@ fn main() {
 
         let window_options = WindowOptions {
             window_bounds: Some(initial_bounds),
-            window_min_size: Some(size(px(800.0), px(500.0))),
+            window_min_size: Some(size(px(800.0), px(540.0))),
             // Must match StartupWMClass/Icon in dist/webtmux-gpui.desktop so
             // docks (GNOME/KDE) group the window and show the app icon.
             app_id: Some("webtmux-gpui".to_string()),
@@ -103,9 +103,15 @@ fn main() {
             // Field diagnostics: startup geometry for move/resize/footer
             // reports. Visible in the tmux-pane stderr log.
             eprintln!(
-                "[webtmux] window opened viewport={:?} maximized={}",
+                "[webtmux] window opened viewport={:?} maximized={} decorations={:?}",
                 window.viewport_size(),
                 window.is_maximized(),
+                window.window_decorations(),
+            );
+            eprintln!(
+                "[webtmux] displays={} primary={:?}",
+                cx.displays().len(),
+                cx.primary_display().map(|d| d.bounds()),
             );
             #[cfg(target_os = "windows")]
             {

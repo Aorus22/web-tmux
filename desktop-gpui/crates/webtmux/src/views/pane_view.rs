@@ -47,12 +47,17 @@ pub fn render_pane_view(
     } else {
         rgb(0x3c3c3c)
     };
+    // Phase 6: pane chrome follows the active UI preset (not hardcoded
+    // dark) so panes match light themes too.
+    let preset_name = app.settings.theme_preset.clone();
+    let pane_bg = crate::theme::preset_bg(&preset_name);
     let header_bg = if is_active {
-        rgb(0x2d2d2d)
+        crate::theme::preset_muted(&preset_name)
     } else {
-        rgb(0x242424)
+        crate::theme::preset_card(&preset_name)
     };
-    let muted_text = rgb(0x808080);
+    let muted_text = crate::theme::preset_muted_fg(&preset_name);
+    let hover_bg = crate::theme::preset_muted(&preset_name);
 
     // Terminal host: the store-owned view re-hosted unchanged (Phase 4
     // ownership — views never create terminals).
@@ -98,7 +103,7 @@ pub fn render_pane_view(
         .rounded(px(4.0))
         .border_1()
         .border_color(border_color)
-        .bg(rgb(0x1e1e1e))
+        .bg(pane_bg)
         // Inactive click selects (FE `PaneView.tsx:57-59`); header-button
         // clicks bubbling here only add a harmless select alongside the action.
         .on_mouse_down(
@@ -160,6 +165,8 @@ pub fn render_pane_view(
                             format!("pane-split-right/{}", pane.id),
                             SPLIT_SQUARE_HORIZONTAL_SVG,
                             0xd4d4d4,
+                            hover_bg,
+                            muted_text,
                             pane_id.clone(),
                             |this, pid, _window, cx| {
                                 this.submit_pane_split(pid, "horizontal", cx);
@@ -170,6 +177,8 @@ pub fn render_pane_view(
                             format!("pane-split-down/{}", pane.id),
                             SPLIT_SQUARE_VERTICAL_SVG,
                             0xd4d4d4,
+                            hover_bg,
+                            muted_text,
                             pane_id.clone(),
                             |this, pid, _window, cx| {
                                 this.submit_pane_split(pid, "vertical", cx);
@@ -181,6 +190,8 @@ pub fn render_pane_view(
                                 format!("pane-zoom/{}", pane.id),
                                 MAXIMIZE2_SVG,
                                 0xd4d4d4,
+                                hover_bg,
+                                muted_text,
                                 pane_id.clone(),
                                 |this, pid, _window, cx| {
                                     this.submit_pane_zoom(pid, cx);
@@ -192,6 +203,8 @@ pub fn render_pane_view(
                             format!("pane-kill/{}", pane.id),
                             X_SVG,
                             0xf87171,
+                            hover_bg,
+                            muted_text,
                             pane_id.clone(),
                             |_this, pid, window, cx| {
                                 // Kill-confirm gate (PANE-05 per D7): dialog
@@ -220,6 +233,8 @@ fn header_action_button(
     id: String,
     icon: &'static [u8],
     hover_fg: u32,
+    hover_bg: Rgba,
+    icon_color: Rgba,
     pid: String,
     on_click: fn(&mut AppState, &str, &mut Window, &mut Context<AppState>),
     cx: &mut Context<AppState>,
@@ -234,8 +249,8 @@ fn header_action_button(
         .rounded(px(4.0))
         .cursor_pointer()
         .text_color(rgb(0x808080))
-        .hover(move |s| s.bg(rgb(0x2d2d2d)).text_color(rgb(hover_fg)))
-        .child(svg().data(icon).size(px(12.0)).text_color(rgb(0x808080)))
+        .hover(move |s| s.bg(hover_bg).text_color(rgb(hover_fg)))
+        .child(svg().data(icon).size(px(12.0)).text_color(icon_color))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, window, cx| {
@@ -254,10 +269,10 @@ fn render_tui_switch(
     tui_on: bool,
     cx: &mut Context<AppState>,
 ) -> impl IntoElement {
-    let muted_text = rgb(0x808080);
-    let foreground_text = rgb(0xd4d4d4);
+    let preset_name = app.settings.theme_preset.clone();
+    let muted_text = crate::theme::preset_muted_fg(&preset_name);
+    let foreground_text = crate::theme::preset_fg(&preset_name);
     let pid = pane_id.to_string();
-    let _ = app;
     div()
         .id(format!("pane-tui/{}", pane_id))
         .flex()

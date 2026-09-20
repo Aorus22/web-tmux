@@ -6,9 +6,13 @@ use parking_lot::Mutex;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use webtmux_settings::{DesktopSettings, WindowState};
 
-/// Default window dimensions for web-tmux (matches Electron desktop/main.js:184-188: 1200x800).
+/// Default window dimensions for web-tmux: wide 1200 like Electron, but a
+/// 660 height that fits 864px-logical screens (125% scale) with room for the
+/// OS top bar + dock — the 800 height overflowed and hid the sidebar footer.
+/// (gpui reports zero displays on this setup, so no runtime clamp is possible
+/// and the default itself must fit.)
 pub const DEFAULT_WIDTH: u32 = 1200;
-pub const DEFAULT_HEIGHT: u32 = 800;
+pub const DEFAULT_HEIGHT: u32 = 660;
 
 /// Default centered window origin for standard displays.
 pub const DEFAULT_ORIGIN_X: f32 = 180.0;
@@ -135,7 +139,7 @@ pub fn extract_window_state(window: &Window, prev_state: Option<&WindowState>) -
         x: Some(x),
         y: Some(y),
         width: Some(current_width.clamp(800, 3840)),
-        height: Some(current_height.clamp(500, 2160)),
+        height: Some(current_height.clamp(540, 2160)),
         maximized: false,
     })
 }
@@ -145,7 +149,7 @@ pub fn restore(settings: &DesktopSettings) -> Option<WindowBounds> {
     let state = settings.window_state.as_ref()?;
 
     let (w, h) = match (state.width, state.height) {
-        (Some(w), Some(h)) if w > 0 && h > 0 => (w.clamp(800, 3840), h.clamp(500, 2160)),
+        (Some(w), Some(h)) if w > 0 && h > 0 => (w.clamp(800, 3840), h.clamp(540, 2160)),
         _ => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
     };
 

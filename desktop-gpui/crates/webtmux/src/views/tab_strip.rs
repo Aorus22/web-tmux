@@ -102,17 +102,36 @@ pub fn render_title_bar(
                         })),
                 )
                 .child(
-                    svg()
-                        .data(TERMINAL_SQUARE_SVG)
-                        .size(px(16.0))
-                        .text_color(muted_text),
-                )
-                .child(
                     div()
-                        .text_sm()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(text_color)
-                        .child("Tmux GUI"),
+                        .id("titlebar/home")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .rounded_md()
+                        .px_1()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(hover_bg))
+                        .child(
+                            svg()
+                                .data(TERMINAL_SQUARE_SVG)
+                                .size(px(16.0))
+                                .text_color(muted_text),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(text_color)
+                                .child("Tmux GUI"),
+                        )
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _window, cx| {
+                            // Brand goes home: drop back to the landing
+                            // workspace (tabs stay open underneath).
+                            this.active_session = None;
+                            this.showing_settings = false;
+                            cx.notify();
+                        })),
                 ),
         )
         // WindowTabs middle (SHELL-01): divider + flex-1 chips, ONLY when a

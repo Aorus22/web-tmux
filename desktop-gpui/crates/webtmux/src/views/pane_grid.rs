@@ -63,13 +63,15 @@ fn active_window_geometry(app: &AppState) -> Option<(Vec<TmuxPane>, usize, usize
 /// Render the workspace grid for the active session's active window:
 /// the window toolbar (layout presets) above the geometry grid.
 pub fn render_pane_grid(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let preset_name = app.settings.theme_preset.clone();
+    let grid_bg = crate::theme::preset_bg(&preset_name);
     let toolbar = render_window_toolbar(app, cx).into_any_element();
     let body = render_grid_body(app, cx).into_any_element();
     div()
         .flex()
         .flex_col()
         .size_full()
-        .bg(rgb(0x1e1e1e))
+        .bg(grid_bg)
         .child(toolbar)
         .child(body)
         .into_any_element()
@@ -80,7 +82,9 @@ pub fn render_pane_grid(app: &mut AppState, cx: &mut Context<AppState>) -> impl 
 /// h-8 toolbar never enters pane geometry (FE parity — the toolbar lives
 /// outside the workspace div).
 fn render_grid_body(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
-    let muted_text = rgb(0x808080);
+    let preset_name = app.settings.theme_preset.clone();
+    let grid_bg = crate::theme::preset_bg(&preset_name);
+    let muted_text = crate::theme::preset_muted_fg(&preset_name);
 
     let Some((panes, ww, wh, _session)) = active_window_geometry(app) else {
         return div()
@@ -150,6 +154,23 @@ fn render_grid_body(app: &mut AppState, cx: &mut Context<AppState>) -> impl Into
             let weak = app_weak.clone();
             let pid = pane_id.clone();
             let view = cx.new(|cx| TerminalView::new(pid, term_arc, weak, cx));
+            // New views must match the live prefs immediately (theme palette
+            // + font), not the hardcoded `TerminalView::new` defaults —
+            // otherwise spawned panes stay dark until the next theme pick.
+            {
+                let palette = app.current_terminal_palette();
+                let family = app.settings.font_family.clone();
+                let size = px(app.settings.font_size);
+                let lh = app.settings.line_height;
+                view.update(cx, |v, cx| {
+                    v.set_palette(palette, cx);
+                    v.set_font(family, size, cx);
+                    let r = v.renderer_mut();
+                    r.line_height_multiplier = lh;
+                    r.cell_height = r.font_size * lh;
+                    cx.notify();
+                });
+            }
             app.terminal_views.insert(pane_id.clone(), view);
             // FE initial-capture parity: the blank grid becomes replayed
             // history as soon as the capture reply lands.
@@ -166,7 +187,7 @@ fn render_grid_body(app: &mut AppState, cx: &mut Context<AppState>) -> impl Into
         .flex_1()
         .w_full()
         .min_h(px(0.0))
-        .bg(rgb(0x1e1e1e))
+        .bg(grid_bg)
         .child(render_workspace_probe(cx))
         // Grid-level drag streaming (D3): the divider `mouse_down` arms
         // `AppState::pane_drag`; moves anywhere inside the workspace keep

@@ -59,8 +59,9 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
-        // D2: FE settings defaults — 14px / 1.35 line-height / fixed dark
-        // palette until Phase 6 ports real prefs + the 78 presets.
+        // Base renderer settings; the creation site (pane grid) immediately
+        // overrides palette + font from the live prefs, so spawned panes
+        // match the active theme instead of staying dark.
         let renderer = TerminalRenderer::new(
             "JetBrains Mono".to_string(),
             px(14.0),

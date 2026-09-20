@@ -3919,9 +3919,9 @@ impl Render for AppState {
 
 /// Transparent margin around the panel so the compositor/app shadow has room.
 const SHADOW_PADDING: Pixels = px(12.0);
-/// Width of the resize hit band at window edges (must stay within padding).
-/// 8px (vs web-term's 6px) so the band is easier to grab.
-const RESIZE_HIT: f32 = 8.0;
+/// Width of the resize hit band at window edges: the full shadow padding,
+// so there is no dead band between the grab zone and the panel.
+const RESIZE_HIT: f32 = 12.0;
 /// Corner rounding for CSD leaves (mirrors Zed's 10px).
 pub const FRAME_ROUNDING: Pixels = px(10.0);
 
