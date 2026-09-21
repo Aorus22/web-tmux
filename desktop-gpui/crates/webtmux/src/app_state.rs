@@ -2211,6 +2211,66 @@ impl AppState {
         cx.notify();
     }
 
+    // -- Liquid Glass window chrome -----------------------------------------
+
+    /// Liquid Glass style for one surface: translucent `base` fill, polarity
+    /// hairline border, and `base`'s elevation plus the inset rim.
+    ///
+    /// `base` is the preset colour the surface paints today (`preset_bg` for
+    /// the sidebar and title bar, `preset_card` for popovers and menus) and
+    /// `tier` says what is behind it — see [`crate::glass::GlassTier`]. With the
+    /// material off this returns the preset's own opaque values.
+    pub fn glass_style(
+        &self,
+        base: Rgba,
+        tier: crate::glass::GlassTier,
+        elevation: crate::glass::Elevation,
+    ) -> crate::glass::GlassStyle {
+        let name = self.settings.theme_preset.as_str();
+        crate::glass::style_for(
+            crate::glass::GlassPrefs::from_settings(&self.settings),
+            base,
+            crate::theme::preset_border(name),
+            crate::theme::preset_is_dark(name),
+            tier,
+            elevation,
+        )
+    }
+
+    pub fn glass_enabled(&self) -> bool {
+        self.settings.glass_enabled
+    }
+
+    /// The persisted glass fill alpha, clamped to the readable window.
+    pub fn glass_opacity(&self) -> f32 {
+        webtmux_settings::clamp_glass_opacity(self.settings.glass_opacity)
+    }
+
+    /// Toggle the material and re-apply the window backdrop, so a compositor
+    /// that supports real backdrop blur (KWin/Hyprland) starts or stops
+    /// blurring with it.
+    pub fn set_glass_enabled(
+        &mut self,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.glass_enabled = enabled;
+        let _ = self.settings.save();
+        crate::glass::GlassPrefs::register(cx, crate::glass::GlassPrefs::from_settings(&self.settings));
+        crate::glass::apply_backdrop_material(window, enabled);
+        cx.notify();
+    }
+
+    /// Set the glass fill alpha (clamped by the settings crate); see
+    /// [`crate::glass::INTENSITY_STEPS`] for the presets the UI offers.
+    pub fn set_glass_opacity(&mut self, opacity: f32, cx: &mut Context<Self>) {
+        self.settings.glass_opacity = webtmux_settings::clamp_glass_opacity(opacity);
+        let _ = self.settings.save();
+        crate::glass::GlassPrefs::register(cx, crate::glass::GlassPrefs::from_settings(&self.settings));
+        cx.notify();
+    }
+
     // -- Phase 6 plan 06-02 Task 1: tmux-binary validation (SET-03 per D6) --
 
     /// Binary path writer: stores the raw string + persists (FE `onChange`

@@ -30,6 +30,8 @@ fn roundtrip() {
         scrollback_lines: 2000,
         tui_scroll_default: true,
         theme_mode_filter: "all".to_string(),
+        glass_enabled: true,
+        glass_opacity: 0.85,
         custom_base: Some(base.to_path_buf()),
     };
 
@@ -49,6 +51,8 @@ fn roundtrip() {
     assert_eq!(loaded.scrollback_lines, initial.scrollback_lines);
     assert_eq!(loaded.tui_scroll_default, initial.tui_scroll_default);
     assert_eq!(loaded.theme_mode_filter, initial.theme_mode_filter);
+    assert_eq!(loaded.glass_enabled, initial.glass_enabled);
+    assert_eq!(loaded.glass_opacity, initial.glass_opacity);
 }
 
 #[test]
@@ -180,6 +184,33 @@ fn test_legacy_settings_back_compat() {
     assert!(settings.tui_scroll_default);
     assert_eq!(settings.theme_mode_filter, "all");
     assert_eq!(settings.theme_preset, "default-dark");
+}
+
+#[test]
+fn test_glass_legacy_json_and_clamp() {
+    // Phase-1/2 shape: the glass keys are absent -> material on at its default
+    // alpha, so an existing settings file keeps loading without a reset.
+    let legacy = r#"{"theme":"dark","theme_preset":"default-dark"}"#;
+    let settings: DesktopSettings =
+        serde_json::from_str(legacy).expect("legacy JSON must parse");
+    assert!(settings.glass_enabled, "legacy files must opt into the material");
+    assert_eq!(settings.glass_opacity, 0.85);
+
+    // A hand-edited or corrupted alpha can never reach the renderer raw (D9).
+    assert_eq!(webtmux_settings::clamp_glass_opacity(f32::NAN), 0.85);
+    assert_eq!(webtmux_settings::clamp_glass_opacity(0.0), 0.55);
+    assert_eq!(webtmux_settings::clamp_glass_opacity(0.85), 0.85);
+    assert_eq!(webtmux_settings::clamp_glass_opacity(9.0), 1.0);
+
+    // Both values survive a JSON round-trip, so the settings page's writes are
+    // what the next launch reads back.
+    let mut explicit = DesktopSettings::default();
+    explicit.glass_enabled = false;
+    explicit.glass_opacity = 0.68;
+    let json = serde_json::to_string(&explicit).expect("serialize must succeed");
+    let back: DesktopSettings = serde_json::from_str(&json).expect("parse must succeed");
+    assert!(!back.glass_enabled);
+    assert_eq!(back.glass_opacity, 0.68);
 }
 
 #[test]

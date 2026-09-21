@@ -57,6 +57,10 @@ fn default_line_height() -> f32 {
     1.35
 }
 
+fn default_glass_opacity() -> f32 {
+    GLASS_DEFAULT_OPACITY
+}
+
 fn default_scrollback_lines() -> usize {
     2000
 }
@@ -85,6 +89,25 @@ pub fn clamp_line_height(v: f32) -> f32 {
 /// FE parity: scrollback 100–50000 lines.
 pub fn clamp_scrollback(v: usize) -> usize {
     v.clamp(100, 50_000)
+}
+
+/// Alpha of the Liquid Glass fill on overlay surfaces (dialogs, popovers,
+/// context menus, toasts). The chrome tier derives a more transparent value
+/// from it — see `webtmux::glass`.
+pub const GLASS_DEFAULT_OPACITY: f32 = 0.85;
+/// Below this a translucent surface over terminal output stops being readable.
+pub const GLASS_MIN_OPACITY: f32 = 0.55;
+/// 1.0 is the material's off-ramp inside the translucent range: a fill that
+/// hides what is behind it while still keeping the glass edge treatment.
+pub const GLASS_MAX_OPACITY: f32 = 1.0;
+
+/// Same contract as the font/line-height clamps above (D9): a hand-edited or
+/// corrupted settings file can never produce an unreadable or NaN alpha.
+pub fn clamp_glass_opacity(v: f32) -> f32 {
+    if !v.is_finite() {
+        return GLASS_DEFAULT_OPACITY;
+    }
+    v.clamp(GLASS_MIN_OPACITY, GLASS_MAX_OPACITY)
 }
 
 /// Desktop settings store holding UI preferences and window geometry.
@@ -136,6 +159,13 @@ pub struct DesktopSettings {
     /// Appearance filter (`all`/`dark`/`light`; reference parity, D4).
     #[serde(default = "default_theme_mode_filter")]
     pub theme_mode_filter: String,
+    /// Liquid Glass window chrome (`glass_enabled` = material on/off, its
+    /// opacity = fill alpha, see `GLASS_*` above). Both carry serde defaults
+    /// so settings files written before the material existed keep loading.
+    #[serde(default = "default_true")]
+    pub glass_enabled: bool,
+    #[serde(default = "default_glass_opacity")]
+    pub glass_opacity: f32,
 
     #[serde(skip)]
     pub custom_base: Option<PathBuf>,
@@ -159,6 +189,8 @@ impl Default for DesktopSettings {
             scrollback_lines: default_scrollback_lines(),
             tui_scroll_default: true,
             theme_mode_filter: default_theme_mode_filter(),
+            glass_enabled: true,
+            glass_opacity: default_glass_opacity(),
             custom_base: None,
         }
     }

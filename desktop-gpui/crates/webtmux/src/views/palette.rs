@@ -29,6 +29,7 @@ use gpui::*;
 use gpui_component::command::{Command, CommandGroup, CommandItem};
 
 use crate::app_state::AppState;
+use crate::glass::{Elevation, GlassTier};
 
 // --- Pure palette model (headless-tested, no sockets/cx) -------------------
 
@@ -219,7 +220,10 @@ pub fn render_palette(app: &mut AppState, cx: &mut Context<AppState>) -> impl In
 
     let preset_name = app.settings.theme_preset.clone();
     let card = crate::theme::preset_card(&preset_name);
-    let border = crate::theme::preset_border(&preset_name);
+    // Liquid Glass: the palette panel floats over the workspace, so it takes
+    // the overlay tier. Only the shell is this crate's — the entry list inside
+    // is `gpui-component`'s `Command` and keeps its own styling.
+    let panel_glass = app.glass_style(card, GlassTier::Overlay, Elevation::None);
 
     div()
         .absolute()
@@ -235,8 +239,8 @@ pub fn render_palette(app: &mut AppState, cx: &mut Context<AppState>) -> impl In
                 .max_w_full()
                 .rounded(px(8.0))
                 .border_1()
-                .border_color(border)
-                .bg(card)
+                .border_color(panel_glass.border)
+                .bg(panel_glass.fill)
                 .child(command),
         )
         .into_any_element()

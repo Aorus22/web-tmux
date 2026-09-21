@@ -17,6 +17,7 @@ use std::time::Instant;
 use gpui::*;
 
 use crate::app_state::{toast_timeout, AppState, Toast, ToastKind};
+use crate::glass::{Elevation, GlassTier};
 use crate::icons::{ALERT_TRIANGLE_SVG, CHECK_SVG, REFRESH_CW_SVG};
 
 /// Render the toast overlay stack (empty element when the queue is empty).
@@ -57,7 +58,10 @@ pub fn render_toasts(app: &mut AppState, cx: &mut Context<AppState>) -> impl Int
 
     let preset_name = app.settings.theme_preset.clone();
     let card_bg = crate::theme::preset_card(&preset_name);
-    let border_color = crate::theme::preset_border(&preset_name);
+    // Liquid Glass: toasts are overlays — a toast over terminal output has to
+    // stay readable, so the panel takes the denser overlay tier and the glass
+    // hairline. It carries no outer shadow today, so it keeps none.
+    let toast_glass = app.glass_style(card_bg, GlassTier::Overlay, Elevation::None);
     let fg = crate::theme::preset_fg(&preset_name);
     let muted = crate::theme::preset_muted_fg(&preset_name);
     let destructive = crate::theme::preset_destructive(&preset_name);
@@ -98,8 +102,8 @@ pub fn render_toasts(app: &mut AppState, cx: &mut Context<AppState>) -> impl Int
                 .py(px(8.0))
                 .rounded(px(8.0))
                 .border_1()
-                .border_color(border_color)
-                .bg(card_bg)
+                .border_color(toast_glass.border)
+                .bg(toast_glass.fill)
                 .child(
                     svg()
                         .data(icon)

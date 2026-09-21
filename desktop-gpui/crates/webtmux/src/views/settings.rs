@@ -23,6 +23,7 @@ use gpui_component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_component::switch::Switch;
 use webtmux_backend_client::binary_status_copy;
 use crate::app_state::{AppState, KillConfirmKind};
+use crate::glass::{Elevation, GlassTier, INTENSITY_STEPS};
 use crate::icons::{CHECK_SVG, CHEVRON_DOWN_SVG, PAINTBRUSH_SVG, TERMINAL_SQUARE_SVG};
 use crate::themes_generated::{UI_THEMES, UiThemePreset};
 
@@ -100,6 +101,7 @@ pub fn render_settings(app: &mut AppState, cx: &mut Context<AppState>) -> impl I
                                 .child("Settings"),
                         )
                         .child(render_appearance(app, cx))
+                        .child(render_window(app, cx))
                         .child(render_terminal(app, cx))
                         .child(render_kill_switches(app, cx))
                         .into_any_element(),
@@ -128,6 +130,203 @@ pub fn render_settings(app: &mut AppState, cx: &mut Context<AppState>) -> impl I
                                 .width(px(8.0))
                         })
                 }),
+        )
+        .into_any_element()
+}
+
+/// Window section: the Liquid Glass material switch + fill-intensity presets +
+/// what the compositor can actually do with it.
+///
+/// The material runs along one axis only — on/off and how opaque the fill is —
+/// because the alpha table in `crate::glass` already fixes the relationship
+/// between the chrome tier (over the desktop) and the overlay tier (over this
+/// app's own output). Exposing those two alphas separately would let a caller
+/// put a see-through panel over terminal text, which is exactly the failure the
+/// split exists to prevent.
+fn render_window(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
+    let preset_name = app.settings.theme_preset.clone();
+    let card = crate::theme::preset_card(&preset_name);
+    let fg = crate::theme::preset_fg(&preset_name);
+    let muted = crate::theme::preset_muted(&preset_name);
+    let muted_fg = crate::theme::preset_muted_fg(&preset_name);
+    let border = crate::theme::preset_border(&preset_name);
+    let primary = crate::theme::preset_primary(&preset_name);
+    let primary_fg = crate::theme::preset_primary_fg(&preset_name);
+
+    let enabled = app.glass_enabled();
+    let opacity = app.glass_opacity();
+    let app_weak = cx.weak_entity();
+
+    // Row wording follows the two settings that exist, not the mechanism: the
+    // switch is the material, the presets are its alpha.
+    let backdrop_hint = if crate::glass::backdrop_blur_available() {
+        "This compositor frosts the desktop behind the window."
+    } else {
+        "No backdrop blur on this compositor, so the glass is a translucent tint."
+    };
+
+    let intensity = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(4.0))
+        .children(INTENSITY_STEPS.iter().map(|(label, value)| {
+            let value = *value;
+            let active = (value - opacity).abs() < 0.001;
+            div()
+                .id(ElementId::Name(
+                    format!("settings/glass/{label}").into(),
+                ))
+                .px(px(10.0))
+                .py(px(4.0))
+                .rounded(px(6.0))
+                .bg(if active { primary } else { muted })
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if active { primary_fg } else { fg })
+                .cursor_pointer()
+                .hover(|s| s.opacity(0.9))
+                .child(*label)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _window, cx| {
+                        this.set_glass_opacity(value, cx);
+                    }),
+                )
+        }));
+
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(16.0))
+        .w_full()
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(muted_fg)
+                .child("WINDOW"),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(border)
+                // The card is opaque like every other row on this page: the
+                // material applies to the window chrome, never to content.
+                .bg(card)
+                // Row 1: the material itself.
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .px(px(16.0))
+                        .py(px(12.0))
+                        .border_b_1()
+                        .border_color(border)
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.0))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(fg)
+                                        .child("Liquid Glass"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(muted_fg)
+                                        .child("Translucent title bar, sidebar, dialogs and menus"),
+                                ),
+                        )
+                        .child(
+                            Switch::new("glass-enabled")
+                                .checked(enabled)
+                                .on_click(move |_, window, cx: &mut App| {
+                                    if let Some(app) = app_weak.upgrade() {
+                                        app.update(cx, |this, cx| {
+                                            // Flip the CURRENT value rather than
+                                            // trusting the passed bool, so either
+                                            // `on_click` semantic converges (same
+                                            // as the kill rows below).
+                                            let next = !this.glass_enabled();
+                                            this.set_glass_enabled(next, window, cx);
+                                        });
+                                    }
+                                }),
+                        ),
+                )
+                // Row 2: how opaque the fill is.
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .px(px(16.0))
+                        .py(px(12.0))
+                        .border_b_1()
+                        .border_color(border)
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.0))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(fg)
+                                        .child("Glass intensity"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(muted_fg)
+                                        .child("Higher keeps more of the window opaque"),
+                                ),
+                        )
+                        .child(intensity),
+                )
+                // Row 3: what this session can actually do with it, so the gap
+                // between "translucent" and "frosted" is visible where the
+                // setting lives instead of in a commit message.
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .px(px(16.0))
+                        .py(px(12.0))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.0))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(fg)
+                                        .child("Backdrop"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(muted_fg)
+                                        .child(backdrop_hint),
+                                ),
+                        ),
+                ),
         )
         .into_any_element()
 }
@@ -164,6 +363,9 @@ fn render_appearance(app: &mut AppState, cx: &mut Context<AppState>) -> impl Int
         _ => "All themes",
     };
     let show_theme_picker = app.show_theme_mode_picker;
+    // Liquid Glass: the dropdown popovers float over the page, so they take the
+    // overlay tier. Everything else on this page is content and stays opaque.
+    let picker_glass = app.glass_style(card, GlassTier::Overlay, Elevation::Lg);
 
     let mut col = div().flex().flex_col().gap(px(16.0)).w_full();
 
@@ -274,9 +476,9 @@ fn render_appearance(app: &mut AppState, cx: &mut Context<AppState>) -> impl Int
                                 .w(px(110.0))
                                 .rounded_md()
                                 .border_1()
-                                .border_color(border)
-                                .bg(card)
-                                .shadow_lg()
+                                .border_color(picker_glass.border)
+                                .bg(picker_glass.fill)
+                                .shadow(picker_glass.shadows)
                                 .py_1()
                                 .child(
                                     div()
@@ -566,6 +768,9 @@ fn render_terminal(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoE
     let tui_default = app.settings.tui_scroll_default;
     let show_font_picker = app.show_font_picker;
     let app_weak = cx.weak_entity();
+    // Liquid Glass: the font dropdown is the second floating popover on this
+    // page, so it matches the theme-mode one.
+    let picker_glass = app.glass_style(card, GlassTier::Overlay, Elevation::Lg);
 
     div()
         .flex()
@@ -688,9 +893,9 @@ fn render_terminal(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoE
                                             .right_0()
                                             .rounded_md()
                                             .border_1()
-                                            .border_color(border)
-                                            .bg(card)
-                                            .shadow_lg()
+                                            .border_color(picker_glass.border)
+                                            .bg(picker_glass.fill)
+                                            .shadow(picker_glass.shadows)
                                             .py_1()
                                             .children(MONO_FONTS.iter().map(|font| {
                                                 let is_active = *font == font_family;

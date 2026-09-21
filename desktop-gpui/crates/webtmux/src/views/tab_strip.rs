@@ -23,6 +23,7 @@ use gpui_component::{
     WindowExt as _,
 };
 use crate::app_state::AppState;
+use crate::glass::{Elevation, GlassTier};
 use crate::icons::{
     COPY_SVG, MINUS_SVG, PANEL_LEFT_SVG, PLUS_SVG, SETTINGS_SVG, SQUARE_SVG, TERMINAL_SQUARE_SVG,
     X_SVG,
@@ -51,6 +52,13 @@ pub fn render_title_bar(
     let destructive = crate::theme::preset_destructive(&preset_name);
     let destructive_fg = crate::theme::preset_destructive_fg(&preset_name);
 
+    // Liquid Glass: the bar is one of the two leaves with the desktop behind
+    // it (the window background is transparent), so it paints the chrome tier.
+    // The window-tab chips keep the preset's opaque muted fill — a selection
+    // pill is not the parent surface and has to read over anything
+    // (`glass.rs` rule 3).
+    let bar_glass = app.glass_style(bar_bg, GlassTier::Chrome, Elevation::None);
+
     let has_active = app.active_session.is_some();
 
     div()
@@ -59,9 +67,10 @@ pub fn render_title_bar(
         .items_center()
         .w_full()
         .h(px(44.0))
-        .bg(bar_bg)
+        .bg(bar_glass.fill)
         .border_b_1()
-        .border_color(border_color)
+        .border_color(bar_glass.border)
+        .shadow(bar_glass.shadows)
         .px_3()
         .when(framed, |d| {
             d.rounded_tl(crate::app_state::FRAME_ROUNDING)
@@ -520,15 +529,25 @@ pub fn open_kill_window_dialog(
     let build_form = form.clone();
     window.open_dialog(cx, move |dialog, _window, cx| {
         let preset = build_form.read(cx).theme_preset.clone();
-        let card = crate::theme::preset_card(&preset);
+        // Liquid Glass: the element paints the overlay tier from the global
+        // preferences, because this closure is handed no `AppState`. `.shadow()`
+        // is deliberately not called — `Dialog` assigns the panel its own stack
+        // after the caller's chain, so only the fill and the border ink land.
+        let dialog_glass = crate::glass::style_for(
+            crate::glass::GlassPrefs::get(cx),
+            crate::theme::preset_card(&preset),
+            crate::theme::preset_border(&preset),
+            crate::theme::preset_is_dark(&preset),
+            GlassTier::Overlay,
+            Elevation::Xl,
+        );
         let fg = crate::theme::preset_fg(&preset);
-        let border = crate::theme::preset_border(&preset);
         dialog
             .w(px(440.0))
             .p(px(20.0))
             .rounded(px(8.0))
-            .bg(card)
-            .border_color(border)
+            .bg(dialog_glass.fill)
+            .border_color(dialog_glass.border)
             .border_1()
             .title(
                 DialogTitle::new()

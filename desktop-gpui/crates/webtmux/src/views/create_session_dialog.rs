@@ -25,6 +25,7 @@ use webtmux_backend_client::{
 };
 
 use crate::app_state::AppState;
+use crate::glass::{Elevation, GlassTier};
 use crate::icons::FOLDER_OPEN_SVG;
 
 /// Modal form state entity for DLG1. Owned by `AppState` for the lifetime of the
@@ -115,15 +116,25 @@ fn open_with(
     let build_form = form.clone();
     window.open_dialog(cx, move |dialog, window, cx| {
         let preset = build_form.read(cx).theme_preset.clone();
-        let card = crate::theme::preset_card(&preset);
+        // Liquid Glass: overlay tier, read from the global preferences because
+        // this closure is handed no `AppState`. `.shadow()` is deliberately not
+        // called: `Dialog` assigns the panel its own stack after the caller's
+        // chain, so only the fill and the border ink would land.
+        let dialog_glass = crate::glass::style_for(
+            crate::glass::GlassPrefs::get(cx),
+            crate::theme::preset_card(&preset),
+            crate::theme::preset_border(&preset),
+            crate::theme::preset_is_dark(&preset),
+            GlassTier::Overlay,
+            Elevation::Xl,
+        );
         let fg = crate::theme::preset_fg(&preset);
-        let border = crate::theme::preset_border(&preset);
         dialog
             .w(px(440.0))
             .p(px(20.0))
             .rounded(px(8.0))
-            .bg(card)
-            .border_color(border)
+            .bg(dialog_glass.fill)
+            .border_color(dialog_glass.border)
             .border_1()
             .title(
                 DialogTitle::new()

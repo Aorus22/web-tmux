@@ -5,6 +5,7 @@
 pub mod actions;
 pub mod app_state;
 pub mod bundle;
+pub mod glass;
 pub mod icons;
 pub mod pane_geometry;
 pub mod theme;

@@ -6,6 +6,7 @@ use gpui::*;
 use parking_lot::Mutex;
 use webtmux::app_state::{AppState, TOKIO_RT};
 use webtmux::bundle::resolve_backend_path;
+use webtmux::glass;
 use webtmux::theme;
 use webtmux::window_state;
 use webtmux_settings::DesktopSettings;
@@ -72,6 +73,12 @@ fn main() {
         gpui_component::init(cx);
         theme::apply_theme(settings.theme, cx);
 
+        // Liquid Glass: publish the persisted preferences once, so surfaces
+        // that render without an AppState in hand (the gpui-component dialogs)
+        // can paint themselves as glass too. `AppState::set_glass_*` refreshes
+        // this global whenever the settings page writes a new value.
+        glass::GlassPrefs::register(cx, glass::GlassPrefs::from_settings(&settings));
+
         // Clamp the initial windowed bounds to the primary display so a
         // first-run window never opens taller than the screen (which hides
         // the sidebar footer behind the dock). Maximized restores pass
@@ -135,6 +142,11 @@ fn main() {
                     }
                 }
             }
+
+            // Liquid Glass: keep the transparent backdrop the CSD frame relies
+            // on, upgraded to a real frost where the compositor implements one
+            // (KWin/Hyprland on Wayland). A no-op everywhere else.
+            glass::apply_backdrop_material(window, settings.glass_enabled);
 
             window_state::observe(window, settings_for_observe, cx);
 

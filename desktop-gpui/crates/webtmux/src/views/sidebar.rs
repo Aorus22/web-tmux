@@ -10,6 +10,7 @@
 use gpui::*;
 use gpui::prelude::{FluentBuilder, InteractiveElement, StatefulInteractiveElement};
 use crate::app_state::AppState;
+use crate::glass::{Elevation, GlassTier};
 use crate::icons::{CHEVRON_DOWN_SVG, CHEVRON_RIGHT_SVG, PLUS_SVG, REFRESH_CW_SVG, SETTINGS_SVG};
 
 pub fn render_sidebar(
@@ -29,6 +30,14 @@ pub fn render_sidebar(
     let window_text = crate::theme::preset_muted_fg(&preset_name);
     let pane_dot_bg = crate::theme::preset_muted_fg(&preset_name);
 
+    // Liquid Glass: the sidebar is one of the two leaves with the desktop
+    // behind it (the window background is transparent), so it paints the
+    // transparent chrome tier. Its floating footer leans on the denser overlay
+    // tier instead: the session tree scrolls under it, and a translucent bar
+    // over scrolling text is exactly what the tier split exists to avoid.
+    let sidebar_glass = app.glass_style(bg_color, GlassTier::Chrome, Elevation::None);
+    let footer_glass = app.glass_style(bg_color, GlassTier::Overlay, Elevation::None);
+
     let width_val = if sidebar_open { px(240.0) } else { px(0.0) };
 
     div()
@@ -38,9 +47,10 @@ pub fn render_sidebar(
         .overflow_hidden()
         .w(width_val)
         .h_full()
-        .bg(bg_color)
+        .bg(sidebar_glass.fill)
         .border_r_1()
-        .border_color(border_color)
+        .border_color(sidebar_glass.border)
+        .shadow(sidebar_glass.shadows)
         .when(framed, |d| d.rounded_bl(crate::app_state::FRAME_ROUNDING))
         .child(
             div()
@@ -307,9 +317,10 @@ pub fn render_sidebar(
                 .bottom_0()
                 .left_0()
                 .right_0()
-                .bg(bg_color)
+                .bg(footer_glass.fill)
                 .border_t_1()
-                .border_color(border_color)
+                .border_color(footer_glass.border)
+                .shadow(footer_glass.shadows)
                 .when(framed, |d| d.rounded_bl(crate::app_state::FRAME_ROUNDING))
                 .p(px(6.0))
                 .child(
