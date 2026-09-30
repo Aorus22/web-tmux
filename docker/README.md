@@ -48,3 +48,18 @@ against bookworm's glibc 2.36 (older than both) means the produced binary only
 ever references symbols every target already exports; the GTK3 /
 fontconfig / X11 / Wayland / Vulkan libraries it links are resolved from the
 host at run time by SONAME.
+
+## What CI does with them
+
+| ref | workflows | result |
+| --- | --- | --- |
+| `develop` push / PR | `build-appimage.yml`, `test.yml` | AppImage as an Actions artifact; tests must pass |
+| `main` push | `build-appimage.yml`, `test.yml` | same artifact, plus the rolling **`latest`** GitHub Release is updated |
+| `v*` tag | `build-appimage.yml` | GitHub Release for that tag |
+
+The rolling release keeps one permanent download URL that survives merges:
+
+```bash
+gh release download latest --repo Aorus22/web-tmux --pattern '*.AppImage'
+```
+
