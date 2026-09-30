@@ -39,7 +39,7 @@ pub fn render_reconnect_banner(
     let primary_fg = crate::theme::preset_primary_fg(&preset_name);
     // FE `text-amber-500` verbatim for the transient reconnecting state (the
     // generated presets carry no amber token).
-    let amber = rgb(0xf59e0b);
+    let amber = crate::theme::warning_accent();
 
     let Some(active) = app.active_session.clone() else {
         return div().into_any_element();

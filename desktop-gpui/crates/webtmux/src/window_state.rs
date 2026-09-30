@@ -3,6 +3,8 @@
 use std::sync::Arc;
 use gpui::*;
 use parking_lot::Mutex;
+// Only the Win32 maximize/restore path reads the raw handle.
+#[cfg(target_os = "windows")]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use webtmux_settings::{DesktopSettings, WindowState};
 
@@ -119,11 +121,18 @@ pub fn extract_window_state(window: &Window, prev_state: Option<&WindowState>) -
     }
 
     let maximized = is_window_maximized(window);
+    // A tiled client is likewise not the CSD frame: Mutter ignores the extents
+    // and the client fills the tile, so keep the previous windowed geometry
+    // instead of subtracting a margin that was never added.
+    let tiled = matches!(
+        window.window_decorations(),
+        Decorations::Client { tiling } if tiling.is_tiled()
+    );
 
-    if maximized {
+    if maximized || tiled {
         if let Some(prev) = prev_state {
             let mut p = *prev;
-            p.maximized = true;
+            p.maximized = maximized;
             return Some(p);
         }
         return Some(WindowState {
@@ -131,9 +140,16 @@ pub fn extract_window_state(window: &Window, prev_state: Option<&WindowState>) -
             y: None,
             width: Some(DEFAULT_WIDTH),
             height: Some(DEFAULT_HEIGHT),
-            maximized: true,
+            maximized,
         });
     }
+
+    // The CSD frame advertised `_GTK_FRAME_EXTENTS`, so Mutter grew the client
+    // by the shadow margin on each side (see `csd`). Persist the *frame* rect so
+    // the next launch requests the same card size instead of a window that keeps
+    // growing by the margin.
+    let (x, y, current_width, current_height) =
+        crate::csd::client_to_frame_rect(x, y, current_width, current_height);
 
     Some(WindowState {
         x: Some(x),

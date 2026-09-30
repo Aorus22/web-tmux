@@ -53,6 +53,13 @@ parking_lot = "=0.12.5"
 rand = "=0.10.2"
 tempfile = "=3.27.0"
 libc = "=0.2.189"
+# GTK3 is initialized on the main thread purely to probe the *active* desktop
+# theme (named colors + `GtkSettings`). Same stack the reference implementation
+# uses for GTK theme following.
+gtk = "=0.18.2"
+# X11 property access for `_GTK_FRAME_EXTENTS` (CSD frame advertisement).
+# Already in the lockfile transitively via gpui-pre-linux.
+x11rb = "=0.13.2"
 
 [profile.release]
 lto = "thin"

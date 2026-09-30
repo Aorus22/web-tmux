@@ -66,8 +66,8 @@ pub fn render_toasts(app: &mut AppState, cx: &mut Context<AppState>) -> impl Int
     let muted = crate::theme::preset_muted_fg(&preset_name);
     let destructive = crate::theme::preset_destructive(&preset_name);
     // FE-parity accents (no green/amber tokens in the generated presets).
-    let success_green = rgb(0x22c55e);
-    let info_amber = rgb(0xf59e0b);
+    let success_green = crate::theme::success_accent();
+    let info_amber = crate::theme::warning_accent();
 
     let toasts: Vec<Toast> = app.visible_toasts();
     div()

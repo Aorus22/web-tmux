@@ -57,6 +57,16 @@
 //! this crate's presets, so its popover surface is opaque and stays that way
 //! unless the component is vendored. Same for the entry list inside the command
 //! palette — only the palette's shell is this crate's.
+//!
+//! # Coexistence with the CSD frame outline (B4)
+//!
+//! Since the window frame gained a 1px outline in the theme border color
+//! (`AppState::render`), exactly one element owns the outermost border: that
+//! frame panel. The glass "polarity hairline" stays a treatment for surfaces
+//! *inside* it — the title bar, the sidebar, dialogs, popovers, toasts — and is
+//! not lifted to the frame. When the material is off, the frame outline is
+//! unchanged and the inner surfaces fall back to their opaque preset borders,
+//! so the frame never changes width or color just because glass toggled.
 
 use gpui::{hsla, px, App, BoxShadow, Global, Hsla, Rgba, Window};
 use webtmux_settings::{

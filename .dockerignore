@@ -1,0 +1,10 @@
+# Keep the Docker build context tiny: the images never COPY source (the repo is
+# mounted at /src at run time), so nothing here is needed by a build.
+.git
+.github
+dist
+target
+**/target
+**/node_modules
+be/internal/web/dist
+desktop-gpui/target

@@ -331,6 +331,114 @@ fn render_window(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoEle
         .into_any_element()
 }
 
+/// "Desktop (GTK)" card — the fourth theme mode.
+///
+/// The preview and caption read the **cached** desktop palette
+/// (`gtk_theme::cached_palette` / `cached_name`), never GTK itself: render paths
+/// must stay I/O-free and GTK is not thread-safe. Picking the card installs the
+/// probed palette app-wide; picking a preset card below leaves the mode.
+fn render_desktop_theme_card(app: &mut AppState, cx: &mut Context<AppState>) -> AnyElement {
+    let preset_name = app.settings.theme_preset.clone();
+    let card = crate::theme::preset_card(&preset_name);
+    let fg = crate::theme::preset_fg(&preset_name);
+    let muted_fg = crate::theme::preset_muted_fg(&preset_name);
+    let border = crate::theme::preset_border(&preset_name);
+    let primary = crate::theme::preset_primary(&preset_name);
+    let muted = crate::theme::preset_muted(&preset_name);
+
+    let is_active = app.settings.theme.is_gtk();
+    let available = crate::gtk_theme::is_available();
+    let cached = crate::gtk_theme::cached_palette();
+    let theme_name = crate::gtk_theme::cached_name();
+    let user_css = crate::gtk_theme::user_css_active();
+
+    // Preview swatches: the probed desktop palette when one exists, else the
+    // active preset's tokens so the card is never blank.
+    let (sw_bg, sw_fg, sw_accent, sw_border) = match cached {
+        Some(p) => (p.bg_primary, p.text_primary, p.accent, p.border),
+        None => (
+            crate::theme::preset_bg(&preset_name),
+            crate::theme::preset_fg(&preset_name),
+            crate::theme::preset_primary(&preset_name),
+            crate::theme::preset_border(&preset_name),
+        ),
+    };
+
+    let caption = if !available {
+        "GTK theme not detected — falls back to the dark preset.".to_string()
+    } else if let Some(name) = theme_name {
+        let source = if user_css { "user CSS" } else { "GTK theme" };
+        format!("Following {name} ({source})")
+    } else {
+        "GTK theme not detected — falls back to the dark preset.".to_string()
+    };
+
+    div()
+        .id("settings/theme-gtk")
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(12.0))
+        .w_full()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(if is_active { primary } else { border })
+        .bg(if is_active { muted } else { card })
+        .p(px(12.0))
+        .cursor_pointer()
+        .hover(|s| s.border_color(primary))
+        // Desktop preview: window color, foreground bar, accent + border dots.
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_end()
+                .gap(px(4.0))
+                .w(px(72.0))
+                .h(px(48.0))
+                .flex_shrink_0()
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(sw_border)
+                .bg(sw_bg)
+                .p(px(6.0))
+                .child(div().w(px(10.0)).h(px(18.0)).rounded(px(3.0)).bg(sw_fg))
+                .child(div().size(px(10.0)).rounded(px(3.0)).bg(sw_accent))
+                .child(div().size(px(10.0)).rounded(px(3.0)).bg(sw_border)),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .flex_col()
+                .gap(px(2.0))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(fg)
+                        .child("Desktop (GTK)"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted_fg)
+                        .truncate()
+                        .child(caption),
+                ),
+        )
+        .children(if is_active {
+            Some(svg().data(CHECK_SVG).size(px(16.0)).text_color(primary))
+        } else {
+            None
+        })
+        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+            this.set_theme(webtmux_settings::Theme::Gtk, cx);
+        }))
+        .into_any_element()
+}
+
 /// Appearance section: header + filter row + count + card grid.
 fn render_appearance(app: &mut AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     let preset_name = app.settings.theme_preset.clone();
@@ -377,6 +485,10 @@ fn render_appearance(app: &mut AppState, cx: &mut Context<AppState>) -> impl Int
             .text_color(muted_fg)
             .child("APPEARANCE"),
     );
+
+    // "Desktop (GTK)" — the fourth theme mode, alongside Dark/Light/System.
+    // Its preview shows the desktop's own colors.
+    col = col.child(render_desktop_theme_card(app, cx));
 
     // Appearance card (FE UiThemeSettings parity). Row 1 is the Theme-mode
     // row; the filter buttons stand in for the web Select dropdown (no
@@ -595,6 +707,9 @@ fn render_appearance(app: &mut AppState, cx: &mut Context<AppState>) -> impl Int
                          _window: &mut Window,
                          cx: &mut Context<AppState>| {
                             let active = this.settings.theme_preset.clone();
+                            // In "Desktop (GTK)" mode no preset row is the
+                            // active one: the GTK card above owns the check.
+                            let gtk_mode = this.settings.theme.is_gtk();
                             let mode = this.settings.theme_mode_filter.clone();
                             let preset_name = active.clone();
                             let card = crate::theme::preset_card(&preset_name);
@@ -623,7 +738,7 @@ fn render_appearance(app: &mut AppState, cx: &mut Context<AppState>) -> impl Int
                                         .gap(px(12.0))
                                         .children(row.iter().enumerate().map(
                                             |(col_ix, preset)| {
-                                                let is_active = preset.name == active;
+                                                let is_active = preset.name == active && !gtk_mode;
                                                 let preset_id = preset.name;
                                                 let global_ix =
                                                     row_ix * THEME_GRID_COLS + col_ix;

@@ -18,6 +18,11 @@ pub enum SettingsError {
 }
 
 /// UI theme preference.
+///
+/// `Gtk` ("Desktop (GTK)") follows the active desktop theme: the palette is
+/// probed from the user's GTK4/GTK3 CSS first and the GTK3 style engine second.
+/// It is serialized as `"gtk"` and is additive — files written before the
+/// variant existed parse unchanged into `Dark`/`Light`/`System`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
@@ -25,6 +30,37 @@ pub enum Theme {
     Dark,
     Light,
     System,
+    /// Follow the desktop (GNOME/GTK) palette, probed at runtime.
+    Gtk,
+}
+
+impl Theme {
+    /// Stable lowercase wire/display name (`"dark"`, `"light"`, `"system"`,
+    /// `"gtk"`), matching the serde representation.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Theme::Dark => "dark",
+            Theme::Light => "light",
+            Theme::System => "system",
+            Theme::Gtk => "gtk",
+        }
+    }
+
+    /// Parse a persisted/foreign string; unknown values fall back to `Dark`
+    /// (the historical default) so a hand-edited settings file never fails.
+    pub fn parse_lossy(value: &str) -> Theme {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "light" => Theme::Light,
+            "system" => Theme::System,
+            "gtk" | "desktop" | "desktop-gtk" => Theme::Gtk,
+            _ => Theme::Dark,
+        }
+    }
+
+    /// Whether this mode sources colors from the desktop (GTK) probe.
+    pub fn is_gtk(self) -> bool {
+        matches!(self, Theme::Gtk)
+    }
 }
 
 /// Window dimensions and layout state.

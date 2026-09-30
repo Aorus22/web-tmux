@@ -33,6 +33,7 @@ use webtmux_terminal::{
 use crate::views::terminal_view::TerminalView;
 use crate::views::{status::render_status_page, tab_strip::render_title_bar};
 use crate::pane_geometry::drag_step_throttled;
+use crate::csd;
 
 /// Global multi-thread Tokio runtime entered once at application boot.
 pub static TOKIO_RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
@@ -313,7 +314,10 @@ pub struct PendingViewport {
 /// capture-phase consume; TUI-switch ON → notch accumulator (100px/notch,
 /// line×16, page×100, burst clamp 3) emitting PageUp/PageDown repeats over
 /// `terminal.input`; OFF → native scrollback. GPUI port adds the SGR branch
-/// first (mouse-reporting apps get SGR 64/65 via `scroll_report`).
+/// first (mouse-reporting apps get SGR 64/65 via `scroll_report`) and gates the
+/// PageUp/PageDown branch on the alternate screen — the FE paged on every
+/// TUI-on wheel, which dumped literal `\x1b[5~` into a plain shell/REPL prompt
+/// instead of scrolling.
 ///
 /// Sign note: DOM `WheelEvent.deltaY` is negative on wheel-up, while GPUI
 /// `ScrollDelta` positive-y means wheel-up (reference `view.rs` treats
@@ -397,7 +401,13 @@ pub fn decide_wheel_action(
             None => return (WheelAction::Ignored, accum_px),
         }
     }
-    if tui_on {
+    // Page the application only when it actually owns the screen (alternate
+    // screen: `less`, `htop`, `vim`, opencode). On the normal screen — a shell,
+    // a REPL — PageUp/PageDown have nothing to scroll and the app just echoes
+    // the raw `\x1b[5~` bytes at its prompt, so the wheel scrolls our own
+    // scrollback instead. This is the standard `alternateScroll` behaviour and
+    // keeps the per-pane TUI switch meaningful.
+    if tui_on && mode.contains(TermMode::ALT_SCREEN) {
         let accum2 = accum_px + wheel_delta_to_px(delta);
         let notches = (accum2 / WHEEL_NOTCH_PX).trunc() as i32;
         if notches == 0 {
@@ -416,8 +426,8 @@ pub fn decide_wheel_action(
         }
         return (WheelAction::Pages(bytes), new_accum);
     }
-    // TUI-off: scrollback delta (safe no-op-ish over alt-screen per A4 —
-    // alacritty clamps internally).
+    // TUI-off, or TUI-on over a normal screen: scrollback delta (safe
+    // no-op-ish over alt-screen per A4 — alacritty clamps internally).
     let lines = wheel_delta_to_lines(delta, cell_h);
     if lines == 0 {
         (WheelAction::Ignored, accum_px)
@@ -708,6 +718,9 @@ pub struct AppState {
     pub show_theme_mode_picker: bool,
     /// Terminal font family dropdown popover visibility.
     pub show_font_picker: bool,
+    /// Last GTK desktop-theme key seen by the ~1s follow watcher. `None` until
+    /// the watcher's first tick, or when GTK is unavailable.
+    pub last_gtk_key: Option<crate::gtk_theme::ThemeKey>,
 }
 
 impl AppState {
@@ -761,6 +774,7 @@ impl AppState {
             settings_themes_scroll: UniformListScrollHandle::new(),
             show_theme_mode_picker: false,
             show_font_picker: false,
+            last_gtk_key: None,
         }
     }
 
@@ -2023,8 +2037,60 @@ impl AppState {
 
     /// Palette for the currently persisted preset (live-apply + new-view
     /// default source — future views resolve the same preset via settings).
+    ///
+    /// In "Desktop (GTK)" mode the special UI colors follow the probed desktop
+    /// palette while the 16 ANSI slots keep coming from the preset linked to the
+    /// persisted UI preset: user CSS has no ANSI table, and a terminal whose
+    /// background follows GTK but whose ANSI colors come from the linked preset
+    /// is far better than one that does not follow at all.
     pub fn current_terminal_palette(&self) -> ColorPalette {
+        if self.settings.theme.is_gtk() {
+            if let Some(palette) = crate::theme::gtk_palette() {
+                return Self::gtk_terminal_palette(&palette, &self.settings.theme_preset);
+            }
+        }
         Self::terminal_palette_for_ui_preset(&self.settings.theme_preset)
+    }
+
+    /// GTK-derived terminal palette (see [`Self::current_terminal_palette`]).
+    fn gtk_terminal_palette(
+        palette: &crate::theme::GtkPalette,
+        preset_name: &str,
+    ) -> ColorPalette {
+        let term = crate::themes_generated::terminal_preset_for_ui(preset_name);
+        let hex = crate::theme::rgba_to_u32;
+        ColorPalette::from_rgb_u32(
+            hex(palette.text_primary),
+            hex(palette.bg_primary),
+            hex(palette.accent),
+            hex(palette.selection),
+            [
+                term.black,
+                term.red,
+                term.green,
+                term.yellow,
+                term.blue,
+                term.magenta,
+                term.cyan,
+                term.white,
+                term.bright_black,
+                term.bright_red,
+                term.bright_green,
+                term.bright_yellow,
+                term.bright_blue,
+                term.bright_magenta,
+                term.bright_cyan,
+                term.bright_white,
+            ],
+        )
+    }
+
+    /// Push the active (GTK-aware) terminal palette into every live view.
+    pub fn push_terminal_palette(&mut self, cx: &mut Context<Self>) {
+        let palette = self.current_terminal_palette();
+        for view in self.terminal_views.values() {
+            view.update(cx, |v, cx| v.set_palette(palette.clone(), cx));
+        }
     }
 
     /// Single mutation point for theme picks (D3): table lookup (fallback
@@ -2033,6 +2099,9 @@ impl AppState {
     /// push the linked palette to every live `terminal_views` entry (future
     /// views resolve the persisted preset as their default), synchronous
     /// `save()`, then `notify()`.
+    ///
+    /// Picking a preset is also how a user leaves "Desktop (GTK)" mode: the
+    /// derived `Dark`/`Light` replaces the `Gtk` variant.
     pub fn set_theme_preset(&mut self, preset_id: &str, cx: &mut Context<Self>) {
         let preset = crate::themes_generated::ui_preset_by_name(preset_id);
         let name = preset.name.to_string();
@@ -2044,17 +2113,94 @@ impl AppState {
             SettingsTheme::Light
         };
         crate::theme::apply_theme(self.settings.theme, cx);
-        let palette = Self::terminal_palette_for_ui_preset(&name);
-        for view in self.terminal_views.values() {
-            view.update(cx, |v, cx| v.set_palette(palette.clone(), cx));
-        }
+        self.push_terminal_palette(cx);
         let _ = self.settings.save();
         cx.notify();
     }
 
+    /// Theme-mode writer (Appearance): `Dark`/`Light`/`System` use the preset
+    /// palette; `Gtk` ("Desktop (GTK)") installs the probed desktop palette.
+    /// Persists, re-applies the widget theme, refreshes live terminal palettes,
+    /// then repaints.
+    pub fn set_theme(&mut self, theme: SettingsTheme, cx: &mut Context<Self>) {
+        if self.settings.theme == theme {
+            return;
+        }
+        self.settings.theme = theme;
+        let _ = self.settings.save();
+        crate::theme::apply_theme(theme, cx);
+        self.push_terminal_palette(cx);
+        self.last_gtk_key = crate::gtk_theme::current_key();
+        cx.notify();
+    }
+
+    /// Start the ~1s desktop (GTK) follow watcher.
+    ///
+    /// The watcher runs on the GPUI foreground executor (the main thread that
+    /// ran `gtk::init`), which is the only place GTK may be touched. Each tick
+    /// compares the cheap theme key and, when it changed while GTK mode is
+    /// active, re-resolves the palette and repaints every surface.
+    pub fn start_theme_watch(&mut self, cx: &mut Context<Self>) {
+        self.last_gtk_key = crate::gtk_theme::current_key();
+        cx.spawn(|view_weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let cx_handle = cx.clone();
+            async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(1000));
+                // First tick completes immediately.
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    let keep_going = cx_handle.update(|cx: &mut App| {
+                        if let Some(entity) = view_weak.upgrade() {
+                            entity.update(cx, |this, cx| this.poll_gtk_theme(cx))
+                        } else {
+                            false
+                        }
+                    });
+                    if !keep_going {
+                        break;
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// One watcher tick. Returns false only when the root view is gone.
+    ///
+    /// The palette cache is refreshed even outside GTK mode so the settings
+    /// page's live preview and caption stay current without ever touching GTK
+    /// from a render path.
+    fn poll_gtk_theme(&mut self, cx: &mut Context<Self>) -> bool {
+        let key = crate::gtk_theme::current_key();
+        if key == self.last_gtk_key {
+            return true;
+        }
+        self.last_gtk_key = key;
+        // Refresh the readable cache even outside GTK mode: the settings page's
+        // preview and caption read it, while the active chrome only follows
+        // when the user picked "Desktop (GTK)".
+        let _ = crate::gtk_theme::palette();
+        if self.settings.theme.is_gtk() {
+            crate::theme::apply_theme(SettingsTheme::Gtk, cx);
+            self.push_terminal_palette(cx);
+            cx.refresh_windows();
+        }
+        if self.showing_settings {
+            cx.notify();
+        }
+        true
+    }
+
     /// Load-time re-sync (Pitfall 2): re-derive `settings.theme` from the
     /// preset `is_dark`. Returns true when a legacy skew was corrected.
+    ///
+    /// `Gtk` is an explicit user choice, not a derived mode: it must never be
+    /// rewritten from the preset's `is_dark`.
     pub fn resync_theme_from_preset(&mut self) -> bool {
+        if self.settings.theme.is_gtk() {
+            return false;
+        }
         let preset =
             crate::themes_generated::ui_preset_by_name(&self.settings.theme_preset);
         let want = if preset.is_dark {
@@ -3838,6 +3984,11 @@ impl Render for AppState {
                 Decorations::Client { tiling } if tiling.is_tiled()
             );
         let title_bar = render_title_bar(self, framed, cx);
+        // One preset read for the frame outline + workspace backdrop, so both
+        // follow the active theme (GTK-aware) instead of a literal.
+        let frame_preset = self.settings.theme_preset.clone();
+        let frame_outline = crate::theme::preset_border(&frame_preset);
+        let workspace_bg = crate::theme::preset_bg(&frame_preset);
         let status = self.backend_status.clone();
 
         let is_ready = matches!(status, BackendStatus::Ready(_));
@@ -3891,7 +4042,7 @@ impl Render for AppState {
                                     .flex_1()
                                     .min_w_0()
                                     .h_full()
-                                    .bg(rgb(0x1e1e1e))
+                                    .bg(workspace_bg)
                                     .overflow_hidden()
                                     .when(framed, |s| s.rounded_br(FRAME_ROUNDING))
                                     .child(crate::views::session_states::render_workspace_body(self, cx))
@@ -3939,8 +4090,20 @@ impl Render for AppState {
         // Without this the window is neither resizable nor shadowed on Linux —
         // the WM only resizes server-decorated windows. Square full-bleed when
         // maximized/tiled (`framed == false`, computed above).
+        //
+        // B1: the outermost frame carries the 1px outline in the theme's
+        // `border` color, following the same radius as the rounded leaves so no
+        // corner spills outside it. B4: when Liquid Glass is on, the glass rim
+        // stays a treatment for surfaces *inside* the frame — this outline
+        // remains the single outer border.
         if !framed {
-            return div().size_full().child(content);
+            // Maximized/tiled: the frame is square, so the outline is square
+            // too and no radius is left behind.
+            return div()
+                .size_full()
+                .border_1()
+                .border_color(frame_outline)
+                .child(content);
         }
 
         let tiling = match window.window_decorations() {
@@ -3951,7 +4114,7 @@ impl Render for AppState {
             div()
                 .relative()
                 .size_full()
-                .p(SHADOW_PADDING)
+                .p(csd::shadow_padding())
                 .on_mouse_down(MouseButton::Left, move |_, window, _| {
                     let size = window.window_bounds().get_bounds().size;
                     let pos = window.mouse_position();
@@ -3969,7 +4132,19 @@ impl Render for AppState {
                         window.start_window_resize(edge);
                     }
                 })
-                .child(div().size_full().shadow_xl().child(content)),
+                .child(
+                    // The panel itself: rounded, 1px outline, and our own shadow
+                    // painted into the reserved margin (Mutter's square shadow
+                    // is suppressed by `_GTK_FRAME_EXTENTS`, see `csd`).
+                    div()
+                        .relative()
+                        .size_full()
+                        .rounded(FRAME_ROUNDING)
+                        .border_1()
+                        .border_color(frame_outline)
+                        .shadow(csd::frame_shadow())
+                        .child(content),
+                ),
         )
         // Resize zones attach to the outer window box (not the padded middle)
         // so the bands sit on the true window edges. Painted last = on top.
@@ -3977,11 +4152,9 @@ impl Render for AppState {
     }
 }
 
-/// Transparent margin around the panel so the compositor/app shadow has room.
-const SHADOW_PADDING: Pixels = px(12.0);
 /// Width of the resize hit band at window edges: the full shadow padding,
-// so there is no dead band between the grab zone and the panel.
-const RESIZE_HIT: f32 = 12.0;
+/// so there is no dead band between the grab zone and the panel.
+const RESIZE_HIT: f32 = csd::RESIZE_HIT;
 /// Corner rounding for CSD leaves (mirrors Zed's 10px).
 pub const FRAME_ROUNDING: Pixels = px(10.0);
 

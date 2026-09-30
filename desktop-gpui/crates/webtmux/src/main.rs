@@ -6,7 +6,9 @@ use gpui::*;
 use parking_lot::Mutex;
 use webtmux::app_state::{AppState, TOKIO_RT};
 use webtmux::bundle::resolve_backend_path;
+use webtmux::csd;
 use webtmux::glass;
+use webtmux::gtk_theme;
 use webtmux::theme;
 use webtmux::window_state;
 use webtmux_settings::DesktopSettings;
@@ -42,6 +44,13 @@ fn main() {
     // work across the main GPUI thread and foreground async tasks.
     let _tokio_guard = TOKIO_RT.enter();
 
+    // 0b. Initialize GTK on the main thread *before* any theme is read. The
+    // desktop (GTK) theme probe needs `gtk::init()` on this exact thread; GTK
+    // is not thread-safe, so every later probe call happens from the main
+    // thread too (see `gtk_theme`). Failure is non-fatal: the app keeps the
+    // preset palette and the settings page reports "not detected".
+    gtk_theme::init();
+
     // 1. Headless bootstrap: load settings, resolve backend executable path
     let settings = DesktopSettings::load().unwrap_or_default();
     let backend_path = resolve_backend_path(&settings);
@@ -71,6 +80,11 @@ fn main() {
 
         // Initialize gpui-component subsystem and apply theme
         gpui_component::init(cx);
+        // Warm the desktop-theme cache once even when the persisted mode is not
+        // GTK, so the settings page's "Desktop (GTK)" preview and caption have
+        // real colors to show. Pure probe + cache; `apply_theme` decides whether
+        // the palette actually overrides the app.
+        let _ = gtk_theme::palette();
         theme::apply_theme(settings.theme, cx);
 
         // Liquid Glass: publish the persisted preferences once, so surfaces
@@ -148,10 +162,19 @@ fn main() {
             // (KWin/Hyprland on Wayland). A no-op everywhere else.
             glass::apply_backdrop_material(window, settings.glass_enabled);
 
+            // CSD: advertise `_GTK_FRAME_EXTENTS` (in physical pixels) so Mutter
+            // shadows the rounded frame instead of the square client rectangle
+            // and stops painting the corner "wedge". Retried in the background
+            // because the X property is allowed to arrive after map.
+            csd::advertise_frame_extents(window);
+
             window_state::observe(window, settings_for_observe, cx);
 
             let app_state = cx.new(|_cx| AppState::new(settings, spawn_opts));
             app_state.update(cx, |this, cx| {
+                // Desktop (GTK) live follow: poll the GTK theme key from the
+                // main/foreground thread (~1s) and repaint on change.
+                this.start_theme_watch(cx);
                 this.start_supervisor(cx);
             });
             // Wrap in a gpui-component Root so the dialog/sheet APIs

@@ -46,14 +46,14 @@ pub fn render_status_page<V: 'static>(
                 .size_full()
                 .items_center()
                 .justify_center()
-                .bg(rgb(0x1e1e1e))
-                .text_color(rgb(0xd4d4d4))
+                .bg(crate::theme::bg_color())
+                .text_color(crate::theme::fg_color())
                 .gap_3()
                 .child(
                     svg()
                         .data(LOADER2_SVG)
                         .size(px(20.0))
-                        .text_color(rgb(0x808080))
+                        .text_color(crate::theme::muted_fg())
                         .with_animation(
                             "loader_rotation",
                             Animation::new(Duration::from_secs(2)).repeat(),
@@ -64,7 +64,7 @@ pub fn render_status_page<V: 'static>(
                     div()
                         .text_xs()
                         .font_weight(FontWeight::NORMAL)
-                        .text_color(rgb(0x808080))
+                        .text_color(crate::theme::muted_fg())
                         .child("Starting backend…"),
                 )
                 .into_any_element()
@@ -82,8 +82,8 @@ pub fn render_status_page<V: 'static>(
                 .size_full()
                 .items_center()
                 .justify_center()
-                .bg(rgb(0x1e1e1e))
-                .text_color(rgb(0xd4d4d4))
+                .bg(crate::theme::bg_color())
+                .text_color(crate::theme::fg_color())
                 .p_8()
                 .child(
                     div()
@@ -91,9 +91,9 @@ pub fn render_status_page<V: 'static>(
                         .flex_col()
                         .w_full()
                         .max_w(px(700.0))
-                        .bg(rgb(0x2d2d2d))
+                        .bg(crate::theme::card_bg())
                         .border_1()
-                        .border_color(rgb(0x7F1D1D))
+                        .border_color(crate::theme::destructive_color())
                         .rounded_lg()
                         .p_6()
                         .shadow_lg()
@@ -101,7 +101,7 @@ pub fn render_status_page<V: 'static>(
                             div()
                                 .text_base()
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(rgb(0xd4d4d4))
+                                .text_color(crate::theme::fg_color())
                                 .child("Backend Startup Failed"),
                         )
                         .child(
@@ -109,7 +109,7 @@ pub fn render_status_page<V: 'static>(
                                 .mt_2()
                                 .text_sm()
                                 .font_weight(FontWeight::NORMAL)
-                                .text_color(rgb(0xd4d4d4))
+                                .text_color(crate::theme::fg_color())
                                 .child(format!("Reason: {}", reason)),
                         )
                         .when(has_tail, |card| {
@@ -117,13 +117,13 @@ pub fn render_status_page<V: 'static>(
                                 div()
                                     .mt_4()
                                     .p_3()
-                                    .bg(rgb(0x1e1e1e))
+                                    .bg(crate::theme::bg_color())
                                     .border_1()
-                                    .border_color(rgb(0x3c3c3c))
+                                    .border_color(crate::theme::border_color())
                                     .rounded_md()
                                     .text_xs()
                                     .font_family("JetBrains Mono")
-                                    .text_color(rgb(0xd4d4d4))
+                                    .text_color(crate::theme::fg_color())
                                     .children(redacted_lines.into_iter().map(|line| {
                                         div().child(line)
                                     })),
@@ -140,15 +140,15 @@ pub fn render_status_page<V: 'static>(
                                         .id("status/quit")
                                         .px_4()
                                         .py_2()
-                                        .bg(rgb(0x1e1e1e))
+                                        .bg(crate::theme::bg_color())
                                         .border_1()
-                                        .border_color(rgb(0x3c3c3c))
-                                        .hover(|s| s.bg(rgb(0x3c3c3c)))
+                                        .border_color(crate::theme::border_color())
+                                        .hover(|s| s.bg(crate::theme::border_color()))
                                         .rounded_md()
                                         .cursor_pointer()
                                         .text_sm()
                                         .font_weight(FontWeight::MEDIUM)
-                                        .text_color(rgb(0xd4d4d4))
+                                        .text_color(crate::theme::fg_color())
                                         .child("Quit")
                                         .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev, window, cx| {
                                             quit_handler(this, ev, window, cx);
@@ -159,13 +159,13 @@ pub fn render_status_page<V: 'static>(
                                         .id("status/retry")
                                         .px_4()
                                         .py_2()
-                                        .bg(rgb(0xd4d4d4))
-                                        .hover(|s| s.bg(rgb(0xc5c5c5)))
+                                        .bg(crate::theme::fg_color())
+                                        .hover(|s| s.bg(crate::theme::darken(crate::theme::fg_color(), 0.06)))
                                         .rounded_md()
                                         .cursor_pointer()
                                         .text_sm()
                                         .font_weight(FontWeight::MEDIUM)
-                                        .text_color(rgb(0x1e1e1e))
+                                        .text_color(crate::theme::bg_color())
                                         .child("Retry")
                                         .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev, window, cx| {
                                             retry_handler(this, ev, window, cx);
@@ -179,7 +179,7 @@ pub fn render_status_page<V: 'static>(
             // S4 Ready body: bare #1e1e1e surface
             div()
                 .size_full()
-                .bg(rgb(0x1e1e1e))
+                .bg(crate::theme::bg_color())
                 .into_any_element()
         }
     }

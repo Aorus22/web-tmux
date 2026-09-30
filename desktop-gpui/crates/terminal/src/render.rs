@@ -265,6 +265,12 @@ impl TerminalRenderer {
         let grid = term.grid();
         let num_lines = grid.screen_lines();
         let num_cols = grid.columns();
+        // Scrollback: `display_offset` is how many history lines the viewport is
+        // scrolled back by. `grid[Line(n)]` addresses live-screen rows, so the
+        // row we read for screen row `i` is `i - display_offset` (negative lines
+        // index into history). Without this the viewport never moved even though
+        // `scroll_display` changed the offset.
+        let display_offset = grid.display_offset() as i32;
 
         // 1. Paint default background covering the full element bounds
         window.paint_quad(quad(
@@ -286,9 +292,10 @@ impl TerminalRenderer {
         let base_height = self.cell_height / self.line_height_multiplier;
         let vertical_offset = (self.cell_height - base_height) / 2.0;
 
-        // 2. Iterate visible lines
+        // 2. Iterate visible lines (screen rows; `line` is the grid line shown
+        // at that row, i.e. shifted back into history when scrolled).
         for line_idx in 0..num_lines {
-            let line = Line(line_idx as i32);
+            let line = Line(line_idx as i32 - display_offset);
 
             let cells: Vec<(usize, Cell)> = (0..num_cols)
                 .map(|col_idx| {
@@ -439,10 +446,13 @@ impl TerminalRenderer {
             }
         }
 
-        // 3. Paint cursor
+        // 3. Paint cursor (only at the live screen: while the viewport is
+        // scrolled back the cursor row is not on screen, so it is hidden —
+        // standard terminal behaviour).
         let cursor_point = grid.cursor.point;
         let vi_mode = term.mode().contains(TermMode::VI);
-        let show_cursor = vi_mode || term.mode().contains(TermMode::SHOW_CURSOR);
+        let show_cursor = display_offset == 0
+            && (vi_mode || term.mode().contains(TermMode::SHOW_CURSOR));
 
         if show_cursor && cursor_point.line.0 >= 0 && (cursor_point.line.0 as usize) < num_lines {
             let cursor_x = origin.x + self.cell_width * (cursor_point.column.0 as f32);

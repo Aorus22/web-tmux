@@ -25,7 +25,13 @@ pub fn render_sidebar(
     let border_color = crate::theme::preset_border(&preset_name);
     let muted_text = crate::theme::preset_muted_fg(&preset_name);
     let foreground_text = crate::theme::preset_fg(&preset_name);
-    let active_bg = crate::theme::preset_muted(&preset_name);
+    // Active = the theme's primary/accent fill with its paired foreground (the
+    // "selected row" language used by the other desktop apps); hovering an idle
+    // row keeps the subtle muted wash, so active and hover never look alike.
+    let active_bg = crate::theme::preset_primary(&preset_name);
+    let active_text = crate::theme::preset_primary_fg(&preset_name);
+    let badge_bg = crate::theme::preset_muted(&preset_name);
+    let badge_bg_active = active_text.opacity(0.18);
     let hover_bg = crate::theme::preset_muted(&preset_name);
     let window_text = crate::theme::preset_muted_fg(&preset_name);
     let pane_dot_bg = crate::theme::preset_muted_fg(&preset_name);
@@ -179,7 +185,7 @@ pub fn render_sidebar(
                                             .px(px(8.0))
                                             .py(px(6.0))
                                             .cursor_pointer()
-                                            .when(is_active, |s| s.bg(active_bg).text_color(foreground_text))
+                                            .when(is_active, |s| s.bg(active_bg).text_color(active_text))
                                             .when(!is_active, |s| s.text_color(foreground_text).hover(|h| h.bg(hover_bg)))
                                             // Row click opens-or-activates the
                                             // session tab (ensure-socket when
@@ -218,7 +224,11 @@ pub fn render_sidebar(
                                                                 CHEVRON_RIGHT_SVG
                                                             })
                                                             .size(px(14.0))
-                                                            .text_color(muted_text),
+                                                            .text_color(if is_active {
+                                                                active_text
+                                                            } else {
+                                                                muted_text
+                                                            }),
                                                     ),
                                             )
                                             // Session Name
@@ -235,9 +245,13 @@ pub fn render_sidebar(
                                                 div()
                                                     .ml_auto()
                                                     .rounded(px(4.0))
-                                                    .bg(active_bg)
+                                                    .bg(if is_active { badge_bg_active } else { badge_bg })
                                                     .px(px(4.0))
-                                                    .text_color(muted_text)
+                                                    .text_color(if is_active {
+                                                        active_text
+                                                    } else {
+                                                        muted_text
+                                                    })
                                                     .text_xs()
                                                     .child(format!("{}", windows_count)),
                                             ),

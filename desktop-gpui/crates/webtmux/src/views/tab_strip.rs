@@ -299,8 +299,14 @@ pub fn render_title_bar(
 fn render_window_tabs(app: &AppState, cx: &mut Context<AppState>) -> impl IntoElement {
     // Phase 6: chrome reads the active preset per render (no cached colors).
     let preset_name = app.settings.theme_preset.clone();
-    let active_bg = crate::theme::preset_muted(&preset_name);
-    let active_text = crate::theme::preset_fg(&preset_name);
+    // Active tab mirrors the sidebar's selected row: primary/accent fill with
+    // its paired foreground. Hovering an idle tab keeps the muted wash, so the
+    // active tab is unambiguous.
+    let active_bg = crate::theme::preset_primary(&preset_name);
+    let active_text = crate::theme::preset_primary_fg(&preset_name);
+    // Ordinary foreground: the Plus button's hover text sits on the muted wash,
+    // not on the accent fill, so it must not use the paired accent foreground.
+    let foreground = crate::theme::preset_fg(&preset_name);
     let idle_text = crate::theme::preset_muted_fg(&preset_name);
     let hover_bg = crate::theme::preset_muted(&preset_name);
     let app_weak = cx.entity().downgrade();
@@ -359,7 +365,7 @@ fn render_window_tabs(app: &AppState, cx: &mut Context<AppState>) -> impl IntoEl
                 .rounded_md()
                 .cursor_pointer()
                 .text_color(idle_text)
-                .hover(|s| s.bg(hover_bg).text_color(active_text))
+                .hover(|s| s.bg(hover_bg).text_color(foreground))
                 .child(svg().data(PLUS_SVG).size(px(14.0)).text_color(idle_text))
                 .on_mouse_down(
                     MouseButton::Left,
@@ -403,7 +409,7 @@ pub fn with_window_tab_menu(
                 let preset = a.read(cx).settings.theme_preset.clone();
                 crate::theme::preset_danger_text(&preset)
             })
-            .unwrap_or(rgb(0xf87171));
+            .unwrap_or_else(|| crate::theme::preset_danger_text("default-dark"));
 
         menu.item(PopupMenuItem::new("Rename Window").on_click(
             move |_, window, cx| {

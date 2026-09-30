@@ -215,9 +215,9 @@ impl TerminalView {
     /// cell side under the pointer.
     ///
     /// Lazily refreshes `self.renderer`'s font metrics, then maps pixels to
-    /// grid cells using the exact geometry the paint pass uses (this
-    /// renderer's paint does not shift rows by the scrollback display offset,
-    /// so the mouse mapping must not either).
+    /// grid cells using the exact geometry the paint pass uses — including the
+    /// scrollback offset, because the renderer shifts screen rows back into
+    /// history while the viewport is scrolled.
     fn pixel_to_term_point(
         &mut self,
         position: Point<Pixels>,
@@ -245,14 +245,24 @@ impl TerminalView {
         };
 
         let term = self.terminal.lock();
-        pixel_to_cell_with_side(
+        let (viewport_point, side) = pixel_to_cell_with_side(
             position,
             origin,
             self.renderer.cell_width,
             self.renderer.cell_height,
             term.cols(),
             term.rows(),
-        )
+        );
+        // The paint pass draws screen row `i` from grid line `i - offset`, so
+        // hit-testing has to name the same line: selection anchors, word/line
+        // selection and copying all run on grid coordinates. This is exactly
+        // alacritty's `viewport_to_point` subtraction.
+        let display_offset = term.with_term(|t| t.grid().display_offset()) as i32;
+        let grid_point = AlacPoint::new(
+            Line(viewport_point.line.0 - display_offset),
+            viewport_point.column,
+        );
+        (grid_point, side)
     }
 
     /// Focus handle for keyboard input routing.
@@ -278,6 +288,14 @@ impl TerminalView {
         });
     }
 
+    /// Whether the current selection holds any copyable text.
+    pub fn has_selection(&self) -> bool {
+        self.terminal
+            .lock()
+            .selection_text()
+            .is_some_and(|text| !text.is_empty())
+    }
+
     /// Copy current selection text to system clipboard.
     pub fn copy_selection(&self, cx: &mut Context<Self>) -> bool {
         if let Some(text) = self.terminal.lock().selection_text() {
@@ -287,6 +305,20 @@ impl TerminalView {
             }
         }
         false
+    }
+
+    /// Copy the selection and clear it ("cut").
+    ///
+    /// A terminal has no writable buffer to remove text from, so the visible
+    /// result of a cut is the copied text leaving the screen selection — which
+    /// is also what `Put`-less terminals do for this entry.
+    pub fn cut_selection(&self, cx: &mut Context<Self>) -> bool {
+        if !self.copy_selection(cx) {
+            return false;
+        }
+        self.terminal.lock().clear_selection();
+        cx.notify();
+        true
     }
 
     /// Paste text from system clipboard into terminal input (one
@@ -335,11 +367,7 @@ impl TerminalView {
         // Ctrl+Shift+C / Cmd+C with a selection copies, Ctrl+Shift+V /
         // Cmd+V pastes, everything else (incl. Ctrl+C with an empty
         // selection) falls through to the interrupt byte path below.
-        let has_selection = self
-            .terminal
-            .lock()
-            .selection_text()
-            .is_some_and(|t| !t.is_empty());
+        let has_selection = self.has_selection();
         match decide_key_route(
             has_selection,
             event.keystroke.modifiers.control,
@@ -383,6 +411,15 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus_handle, cx);
+
+        // Plain right-click belongs to the context menu
+        // (`views::terminal_context_menu`), so it is not forwarded to the
+        // program; Shift+right-click still reaches a mouse-reporting app
+        // through the `mouse_button_report` path below.
+        if event.button == MouseButton::Right && !event.modifiers.shift {
+            cx.notify();
+            return;
+        }
 
         if self.last_bounds.lock().is_some() {
             let (pt, side) = self.pixel_to_term_point(event.position, window);
@@ -454,6 +491,13 @@ impl TerminalView {
     }
 
     fn on_mouse_up(&mut self, event: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Right-click release: the menu owns the plain right-click (see
+        // `on_mouse_down`), so only the Shift passthrough is forwarded.
+        if event.button == MouseButton::Right && !event.modifiers.shift {
+            cx.notify();
+            return;
+        }
+
         if self.last_bounds.lock().is_some() {
             let (pt, _) = self.pixel_to_term_point(event.position, window);
 
@@ -526,11 +570,18 @@ impl Render for TerminalView {
         let padding = self.padding;
         let app_weak = self.app.clone();
         let pane_id = self.pane_id.clone();
+        // The paint closure below is `move` and takes the pane/app handles, so
+        // keep a pair for the context-menu wrapper at the end.
+        let menu_pane_id = pane_id.clone();
+        let menu_app_weak = app_weak.clone();
         let resize_cb = self.resize_callback.clone();
         let view_handle = cx.entity().downgrade();
         let is_selecting = self.is_selecting;
 
-        div()
+        let root = div()
+            // Stable id: the right-click menu derives its open state from it
+            // (`ContextMenuExt`), so poll-tick re-renders must keep it identical.
+            .id(format!("terminal-root/{}", pane_id))
             .size_full()
             .track_focus(&focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
@@ -640,6 +691,14 @@ impl Render for TerminalView {
                     },
                 )
                 .size_full(),
-            )
+            );
+
+        // Right-click Copy / Cut / Paste on the pane's terminal.
+        crate::views::terminal_context_menu::with_terminal_context_menu(
+            root,
+            menu_pane_id,
+            menu_app_weak,
+        )
+        .into_any_element()
     }
 }

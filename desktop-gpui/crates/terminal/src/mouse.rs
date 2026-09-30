@@ -101,7 +101,9 @@ pub fn mouse_button_report(
 
     let button_value = button_code | modifiers;
     let col = point.column.0 + 1;
-    let row = point.line.0 + 1;
+    // Grid lines can be negative while the viewport is scrolled back; SGR
+    // coordinates are 1-based viewport positions, so clamp at the top row.
+    let row = point.line.0.max(0) + 1;
     let action = if pressed { b'M' } else { b'm' };
 
     let sequence = format!("\x1b[<{};{};{}{}", button_value, col, row, action as char);
@@ -120,7 +122,8 @@ pub fn scroll_report(
         let button_code = if delta > 0 { 64 } else { 65 };
         let button_value = button_code | modifiers;
         let col = point.column.0 + 1;
-        let row = point.line.0 + 1;
+        // Negative grid lines (scrolled back) clamp to the top SGR row.
+        let row = point.line.0.max(0) + 1;
         let sequence = format!("\x1b[<{};{};{}M", button_value, col, row);
         return Some(sequence.into_bytes());
     }

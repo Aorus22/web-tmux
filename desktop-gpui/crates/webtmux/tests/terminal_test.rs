@@ -353,11 +353,27 @@ fn test_wheel_policy() {
         other => panic!("mouse mode must emit SGR down, got {other:?}"),
     }
 
-    // TUI-on (incl. absent map entry = ON per D3) → 100px/notch PageUp/Down.
+    // Normal screen (a shell / REPL) with TUI-on must NOT page: there is
+    // nothing for PageUp to scroll, so the wheel scrolls our own scrollback.
+    // Regression: this used to send raw `\x1b[5~` into the running program.
     let plain = TermMode::empty();
+    let (sb_normal, _) = decide_wheel_action(
+        plain,
+        true,
+        WheelDelta::Pixels(120.0),
+        0.0,
+        18.9,
+        alac_origin(),
+        0,
+    );
+    assert_eq!(sb_normal, WheelAction::Scrollback(6));
+
+    // Alternate screen (less/htop/vim/opencode) + TUI-on (incl. absent map
+    // entry = ON per D3) → 100px/notch PageUp/Down.
+    let alt = TermMode::ALT_SCREEN;
     // Sub-notch accumulates without emitting.
     let (ignored, accum) = decide_wheel_action(
-        plain,
+        alt,
         true,
         WheelDelta::Pixels(40.0),
         0.0,
@@ -370,7 +386,7 @@ fn test_wheel_policy() {
     // Crossing the notch emits one PageUp (GPUI positive = wheel-up, matching
     // the SGR/scrollback sign above and the reference view).
     let (paged, accum2) = decide_wheel_action(
-        plain,
+        alt,
         true,
         WheelDelta::Pixels(70.0),
         accum,
@@ -392,7 +408,7 @@ fn test_wheel_policy() {
     // Line deltas scale ×16 into px (FE parity): 7 lines = 112px = 1 notch.
     assert!((wheel_delta_to_px(WheelDelta::Lines(7.0)) - 112.0).abs() < f32::EPSILON);
     let (line_page, _) = decide_wheel_action(
-        plain,
+        alt,
         true,
         WheelDelta::Lines(7.0),
         0.0,
@@ -409,7 +425,7 @@ fn test_wheel_policy() {
 
     // Burst clamp 3: a fast fling never emits more than 3 repeats.
     let (burst, _) = decide_wheel_action(
-        plain,
+        alt,
         true,
         WheelDelta::Pixels(1000.0),
         0.0,
@@ -425,7 +441,7 @@ fn test_wheel_policy() {
     }
     // Wheel down (negative px) pages down.
     let (down_page, _) = decide_wheel_action(
-        plain,
+        alt,
         true,
         WheelDelta::Pixels(-100.0),
         0.0,
@@ -458,6 +474,19 @@ fn test_wheel_policy() {
     app.open_session("dev");
     commit_state(&mut app, "dev", vec![("%0", "@0")]);
     assert!(app.tui_scroll("%0"));
+
+    // Normal screen: the same wheel scrolls our scrollback and never pages.
+    let n1 = app.apply_wheel("%0", WheelDelta::Pixels(37.8), 18.9, alac_origin(), 0);
+    assert_eq!(n1, WheelAction::Scrollback(2));
+
+    // Alternate screen (a full-screen TUI): the AppState accumulator pages,
+    // one PageUp per 100px notch.
+    let gen = app.sessions.get("dev").unwrap().generation;
+    assert!(app.apply_event(
+        "dev",
+        gen,
+        &terminal_frame(EV_TERMINAL_OUTPUT, "dev", "%0", "\x1b[?1049h", false, None),
+    ));
     let a1 = app.apply_wheel("%0", WheelDelta::Pixels(40.0), 18.9, alac_origin(), 0);
     assert_eq!(a1, WheelAction::Ignored);
     let a2 = app.apply_wheel("%0", WheelDelta::Pixels(70.0), 18.9, alac_origin(), 0);
@@ -467,6 +496,54 @@ fn test_wheel_policy() {
         }
         other => panic!("AppState accum must page on notch, got {other:?}"),
     }
+}
+
+#[test]
+fn test_scrollback_moves_the_display_offset_paint_reads() {
+    // Locks the wiring the renderer depends on: the wheel path must move
+    // `grid().display_offset()` — the value `TerminalRenderer::paint` shifts
+    // rows by — and not just flip an internal flag.
+    let mut app = fresh_app();
+    app.open_session("dev");
+    commit_state(&mut app, "dev", vec![("%0", "@0")]);
+    let gen = app.sessions.get("dev").unwrap().generation;
+
+    // More lines than a screen so there is history to scroll into.
+    let blob: String = (0..120).map(|i| format!("line-{i}\r\n")).collect();
+    assert!(app.apply_event(
+        "dev",
+        gen,
+        &terminal_frame(EV_TERMINAL_OUTPUT, "dev", "%0", &blob, false, None),
+    ));
+
+    fn offset(app: &AppState) -> usize {
+        app.terminals
+            .get("%0")
+            .expect("terminal store entry")
+            .terminal
+            .lock()
+            .with_term(|term| term.grid().display_offset())
+    }
+
+    assert_eq!(offset(&app), 0, "viewport starts at the live screen");
+
+    // Normal screen + TUI on → scrollback (never PageUp bytes), and the offset
+    // the paint pass reads moves by the requested line count.
+    let action = app.apply_wheel("%0", WheelDelta::Pixels(18.9 * 3.0), 18.9, alac_origin(), 0);
+    assert_eq!(action, WheelAction::Scrollback(3));
+    assert_eq!(offset(&app), 3, "paint must see the scrolled offset");
+
+    // Wheel down walks back towards the live screen.
+    let back = app.apply_wheel("%0", WheelDelta::Pixels(-18.9 * 2.0), 18.9, alac_origin(), 0);
+    assert_eq!(back, WheelAction::Scrollback(-2));
+    assert_eq!(offset(&app), 1);
+
+    // Any key press returns the viewport to the bottom.
+    {
+        let mut term = app.terminals.get("%0").unwrap().terminal.lock();
+        term.scroll_to_bottom();
+    }
+    assert_eq!(offset(&app), 0);
 }
 
 #[test]

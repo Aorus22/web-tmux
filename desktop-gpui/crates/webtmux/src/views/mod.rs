@@ -15,6 +15,7 @@ pub mod settings;
 pub mod sidebar;
 pub mod status;
 pub mod tab_strip;
+pub mod terminal_context_menu;
 pub mod terminal_view;
 pub mod toasts;
 pub mod window_toolbar;

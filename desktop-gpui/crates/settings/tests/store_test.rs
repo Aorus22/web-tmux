@@ -259,3 +259,37 @@ fn test_kill_confirm_legacy_json() {
     assert!(loaded.confirm_kill_pane);
     assert!(loaded.confirm_kill_window);
 }
+#[test]
+fn test_gtk_theme_variant_parses_and_round_trips() {
+    // "gtk" is additive: old files parse (Dark default) and the new value
+    // round-trips through the atomic save path.
+    let legacy = r#"{"theme":"dark","theme_preset":"default-dark"}"#;
+    let settings: DesktopSettings =
+        serde_json::from_str(legacy).expect("legacy JSON must parse");
+    assert_eq!(settings.theme, Theme::Dark);
+
+    let gtk: DesktopSettings =
+        serde_json::from_str(r#"{"theme":"gtk","theme_preset":"default-dark"}"#)
+            .expect("gtk value must parse");
+    assert_eq!(gtk.theme, Theme::Gtk);
+    assert!(gtk.theme.is_gtk());
+
+    let json = serde_json::to_string(&gtk).expect("serialize must succeed");
+    assert!(json.contains("\"theme\":\"gtk\""), "gtk must serialize lowercase");
+    let back: DesktopSettings = serde_json::from_str(&json).expect("parse must succeed");
+    assert_eq!(back.theme, Theme::Gtk);
+
+    // Lossy parse is total: unknown strings never fail the load.
+    assert_eq!(Theme::parse_lossy("gtk"), Theme::Gtk);
+    assert_eq!(Theme::parse_lossy("Desktop (GTK)"), Theme::Dark);
+    assert_eq!(Theme::parse_lossy("light"), Theme::Light);
+    assert_eq!(Theme::parse_lossy("system"), Theme::System);
+    assert_eq!(Theme::parse_lossy("nonsense"), Theme::Dark);
+    assert_eq!(Theme::Gtk.as_str(), "gtk");
+
+    let dir = tempdir().unwrap();
+    let base = dir.path();
+    gtk.save_to(base).expect("save_to must succeed");
+    let loaded = DesktopSettings::load_from(base).expect("load_from must succeed");
+    assert_eq!(loaded.theme, Theme::Gtk);
+}

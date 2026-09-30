@@ -251,7 +251,7 @@ fn render_divider(d: &DividerHandle, cx: &mut Context<AppState>) -> impl IntoEle
         .w(px(d.rect.w.max(0.0)))
         .h(px(d.rect.h.max(0.0)))
         .rounded_full()
-        .bg(rgb(0x3c3c3c))
+        .bg(crate::theme::border_color())
         .opacity(0.4)
         .hover(|s| s.opacity(1.0))
         .when(is_vertical, |s| s.cursor_col_resize())

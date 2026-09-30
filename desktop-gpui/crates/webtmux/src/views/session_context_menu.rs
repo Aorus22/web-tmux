@@ -48,7 +48,7 @@ pub fn with_session_context_menu(
                     let preset = a.read(cx).settings.theme_preset.clone();
                     crate::theme::preset_danger_text(&preset)
                 })
-                .unwrap_or(rgb(0xf87171));
+                .unwrap_or_else(|| crate::theme::preset_danger_text("default-dark"));
             menu.item(PopupMenuItem::new("Rename").on_click(
                 move |_, window, cx| {
                     if let Some(app) = rename_weak.upgrade() {

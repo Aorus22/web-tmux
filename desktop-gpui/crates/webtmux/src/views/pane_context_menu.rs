@@ -4,10 +4,14 @@
 //! Split Right / Split Down / Rename Pane / separator / Zoom / Swap
 //! (same-window picker submenu, disabled when empty) / Break To Window /
 //! separator / Kill (destructive red). Wrapped rows carry the stable
-//! `pane-menu/%N` id (poll-tick state-loss pitfall — never embed counters or
+//! `pane-header/%N` id (poll-tick state-loss pitfall — never embed counters or
 //! indices); `ContextMenuExt` derives its open-state id from that element id.
 //! Left-click select stays `MouseButton::Left`-only, so right-click never
 //! conflicts.
+//!
+//! Attachment note: the menu wraps the pane HEADER, not the whole pane, because
+//! the terminal body carries its own Copy/Cut/Paste menu — nested menus are both
+//! hovered by one right-click and would both open.
 //!
 //! `pane.join` is ABSENT by design: no `pane.join` WS route exists
 //! server-side (`protocol.go`, `handler.go`) and no Electron surface renders
@@ -30,10 +34,10 @@ use crate::app_state::{AppState, SwapCandidate};
 use crate::glass::{Elevation, GlassTier};
 use crate::views::rename_pane_dialog::open_rename_pane_dialog;
 
-/// Wrap a pane root in its right-click menu.
+/// Wrap a pane header in its right-click menu.
 ///
-/// `row` is the already-composed pane element carrying the stable
-/// `pane-menu/%N` id; `ContextMenuExt` derives its open-state id from that
+/// `row` is the already-composed pane HEADER element carrying the stable
+/// `pane-header/%N` id; `ContextMenuExt` derives its open-state id from that
 /// element id. `candidates` are the same-window swap targets with FE-verbatim
 /// labels; `app_weak` routes menu actions back to `AppState` (dialogs need
 /// the entity + window at click time).
@@ -65,7 +69,7 @@ pub fn with_pane_context_menu(
                 let preset = a.read(cx).settings.theme_preset.clone();
                 crate::theme::preset_danger_text(&preset)
             })
-            .unwrap_or(rgb(0xf87171));
+            .unwrap_or_else(|| crate::theme::preset_danger_text("default-dark"));
 
         let menu = menu
             .item(PopupMenuItem::new("Split Right").on_click(
