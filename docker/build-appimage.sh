@@ -31,9 +31,15 @@ echo "[2/3] Building Go backend + GPUI release client + AppImage..."
 "${ROOT_DIR}/desktop-gpui/scripts/package-appimage.sh"
 
 echo "[3/3] Checksums..."
-cd "${ROOT_DIR}"
-sha256sum dist/Tmux-GUI-*.AppImage | tee dist/SHA256SUMS.txt
+# Bare file names, not `dist/...` paths: the release ships this file next to a
+# flat AppImage, so `sha256sum -c SHA256SUMS.txt` has to work there. Subshell,
+# so the listing below still runs from the repo root.
+(
+    cd "${ROOT_DIR}/dist"
+    sha256sum Tmux-GUI-*.AppImage | tee SHA256SUMS.txt
+)
 
+cd "${ROOT_DIR}"
 echo
 echo "Done. Artifacts:"
 ls -la dist/Tmux-GUI-*.AppImage
