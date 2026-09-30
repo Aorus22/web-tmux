@@ -123,6 +123,19 @@ jobs:
             echo
             echo '```bash'
             echo "gh release download ${TAG} --repo ${GITHUB_REPOSITORY} --pattern '*.AppImage'"
+            echo "chmod +x $(basename "${APPIMAGE}")   # Release assets lose the exec bit"
+            echo "./$(basename "${APPIMAGE}")"
+            echo '```'
+            echo
+            echo "Direct link:"
+            echo
+            echo "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/$(basename "${APPIMAGE}")"
+            echo
+            echo "Verify with the attached \`SHA256SUMS.txt\`:"
+            echo
+            echo '```bash'
+            echo "gh release download ${TAG} --repo ${GITHUB_REPOSITORY} --pattern 'SHA256SUMS.txt'"
+            echo "sha256sum -c SHA256SUMS.txt"
             echo '```'
           } > notes.md
 
