@@ -538,6 +538,34 @@ pub fn build_terminal_resize(cols: usize, rows: usize) -> WsIncoming {
     }
 }
 
+/// Adopt the real pane grid geometry before a capture replay (TERM-02).
+///
+/// A capture blob is laid out at the tmux pane's grid width. Replaying it
+/// into a narrower local grid wraps full-width rows and bleeds the overflow
+/// onto following rows — the stale-text garbage seen under the prompt after
+/// a window resize. Every full-replay frame (snapshot / replace output)
+/// carries the pane's real `screenRows`/`screenCols`, so size the local grid
+/// to it first. The view's paint loop resizes back to its measured viewport
+/// and re-arms the debounced resize, so adoption is transient and both sides
+/// converge. Skipped without a valid geometry (legacy backend) or when the
+/// grid already matches (steady state — no pointless reflow).
+fn adopt_capture_geometry(
+    terminal: &Mutex<Terminal>,
+    screen_rows: Option<i32>,
+    screen_cols: Option<i32>,
+) {
+    let rows = screen_rows.unwrap_or(0);
+    let cols = screen_cols.unwrap_or(0);
+    if rows <= 0 || cols <= 0 {
+        return;
+    }
+    let (cols, rows) = (cols as usize, rows as usize);
+    let mut term = terminal.lock();
+    if term.cols() != cols || term.rows() != rows {
+        term.resize(cols, rows);
+    }
+}
+
 /// Stable layout key (`activeWindow|WxH|layout|pane-id:cells,zoom…`, FE
 /// `layoutKey` parity). Terminal output and active-pane changes leave it
 /// unchanged, so resync fires only on real topology/geometry changes.
@@ -1261,7 +1289,13 @@ impl AppState {
                 };
                 let data = msg.data.clone().unwrap_or_default();
                 if msg.msg_type == EV_TERMINAL_SNAPSHOT {
-                    self.commit_terminal_snapshot(session, &pane_id, &data, msg.screen_rows);
+                    self.commit_terminal_snapshot(
+                        session,
+                        &pane_id,
+                        &data,
+                        msg.screen_rows,
+                        msg.screen_cols,
+                    );
                 } else {
                     self.commit_terminal_output(
                         session,
@@ -1269,6 +1303,7 @@ impl AppState {
                         &data,
                         msg.replace,
                         msg.screen_rows,
+                        msg.screen_cols,
                     );
                 }
                 true
@@ -1758,6 +1793,7 @@ impl AppState {
         pane_id: &str,
         data: &str,
         screen_rows: Option<i32>,
+        screen_cols: Option<i32>,
     ) -> bool {
         self.attribute_pane(session, pane_id);
         let entry = self.pane_entry(pane_id);
@@ -1765,6 +1801,7 @@ impl AppState {
             return false; // exactly-once: remount re-requests die here
         }
         entry.snapshot_written = true;
+        adopt_capture_geometry(&entry.terminal, screen_rows, screen_cols);
         let feed = apply_capture(data, screen_rows, &mut entry.ingested_history);
         entry.terminal.lock().process_bytes(&feed);
         self.drain_pane_events(pane_id);
@@ -1781,10 +1818,12 @@ impl AppState {
         data: &str,
         replace: bool,
         screen_rows: Option<i32>,
+        screen_cols: Option<i32>,
     ) -> bool {
         self.attribute_pane(session, pane_id);
         if replace {
             let entry = self.pane_entry(pane_id);
+            adopt_capture_geometry(&entry.terminal, screen_rows, screen_cols);
             let feed = apply_capture(data, screen_rows, &mut entry.ingested_history);
             entry.terminal.lock().process_bytes(&feed);
         } else {

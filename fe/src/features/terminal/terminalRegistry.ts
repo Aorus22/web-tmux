@@ -28,6 +28,23 @@ type Registered = {
 
 const registry = new Map<string, Registered>()
 
+// adoptGeometry sizes the xterm buffer to the real pane grid before a capture
+// replay. The blob was laid out at the tmux pane's width; replayed into a
+// differently-sized buffer, full-width rows wrap and bleed onto following
+// rows (stale-text garbage under the prompt). The fit flow resizes back to
+// the measured viewport on its next pass, so adoption is transient and both
+// sides converge. Without a valid geometry (legacy backend) it is a no-op.
+function adoptGeometry(r: Registered, screenRows?: number, screenCols?: number) {
+  const rows = Number(screenRows)
+  const cols = Number(screenCols)
+  if (!Number.isFinite(rows) || rows <= 0 || !Number.isFinite(cols) || cols <= 0) return
+  if (r.term.cols !== cols || r.term.rows !== rows) {
+    r.term.resize(cols, rows)
+    r.cols = cols
+    r.rows = rows
+  }
+}
+
 // applyCapture turns a captured blob into the single atomic write for one
 // frame. With valid screenRows it splits the blob into history lines + the
 // visible screen tail: any not-yet-ingested history lines are written first
@@ -87,9 +104,10 @@ export const terminalRegistry = {
   // interleave an older frame with a newer one during resize. Keep only the
   // newest pending frame and start the next one after the previous write's
   // callback, making clear + write atomic at the frame level.
-  replaceScreen(paneId: string, data: string, screenRows?: number) {
+  replaceScreen(paneId: string, data: string, screenRows?: number, screenCols?: number) {
     const r = registry.get(paneId)
     if (!r) return
+    adoptGeometry(r, screenRows, screenCols)
     r.pendingScreen = applyCapture(r, data, screenRows)
     if (r.writingScreen) return
     r.writingScreen = true
@@ -118,11 +136,11 @@ export const terminalRegistry = {
   // terminal instance: the first snapshot clears stale pre-snapshot content
   // (e.g. the control-mode attach redraw) and replaces the buffer; later
   // duplicates are dropped so live output is never clobbered or doubled.
-  writeSnapshot(paneId: string, data: string, screenRows?: number) {
+  writeSnapshot(paneId: string, data: string, screenRows?: number, screenCols?: number) {
     const r = registry.get(paneId)
     if (!r || r.snapshotWritten) return
     r.snapshotWritten = true
-    terminalRegistry.replaceScreen(paneId, data, screenRows)
+    terminalRegistry.replaceScreen(paneId, data, screenRows, screenCols)
   },
 
   // invalidateSnapshot re-arms the snapshot guard so the next capture-pane

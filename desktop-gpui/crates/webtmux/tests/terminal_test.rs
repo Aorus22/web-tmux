@@ -97,6 +97,23 @@ fn terminal_frame(
     }
 }
 
+/// Same as `terminal_frame` but carrying the pane's real grid geometry
+/// (backend ≥ screenCols protocol): both split metadata AND adoption input.
+fn terminal_frame_geo(
+    msg_type: &str,
+    session: &str,
+    pane: &str,
+    data: &str,
+    replace: bool,
+    screen_rows: i32,
+    screen_cols: i32,
+) -> WsOutgoing {
+    WsOutgoing {
+        screen_cols: Some(screen_cols),
+        ..terminal_frame(msg_type, session, pane, data, replace, Some(screen_rows))
+    }
+}
+
 fn fresh_app() -> AppState {
     AppState::new(DesktopSettings::default(), None)
 }
@@ -762,7 +779,7 @@ fn test_hidden_session_recapture() {
         ));
     }
     // Gates shut after the first snapshot: repeats drop.
-    assert!(!app.commit_terminal_snapshot("b", "%b0", "h\ns", Some(1)));
+    assert!(!app.commit_terminal_snapshot("b", "%b0", "h\ns", Some(1), None));
 
     // Reconnect of session b re-arms only b's panes (sends no-op without live
     // sockets, but invalidation — the headless-testable half — still runs).
@@ -774,7 +791,82 @@ fn test_hidden_session_recapture() {
         &terminal_frame(EV_TERMINAL_SNAPSHOT, "b", "%b0", "h\ns", true, Some(1)),
     ));
     // a untouched: its gate still drops repeats.
-    assert!(!app.commit_terminal_snapshot("a", "%a0", "h\ns", Some(1)));
+    assert!(!app.commit_terminal_snapshot("a", "%a0", "h\ns", Some(1), None));
     // Unknown session recaptures nothing and never panics.
     app.recapture_session("ghost");
+}
+
+#[test]
+fn test_snapshot_adopts_real_grid_geometry() {
+    // A capture blob is laid out at the tmux pane's grid width. Replayed into
+    // the freshly constructed 80x24 default grid, a 100-col row wraps and
+    // bleeds onto the following rows (the stale-text garbage under the
+    // prompt). The snapshot carries the pane's real geometry, so the grid
+    // adopts it BEFORE the replay and the row stays intact.
+    let mut app = fresh_app();
+    app.open_session("dev");
+    commit_state(&mut app, "dev", vec![("%0", "@0")]);
+    let gen = app.sessions.get("dev").unwrap().generation;
+
+    let wide_row = "w".repeat(100);
+    let blob = format!("h1\n{}\ns2", wide_row);
+    assert!(app.apply_event(
+        "dev",
+        gen,
+        &terminal_frame_geo(EV_TERMINAL_SNAPSHOT, "dev", "%0", &blob, true, 2, 100),
+    ));
+
+    let grid = app.pane_grid_text("%0").unwrap();
+    // Adopted: 100 cols × 2 screen rows — the wide row is intact on row 0.
+    assert_eq!(grid.len(), 2);
+    assert_eq!(grid[0], wide_row);
+    assert_eq!(grid[1], "s2");
+    assert_eq!(app.pane_ingested_history("%0"), Some(1));
+}
+
+#[test]
+fn test_replace_output_adopts_real_grid_geometry() {
+    // Integrity frames (`terminal.output` replace=true) carry the geometry
+    // too and run the same adoption (this is the healing path for a garbled
+    // screen after a resize).
+    let mut app = fresh_app();
+    app.open_session("dev");
+    commit_state(&mut app, "dev", vec![("%0", "@0")]);
+
+    let wide_row = "x".repeat(90);
+    let blob = format!("{}\nz", wide_row);
+    assert!(app.commit_terminal_output(
+        "dev",
+        "%0",
+        &blob,
+        true,
+        Some(2),
+        Some(90),
+    ));
+    let grid = app.pane_grid_text("%0").unwrap();
+    assert_eq!(grid.len(), 2);
+    assert_eq!(grid[0], wide_row);
+    assert_eq!(grid[1], "z");
+}
+
+#[test]
+fn test_snapshot_without_cols_keeps_legacy_geometry() {
+    // Legacy backend (no screenCols) must not resize: without a real width
+    // the local grid keeps its measured size and the replay behaves as
+    // before.
+    let mut app = fresh_app();
+    app.open_session("dev");
+    commit_state(&mut app, "dev", vec![("%0", "@0")]);
+    let gen = app.sessions.get("dev").unwrap().generation;
+
+    assert!(app.apply_event(
+        "dev",
+        gen,
+        &terminal_frame(EV_TERMINAL_SNAPSHOT, "dev", "%0", "s1\ns2", true, Some(2)),
+    ));
+    let grid = app.pane_grid_text("%0").unwrap();
+    // Default 80x24 grid untouched; screen painted from the top.
+    assert_eq!(grid.len(), 24);
+    assert_eq!(grid[0], "s1");
+    assert_eq!(grid[1], "s2");
 }

@@ -304,10 +304,14 @@ func (s *Service) ResizeTerminal(session string, cols, rows int) error {
 }
 
 // CapturePane fetches terminal content for the initial capture (PRD §24).
-// It returns the capture blob and the pane height: everything above the last
-// screenRows lines of the blob is scrollback history.
-func (s *Service) CapturePane(ctx context.Context, session, paneID string) (string, int, error) {
-	screenRows := 0
+// It returns the capture blob plus the pane's real grid geometry
+// (screenRows/screenCols) at capture time: everything above the last
+// screenRows lines of the blob is scrollback history. The client sizes its
+// local grid to this geometry BEFORE replaying the blob — a capture replayed
+// into a differently-sized grid bleeds overflow onto following rows
+// (stale-text garbage).
+func (s *Service) CapturePane(ctx context.Context, session, paneID string) (string, int, int, error) {
+	screenRows, screenCols := 0, 0
 	if m := s.monitorOrNil(session); m != nil {
 		// The monitor may not have taken its first snapshot yet; Snapshot()
 		// returns nil then and dereferencing it here used to panic the server.
@@ -315,6 +319,7 @@ func (s *Service) CapturePane(ctx context.Context, session, paneID string) (stri
 			for _, pane := range snap.Panes {
 				if pane.ID == paneID {
 					screenRows = pane.Height
+					screenCols = pane.Width
 					break
 				}
 			}
@@ -322,10 +327,10 @@ func (s *Service) CapturePane(ctx context.Context, session, paneID string) (stri
 	}
 	if runtime.GOOS == "windows" {
 		data, err := s.reader.CapturePaneScreen(ctx, paneID, s.scrollback)
-		return data, screenRows, err
+		return data, screenRows, screenCols, err
 	}
 	data, err := s.reader.CapturePane(ctx, paneID, s.scrollback)
-	return data, screenRows, err
+	return data, screenRows, screenCols, err
 }
 
 // Snapshot returns a fresh snapshot of a session.

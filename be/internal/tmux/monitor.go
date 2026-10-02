@@ -22,6 +22,7 @@ type MonitorEvent struct {
 	Data       []byte
 	Replace    bool // full screen replacement (native Windows polling)
 	ScreenRows int  // leading Data lines above this count are scrollback history
+	ScreenCols int  // real pane grid width at capture time (client grid adoption)
 
 	// state: full snapshot after a topology change
 	Snapshot *Snapshot
@@ -459,13 +460,14 @@ func (m *Monitor) captureVisiblePane(paneID string, force bool) {
 	if err != nil {
 		return
 	}
-	screenRows := 0
+	screenRows, screenCols := 0, 0
 	// refreshTopology may have failed on the first ticks; guard against a nil
 	// cached snapshot so a capture can never take the process down.
 	if snap := m.Snapshot(); snap != nil {
 		for _, pane := range snap.Panes {
 			if pane.ID == paneID {
 				screenRows = pane.Height
+				screenCols = pane.Width
 				break
 			}
 		}
@@ -484,6 +486,7 @@ func (m *Monitor) captureVisiblePane(paneID string, force bool) {
 			Data:       []byte(data),
 			Replace:    true,
 			ScreenRows: screenRows,
+			ScreenCols: screenCols,
 		})
 	}
 }

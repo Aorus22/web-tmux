@@ -36,6 +36,10 @@ export interface WsOutgoing {
   // Number of visible screen rows in a capture blob; the remainder above them
   // is scrollback history (absent for plain incremental output).
   screenRows?: number
+  // Real pane grid width at capture time. The client sizes its grid to this
+  // before replaying the blob — a capture replayed into a differently-sized
+  // grid bleeds overflow onto following rows (stale-text garbage).
+  screenCols?: number
   message?: string
   seq?: number
   snapshot?: TmuxSnapshot

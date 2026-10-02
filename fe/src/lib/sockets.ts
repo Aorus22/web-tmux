@@ -33,14 +33,14 @@ function makeHandlers(session: string): WsHandlers {
     onStateDelta: (snap) => {
       useTmuxStore.getState().setSnapshot(session, snap as never)
     },
-    onTerminalOutput: (paneId, data, replace, screenRows) => {
-      if (replace) terminalRegistry.replaceScreen(paneId, data, screenRows)
+    onTerminalOutput: (paneId, data, replace, screenRows, screenCols) => {
+      if (replace) terminalRegistry.replaceScreen(paneId, data, screenRows, screenCols)
       else terminalRegistry.write(paneId, data)
     },
-    onTerminalSnapshot: (paneId, data, screenRows) => {
+    onTerminalSnapshot: (paneId, data, screenRows, screenCols) => {
       // Full-screen replacement (idempotent per terminal instance) — never
       // append the capture on top of existing rows (PRD §24).
-      terminalRegistry.writeSnapshot(paneId, data, screenRows)
+      terminalRegistry.writeSnapshot(paneId, data, screenRows, screenCols)
     },
     onCommandResult: (requestId, ok, message) => {
       useTmuxStore.getState().resolveCommand(requestId, ok, message)

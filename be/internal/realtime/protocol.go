@@ -50,6 +50,7 @@ type Outgoing struct {
 	Data       string      `json:"data,omitempty"`
 	Replace    bool        `json:"replace,omitempty"`
 	ScreenRows int         `json:"screenRows,omitempty"` // with Replace: Data lines above this are history
+	ScreenCols int         `json:"screenCols,omitempty"` // real pane grid width at capture time (client grid adoption)
 	Message    string      `json:"message,omitempty"`
 	Seq        uint64      `json:"seq,omitempty"`
 	Snapshot   interface{} `json:"snapshot,omitempty"`
