@@ -136,6 +136,18 @@ pub fn backoff_delay(attempt: u32) -> Duration {
     Duration::from_millis(backoff_delay_ms(attempt))
 }
 
+/// Auto-respawn ladder for a crashed backend child (1-based attempt): 1s,
+/// 2s, 5s, then a 10s tail forever. Deliberately slower than the WS
+/// [`RECONNECT_BACKOFF_MS`] ladder — a respawn also relaunches the whole
+/// backend startup sequence, so the first step gives the OS a beat.
+pub const BACKEND_RESPAWN_BACKOFF_MS: [u64; 4] = [1_000, 2_000, 5_000, 10_000];
+
+/// Delay before the Nth respawn attempt (attempt 1 → 1s; tails at 10s).
+pub fn backend_respawn_delay(attempt: u32) -> Duration {
+    let idx = attempt.saturating_sub(1) as usize;
+    Duration::from_millis(BACKEND_RESPAWN_BACKOFF_MS[idx.min(BACKEND_RESPAWN_BACKOFF_MS.len() - 1)])
+}
+
 /// True only for the pump-local transport-lost signal: the SOLE arm that may
 /// schedule a client retry timer. Server-sent `tmux.disconnected` must never
 /// arm one (double-retry with the backend monitor — Pitfall 1).
@@ -660,6 +672,11 @@ pub struct AppState {
     pub pane_titles: HashMap<String, String>,
     /// Resize armed by views, sent by plan 04-02 (TERM-06).
     pub pending_viewport: Option<PendingViewport>,
+    /// Last viewport successfully handed to a socket (`terminal.resize`).
+    /// Dedupes repeat arms of the same measured size so a settled layout
+    /// stops sending (and a capture-time geometry mismatch cannot ping-pong
+    /// the pipeline). Measured-pane dims, not the scaled window dims.
+    pub last_sent_viewport: Option<(usize, usize)>,
     /// Per-pane wheel notch accumulator (px leftover, FE `wheelAccum` parity).
     pub wheel_accum: HashMap<String, f32>,
     /// Debounce sequence: bumped per arm, timers drop when stale (poll-pump
@@ -721,6 +738,21 @@ pub struct AppState {
     /// Last GTK desktop-theme key seen by the ~1s follow watcher. `None` until
     /// the watcher's first tick, or when GTK is unavailable.
     pub last_gtk_key: Option<crate::gtk_theme::ThemeKey>,
+    /// True once the supervisor reached `Ready` at least once — a later
+    /// `Failed` is then a CRASH (auto-respawn), not a startup failure.
+    pub backend_was_ready: bool,
+    /// Auto-respawn ladder step for backend crashes (0 = none armed).
+    pub backend_restart_attempt: u32,
+    /// One respawn timer is in flight — dedupes the double `Failed` delivery
+    /// (watch forwarder `Status(Failed)` + spawn-outcome `Failed`).
+    pub backend_respawn_armed: bool,
+    /// Set by `stop_supervisor` (app quit / explicit stop) so respawn timers
+    /// die instead of relaunching the backend behind the quitting window.
+    pub backend_stopping: bool,
+    /// A 1500ms REST polling loop is currently alive. The loop exits when the
+    /// backend stops being `Ready`; the guard stops a recovery `Ready` from
+    /// stacking a second loop when the old one never observed the failure.
+    pub polling_active: bool,
 }
 
 impl AppState {
@@ -775,6 +807,12 @@ impl AppState {
             show_theme_mode_picker: false,
             show_font_picker: false,
             last_gtk_key: None,
+            last_sent_viewport: None,
+            backend_was_ready: false,
+            backend_restart_attempt: 0,
+            backend_respawn_armed: false,
+            backend_stopping: false,
+            polling_active: false,
         }
     }
 
@@ -849,6 +887,10 @@ impl AppState {
                                     this.trigger_poll(cx);
                                     true
                                 } else {
+                                    // Loop exits on a non-Ready backend (crash
+                                    // or respawn-in-flight); the recovery
+                                    // `Ready` arm restarts it (polling_active).
+                                    this.polling_active = false;
                                     false
                                 }
                             })
@@ -866,7 +908,10 @@ impl AppState {
     }
 
     /// Stop any running supervisor and terminate child process.
-    pub fn stop_supervisor(&self) {
+    pub fn stop_supervisor(&mut self) {
+        // Point-of-no-return for respawn timers: an app-quit or explicit stop
+        // must not relaunch the backend behind the closing window.
+        self.backend_stopping = true;
         let sup_opt = self.supervisor.lock().take();
         if let Some(mut sup) = sup_opt {
             TOKIO_RT.spawn(async move {
@@ -883,6 +928,17 @@ impl AppState {
         // Phase 6 palette: register the Ctrl+Shift+P binding once at boot
         // (App-level keymap; dispatch lands on the root-view action handler).
         crate::actions::bind_palette_keys(cx);
+        // Terminal Tab bindings (`Terminal` context, deeper than
+        // gpui-component `Root`'s focus-navigation `tab` binding — without
+        // them Root consumes Tab and shell completion never fires).
+        crate::actions::bind_terminal_keys(cx);
+        self.launch_backend(cx);
+    }
+
+    /// One backend launch attempt: spawn the supervisor child, forward status
+    /// transitions, and arm the crash auto-respawn ladder on failure. Called
+    /// from `start_supervisor` (boot) and from respawn timers (crash).
+    fn launch_backend(&mut self, cx: &mut Context<Self>) {
         let spawn_opts = match self.spawn_opts.clone() {
             Some(opts) => opts,
             None => {
@@ -944,15 +1000,29 @@ impl AppState {
                             entity.update(cx, |this, cx| {
                                 match event {
                                     SupervisorEvent::Status(st) => {
+                                        let failed =
+                                            matches!(st, BackendStatus::Failed { .. });
                                         this.backend_status = st;
+                                        if failed {
+                                            this.schedule_backend_respawn(cx);
+                                        }
                                     }
                                     SupervisorEvent::Ready(info) => {
+                                        this.backend_was_ready = true;
+                                        this.backend_restart_attempt = 0;
+                                        this.backend_respawn_armed = false;
                                         this.base_url = Some(info.base_url.clone());
                                         let client = RestClient::new(&info.base_url);
                                         this.rest_client = Some(client);
                                         this.backend_status = BackendStatus::Ready(info);
                                         this.trigger_poll(cx);
-                                        this.start_polling_loop(cx);
+                                        // Recovery after a crash starts a fresh
+                                        // loop only when the old one observed
+                                        // the failure and exited.
+                                        if !this.polling_active {
+                                            this.polling_active = true;
+                                            this.start_polling_loop(cx);
+                                        }
                                         // Phase 6 SET-03: post the stored
                                         // binary once (FE App.tsx:120-127).
                                         this.maybe_apply_stored_tmux_binary(cx);
@@ -962,6 +1032,7 @@ impl AppState {
                                             reason,
                                             stderr_tail,
                                         };
+                                        this.schedule_backend_respawn(cx);
                                     }
                                 }
                                 cx.notify();
@@ -971,6 +1042,49 @@ impl AppState {
                 }
             }
         }).detach();
+    }
+
+    /// Arm one auto-respawn step after a backend failure. The ladder (1s,
+    /// 2s, 5s, 10s tailing forever) mirrors the WS reconnect philosophy:
+    /// infinite retry so a crashed backend recovers without an app restart —
+    /// the old behavior left the app dead (poll loop broken, WS retries
+    /// dialing a dead port) until the user quit and relaunched.
+    pub fn schedule_backend_respawn(&mut self, cx: &mut Context<Self>) {
+        if self.backend_stopping || self.backend_respawn_armed {
+            return;
+        }
+        self.backend_respawn_armed = true;
+        self.backend_restart_attempt = self.backend_restart_attempt.saturating_add(1);
+        // The replacement backend process never saw the stored tmux binary;
+        // re-post it when the respawn reaches `Ready`.
+        self.tmux_binary_applied = false;
+        let step = self.backend_restart_attempt;
+        let delay = backend_respawn_delay(step);
+        cx.spawn(move |view_weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let cx_handle = cx.clone();
+            async move {
+                tokio::time::sleep(delay).await;
+                let _ = cx_handle.update(|cx: &mut App| {
+                    if let Some(entity) = view_weak.upgrade() {
+                        entity.update(cx, |this, cx| {
+                            this.backend_respawn_armed = false;
+                            // Skip when the app is quitting, the failure
+                            // self-resolved (Ready), or another attempt is
+                            // already in flight (Starting).
+                            let in_flight = matches!(
+                                this.backend_status,
+                                BackendStatus::Ready(_) | BackendStatus::Starting
+                            );
+                            if this.backend_stopping || in_flight {
+                                return;
+                            }
+                            this.launch_backend(cx);
+                        });
+                    }
+                });
+            }
+        })
+        .detach();
     }
 }
 
@@ -1299,7 +1413,9 @@ impl AppState {
     // -- Phase 4 plan 04-02 Task 2: debounced resize state machine ---------
 
     /// Arm a pending viewport from a measured grid size (TERM-06).
-    /// Zero-size measures never arm (T-04-05); identical re-arms dedupe.
+    /// Zero-size measures never arm (T-04-05); identical re-arms dedupe —
+    /// both against an already-armed pending viewport AND against the last
+    /// successfully sent size, so a settled layout stops scheduling timers.
     /// Returns the debounce sequence when scheduled, `None` when skipped.
     pub fn arm_viewport_for_pane(
         &mut self,
@@ -1314,6 +1430,8 @@ impl AppState {
             if pending.cols == cols && pending.rows == rows {
                 return None;
             }
+        } else if self.last_sent_viewport == Some((cols, rows)) {
+            return None;
         }
         let generation = self
             .owning_session(pane_id)
@@ -1331,7 +1449,9 @@ impl AppState {
     /// Fire the debounced resize when `expected_seq` is still current.
     /// Stale generations drop (second arm supersedes the first); firing
     /// consumes the pending viewport so rapid arms collapse to ONE send.
-    /// Recomputes `actualViewport` at fire time from settled sizes with
+    /// The measured size is recorded in `last_sent_viewport` so repeat
+    /// paints of the settled layout stop re-arming. Recomputes
+    /// `actualViewport` at fire time from settled sizes with
     /// `cols.max(2)/rows.max(1)` clamping (T-04-05).
     pub fn take_debounced_resize(
         &mut self,
@@ -1341,7 +1461,13 @@ impl AppState {
             return None;
         }
         let pending = self.pending_viewport.take()?;
-        self.debounced_envelope_for_pending(pending.cols, pending.rows)
+        match self.debounced_envelope_for_pending(pending.cols, pending.rows) {
+            Some(result) => {
+                self.last_sent_viewport = Some((pending.cols, pending.rows));
+                Some(result)
+            }
+            None => None,
+        }
     }
 
     /// Fire-time viewport computation shared by the timer and headless tests:
@@ -1405,8 +1531,11 @@ impl AppState {
     }
 
     /// 100ms generation-tagged debounce sender: recomputes at fire time from
-    /// settled sizes and sends exactly one clamped `terminal.resize`.
-    /// Timer bodies are manual-UAT class (like 02-02/03-02 visual checks);
+    /// settled sizes and sends exactly one clamped `terminal.resize`. After a
+    /// successful send the visible panes are re-captured so the grid content
+    /// re-syncs at the converged tmux geometry (a window resize reflows the
+    /// pane; incremental output alone cannot heal a resized grid). Timer
+    /// bodies are manual-UAT class (like 02-02/03-02 visual checks);
     /// headless tests cover arm/collapse/clamp via `take_debounced_resize`.
     pub fn schedule_debounced_resize(&mut self, cx: &mut Context<Self>) {
         let seq = self.resize_seq;
@@ -1418,12 +1547,30 @@ impl AppState {
                     if let Some(entity) = view_weak.upgrade() {
                         entity.update(cx, |this, _cx| {
                             if let Some((session, msg)) = this.take_debounced_resize(seq) {
-                                if let Some(handle) = this
+                                let sent = this
                                     .sessions
                                     .get(&session)
                                     .and_then(|e| e.handle.as_ref())
-                                {
-                                    let _ = handle.send_command(msg);
+                                    .map(|handle| handle.send_command(msg).is_ok())
+                                    .unwrap_or(false);
+                                if sent {
+                                    // Content re-sync at the converged size:
+                                    // same invalidate+capture pair the
+                                    // layout-key 325ms arm uses.
+                                    let panes = this.layout_resync_panes(
+                                        &this.active_window_pane_ids(),
+                                    );
+                                    for pane in &panes {
+                                        this.invalidate_pane_snapshot(pane);
+                                    }
+                                    for pane in &panes {
+                                        let _ = this.request_pane_capture(pane);
+                                    }
+                                } else {
+                                    // Send never went out: forget the recorded
+                                    // size so the next paint re-arms instead of
+                                    // being deduped away forever.
+                                    this.last_sent_viewport = None;
                                 }
                             }
                         });
@@ -1538,13 +1685,14 @@ impl AppState {
                                 if let Some(session) = this.active_session.clone() {
                                     let _ = this.send_terminal_resize(&session, cols, rows);
                                 }
-                            } else if let Some(session) = this.active_session.clone() {
-                                // No settled measure yet: still report the scaled
-                                // snapshot geometry so tmux learns the new layout.
-                                let panes = this.active_window_pane_ids();
-                                let _ = panes;
-                                let _ = this.send_terminal_resize(&session, 80, 24);
                             }
+                            // No `else` fallback here: when the pending
+                            // viewport is already consumed, the 100ms debounce
+                            // settled the send. This arm previously sent a
+                            // hardcoded 80x24 in that case, which COLLAPSED
+                            // the tmux window right after every real resize —
+                            // the local grid then rendered at a different
+                            // width than the pane (stale cells, wrong wraps).
                         });
                     }
                 });

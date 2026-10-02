@@ -351,6 +351,39 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Action path for Tab / Shift+Tab (`bind_terminal_keys`): GPUI matches
+    /// keymap bindings BEFORE `on_key_down` listeners, so these bytes can
+    /// never ride the key-down path while `Root`'s focus-navigation binding
+    /// exists. Reuses the exact key-down pipeline (scroll reset + byte
+    /// conversion + PTY write) with a synthetic keystroke.
+    fn on_tab_action(&mut self, shift: bool, cx: &mut Context<Self>) {
+        let keystroke = Keystroke {
+            modifiers: Modifiers {
+                shift,
+                ..Default::default()
+            },
+            key: "tab".into(),
+            key_char: None,
+        };
+        {
+            let mut term = self.terminal.lock();
+            term.scroll_to_bottom();
+        }
+        let mode = self.terminal.lock().mode();
+        if let Some(bytes) = keystroke_to_bytes(&keystroke, mode) {
+            self.write_to_pty(&bytes, cx);
+        }
+        cx.notify();
+    }
+
+    fn on_action_tab(&mut self, _: &crate::actions::TerminalTab, _window: &mut Window, cx: &mut Context<Self>) {
+        self.on_tab_action(false, cx);
+    }
+
+    fn on_action_shift_tab(&mut self, _: &crate::actions::TerminalShiftTab, _window: &mut Window, cx: &mut Context<Self>) {
+        self.on_tab_action(true, cx);
+    }
+
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         // Pitfall 1: Ctrl+Shift+P must bubble to `TogglePalette` instead of
         // entering the pty — early-return before any byte conversion so the
@@ -584,6 +617,13 @@ impl Render for TerminalView {
             .id(format!("terminal-root/{}", pane_id))
             .size_full()
             .track_focus(&focus_handle)
+            // Key context for the `TerminalTab`/`TerminalShiftTab` bindings
+            // (`bind_terminal_keys`): deeper than gpui-component `Root`'s
+            // `tab` focus-navigation binding, which otherwise consumes Tab
+            // before `on_key_down` ever runs (shell completion dead).
+            .key_context("Terminal")
+            .on_action(cx.listener(Self::on_action_tab))
+            .on_action(cx.listener(Self::on_action_shift_tab))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
