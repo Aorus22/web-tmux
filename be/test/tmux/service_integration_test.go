@@ -111,7 +111,7 @@ func TestServiceLifecycle(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// 7. Capture pane content.
-	out, _, err := svc.CapturePane(ctx, "itest", "%0")
+	out, _, _, err := svc.CapturePane(ctx, "itest", "%0")
 	if err != nil {
 		t.Fatalf("capture: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestServiceLifecycle(t *testing.T) {
 		t.Fatalf("send input: %v", err)
 	}
 	time.Sleep(400 * time.Millisecond)
-	out2, err := svc.CapturePane(ctx, "itest", "%0")
+	out2, _, _, err := svc.CapturePane(ctx, "itest", "%0")
 	if err != nil {
 		t.Fatalf("capture2: %v", err)
 	}

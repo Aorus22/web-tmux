@@ -122,6 +122,8 @@ pub struct WsOutgoing {
     pub replace: bool,
     #[serde(rename = "screenRows", default)]
     pub screen_rows: Option<i32>,
+    #[serde(rename = "screenCols", default)]
+    pub screen_cols: Option<i32>,
     #[serde(default)]
     pub message: Option<String>,
     #[serde(default)]

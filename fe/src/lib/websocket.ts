@@ -15,8 +15,14 @@ export interface WsHandlers {
   onReady?: (session: string) => void
   onStateSnapshot?: (snap: unknown) => void
   onStateDelta?: (snap: unknown) => void
-  onTerminalOutput?: (paneId: string, data: string, replace?: boolean, screenRows?: number) => void
-  onTerminalSnapshot?: (paneId: string, data: string, screenRows?: number) => void
+  onTerminalOutput?: (
+    paneId: string,
+    data: string,
+    replace?: boolean,
+    screenRows?: number,
+    screenCols?: number
+  ) => void
+  onTerminalSnapshot?: (paneId: string, data: string, screenRows?: number, screenCols?: number) => void
   onCommandResult?: (requestId: string, ok: boolean, message?: string) => void
   onReconnecting?: () => void
   onDisconnected?: () => void
@@ -147,10 +153,10 @@ export class TmuxSocket {
         this.handlers.onStateDelta?.(msg.snapshot)
         break
       case EV.terminalOutput:
-        if (msg.paneId) this.handlers.onTerminalOutput?.(msg.paneId, msg.data ?? '', msg.replace, msg.screenRows)
+        if (msg.paneId) this.handlers.onTerminalOutput?.(msg.paneId, msg.data ?? '', msg.replace, msg.screenRows, msg.screenCols)
         break
       case EV.terminalSnapshot:
-        if (msg.paneId) this.handlers.onTerminalSnapshot?.(msg.paneId, msg.data ?? '', msg.screenRows)
+        if (msg.paneId) this.handlers.onTerminalSnapshot?.(msg.paneId, msg.data ?? '', msg.screenRows, msg.screenCols)
         break
       case EV.commandSuccess:
         if (msg.requestId) this.handlers.onCommandResult?.(msg.requestId, true)
