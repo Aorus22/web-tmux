@@ -26,6 +26,7 @@ import { CreateSessionDialog } from '@/features/sessions/CreateSessionDialog'
 import { SettingsPage } from '@/features/settings/SettingsPage'
 import { CommandPalette } from '@/features/palette/CommandPalette'
 import { ensureSocket, closeSocket } from '@/lib/sockets'
+import { readSessionFromUrl, writeSessionToUrl } from '@/lib/session-url'
 import { cn } from '@/lib/utils'
 
 export default function App() {
@@ -172,6 +173,35 @@ export default function App() {
   useEffect(() => {
     useTmuxStore.getState().setViewSession(activeSession)
   }, [activeSession])
+
+  // Active session tab rides the URL query (`?session=<name>`): every change
+  // replaces the query in place, and a load with the param reopens that
+  // session once the tree confirms it exists. Restore retries across tree
+  // polls only while no tab is open — a killed session's stale link falls
+  // through to the select view as soon as the user opens anything. The write
+  // holds off while restore is still pending and no tab is open, so a load
+  // with `?session=` isn't stripped before the tree confirms the session.
+  useEffect(() => {
+    if (!urlRestoredRef.current && openSessions.length === 0) return
+    writeSessionToUrl(activeSession)
+  }, [activeSession, openSessions])
+  const urlRestoredRef = useRef(false)
+  useEffect(() => {
+    if (urlRestoredRef.current || !tree) return
+    const wanted = readSessionFromUrl()
+    if (!wanted) {
+      urlRestoredRef.current = true
+      return
+    }
+    if (useAppStore.getState().openSessions.length > 0) {
+      urlRestoredRef.current = true
+      return
+    }
+    if (tree.sessions?.some((node) => node.session.name === wanted)) {
+      urlRestoredRef.current = true
+      useAppStore.getState().openSession(wanted)
+    }
+  }, [tree])
 
   // Command palette shortcut (PRD §38): Ctrl+Shift+P.
   useKeyboardShortcut({ key: 'p', ctrl: true, shift: true }, () =>
