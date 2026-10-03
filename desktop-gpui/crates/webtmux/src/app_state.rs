@@ -4387,12 +4387,17 @@ impl Render for AppState {
                     // The panel itself: rounded, 1px outline, and our own shadow
                     // painted into the reserved margin (Mutter's square shadow
                     // is suppressed by `_GTK_FRAME_EXTENTS`, see `csd`).
+                    // overflow_hidden clips the square content (panes, toolbar,
+                    // toasts) to the rounded frame — without it the corners
+                    // show square content outside the border line, reading as
+                    // a stray box around the window.
                     div()
                         .relative()
                         .size_full()
                         .rounded(FRAME_ROUNDING)
                         .border_1()
                         .border_color(frame_outline)
+                        .overflow_hidden()
                         .shadow(csd::frame_shadow())
                         .child(content),
                 ),
