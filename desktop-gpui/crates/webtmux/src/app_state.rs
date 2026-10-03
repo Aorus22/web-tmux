@@ -13,7 +13,7 @@ use tokio::sync::oneshot;
 use webtmux_backend_client::{
     connect_session, connect_session_with_pending, validate_session_name, RestClient,
     CommandResult, RestError, SessionSnapshot, SessionWsHandle, SharedPending, TmuxInfo,
-    TransportState, TmuxTree,
+    TransportState, TmuxPane, TmuxTree,
     WsIncoming, WsOutgoing, EV_CONNECTION_READY, EV_STATE_DELTA, EV_STATE_SNAPSHOT,
     EV_SERVER_ERROR, EV_TERMINAL_OUTPUT, EV_TERMINAL_SNAPSHOT, EV_TMUX_DISCONNECTED,
     EV_TMUX_RECONNECTING, EV_TRANSPORT_LOST, MSG_PANE_BREAK, MSG_PANE_KILL, MSG_PANE_RENAME, MSG_PANE_RESIZE,
@@ -281,6 +281,15 @@ pub struct PaneTerminal {
     pub snapshot_written: bool,
     /// Scrollback lines already pushed to this instance (FE `ingestedHistory`).
     pub ingested_history: usize,
+    /// The pane's real tmux grid geometry `(cols, rows)` once any authoritative
+    /// source has reported it (state snapshot pane width/height, or a capture
+    /// frame's `screenCols`/`screenRows`). `Some` makes the view render at this
+    /// size instead of its pixel measurement: pixel-even splits round
+    /// differently than tmux's cell-even splits (119 cells split 60/59 while a
+    /// pixel split yields 60/60), and rendering at the measured size is a
+    /// persistent off-by-one that garbles every shell redraw at the wrap
+    /// boundary.
+    pub real_geometry: Option<(usize, usize)>,
 }
 
 impl PaneTerminal {
@@ -289,6 +298,7 @@ impl PaneTerminal {
             terminal: Arc::new(Mutex::new(Terminal::new(80, 24))),
             snapshot_written: false,
             ingested_history: 0,
+            real_geometry: None,
         }
     }
 }
@@ -545,12 +555,12 @@ pub fn build_terminal_resize(cols: usize, rows: usize) -> WsIncoming {
 /// onto following rows — the stale-text garbage seen under the prompt after
 /// a window resize. Every full-replay frame (snapshot / replace output)
 /// carries the pane's real `screenRows`/`screenCols`, so size the local grid
-/// to it first. The view's paint loop resizes back to its measured viewport
-/// and re-arms the debounced resize, so adoption is transient and both sides
-/// converge. Skipped without a valid geometry (legacy backend) or when the
-/// grid already matches (steady state — no pointless reflow).
+/// to it first AND record it as the pane's `real_geometry` (the view's paint
+/// loop renders at tmux's geometry from then on instead of re-imposing its
+/// pixel measurement). Skipped without a valid geometry (legacy backend) or
+/// when the grid already matches (steady state — no pointless reflow).
 fn adopt_capture_geometry(
-    terminal: &Mutex<Terminal>,
+    entry: &mut PaneTerminal,
     screen_rows: Option<i32>,
     screen_cols: Option<i32>,
 ) {
@@ -560,7 +570,8 @@ fn adopt_capture_geometry(
         return;
     }
     let (cols, rows) = (cols as usize, rows as usize);
-    let mut term = terminal.lock();
+    entry.real_geometry = Some((cols, rows));
+    let mut term = entry.terminal.lock();
     if term.cols() != cols || term.rows() != rows {
         term.resize(cols, rows);
     }
@@ -1261,6 +1272,12 @@ impl AppState {
                 // sessions' panes are untouched (TERM-07).
                 let present: HashSet<String> =
                     snap.panes.iter().map(|p| p.id.clone()).collect();
+                // Geometry adoption: tmux is the source of truth for every
+                // pane's grid size. A split's pixel measurement rounds
+                // differently than tmux's cell split, so rendering at the
+                // measured size is a persistent mismatch that garbles shell
+                // redraws; snap pane width/height keeps the grid exact.
+                self.adopt_pane_geometries(&snap.panes);
                 for pane in &present {
                     self.attribute_pane(session, pane);
                 }
@@ -1377,6 +1394,53 @@ impl AppState {
     /// Replay counter for a pane (contract tests).
     pub fn pane_ingested_history(&self, pane_id: &str) -> Option<usize> {
         self.terminals.get(pane_id).map(|e| e.ingested_history)
+    }
+
+    /// Adopt every registered pane's grid to its real tmux geometry from a
+    /// state snapshot. tmux is the source of truth for pane grid sizes: its
+    /// cell-level split rounding differs from the GUI's pixel-level split, so
+    /// a measured grid size can disagree with the real pane by a cell
+    /// forever — every shell redraw then leaves stale fragments at the wrap
+    /// boundary (the "00%sz" garbage under wrapped prompts). Zero-sized panes
+    /// (tmux hiccups) and unregistered panes are skipped; adoption only
+    /// touches the grid when the geometry actually changed so steady-state
+    /// snapshots cause no reflow churn.
+    pub fn adopt_pane_geometries(&mut self, panes: &[TmuxPane]) {
+        for pane in panes {
+            if pane.width == 0 || pane.height == 0 {
+                continue;
+            }
+            let geometry = (pane.width, pane.height);
+            if let Some(entry) = self.terminals.get_mut(&pane.id) {
+                if entry.real_geometry != Some(geometry) {
+                    entry.real_geometry = Some(geometry);
+                    let mut term = entry.terminal.lock();
+                    if term.cols() != geometry.0 || term.rows() != geometry.1 {
+                        term.resize(geometry.0, geometry.1);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Real tmux grid geometry `(cols, rows)` for a pane, once any
+    /// authoritative source (state snapshot, capture frame) has reported it.
+    /// The terminal view's paint loop renders at this size instead of its
+    /// pixel measurement.
+    pub fn pane_real_geometry(&self, pane_id: &str) -> Option<(usize, usize)> {
+        self.terminals.get(pane_id)?.real_geometry
+    }
+
+    /// Whether `pane_id` is its session's active tmux pane per the latest
+    /// state snapshot. Window-level `terminal.resize` sends are gated to the
+    /// active pane: every visible pane's paint pass measures its own pixel
+    /// area and the scaled window request differs per pane, so letting all of
+    /// them arm makes two panes alternate conflicting resizes forever.
+    pub fn is_active_tmux_pane(&self, pane_id: &str) -> bool {
+        self.owning_session(pane_id)
+            .and_then(|s| self.sessions.get(&s)?.snapshot.as_ref())
+            .map(|snap| snap.active_pane == pane_id)
+            .unwrap_or(false)
     }
 
     /// Last OSC title for a pane (D8).
@@ -1801,7 +1865,7 @@ impl AppState {
             return false; // exactly-once: remount re-requests die here
         }
         entry.snapshot_written = true;
-        adopt_capture_geometry(&entry.terminal, screen_rows, screen_cols);
+        adopt_capture_geometry(entry, screen_rows, screen_cols);
         let feed = apply_capture(data, screen_rows, &mut entry.ingested_history);
         entry.terminal.lock().process_bytes(&feed);
         self.drain_pane_events(pane_id);
@@ -1823,7 +1887,7 @@ impl AppState {
         self.attribute_pane(session, pane_id);
         if replace {
             let entry = self.pane_entry(pane_id);
-            adopt_capture_geometry(&entry.terminal, screen_rows, screen_cols);
+            adopt_capture_geometry(entry, screen_rows, screen_cols);
             let feed = apply_capture(data, screen_rows, &mut entry.ingested_history);
             entry.terminal.lock().process_bytes(&feed);
         } else {

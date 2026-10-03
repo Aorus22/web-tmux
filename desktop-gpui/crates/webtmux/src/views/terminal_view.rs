@@ -702,26 +702,81 @@ impl Render for TerminalView {
                         let cols = ((avail_w / cw).floor() as usize).max(1);
                         let rows = ((avail_h / ch).floor() as usize).max(1);
 
-                        // Local resize applies immediately; on change the
-                        // resize path fires and only ARMS (never sends —
-                        // Pitfall 4: the 100ms AppState debounce owns sends).
+                        // Grid sizing source of truth (TERM-06 revisit): tmux's
+                        // real pane geometry once a snapshot/capture reported
+                        // it. Pixel measurements round per-pane splits
+                        // differently than tmux's cell splits — a 50/50 pixel
+                        // split of a 119-cell window measures 60/60 while tmux
+                        // lays out 60/59 — so rendering at the measured size is
+                        // a persistent off-by-one that garbles every shell
+                        // redraw at the wrap boundary. Frames before any
+                        // geometry is known keep the legacy measured sizing so
+                        // the first paint fills the view.
+                        let (real_geometry, is_active_pane) = app_weak
+                            .update(cx, |app, _cx| {
+                                (
+                                    app.pane_real_geometry(&pane_id),
+                                    app.is_active_tmux_pane(&pane_id),
+                                )
+                            })
+                            .unwrap_or((None, false));
+
                         let mut term = term_arc.lock();
-                        if cols != term.cols() || rows != term.rows() {
-                            term.resize(cols, rows);
-                            drop(term);
-                            if let Some(ref cb) = resize_cb {
-                                cb(cols, rows);
-                            } else {
-                                let pane = pane_id.clone();
-                                let _ = app_weak.update(cx, |app, cx| {
-                                    if app.arm_viewport_for_pane(&pane, cols, rows).is_some() {
-                                        app.schedule_debounced_resize(cx);
+                        match real_geometry {
+                            Some((real_cols, real_rows)) if real_cols > 0 && real_rows > 0 => {
+                                // Adopt tmux's geometry; never re-impose the
+                                // pixel measurement on the grid — it would
+                                // fight adoption every frame.
+                                if term.cols() != real_cols || term.rows() != real_rows {
+                                    term.resize(real_cols, real_rows);
+                                }
+                                drop(term);
+                                // The window-level request still follows the
+                                // measured viewport (the debounce dedupes it
+                                // against the last sent size at fire time), but
+                                // only the session's active pane arms: every
+                                // pane's scaled request differs, and letting all
+                                // of them arm alternates conflicting resizes.
+                                if is_active_pane {
+                                    if let Some(ref cb) = resize_cb {
+                                        cb(cols, rows);
+                                    } else {
+                                        let pane = pane_id.clone();
+                                        let _ = app_weak.update(cx, |app, cx| {
+                                            if app.arm_viewport_for_pane(&pane, cols, rows).is_some()
+                                            {
+                                                app.schedule_debounced_resize(cx);
+                                            }
+                                            cx.notify();
+                                        });
                                     }
-                                    cx.notify();
-                                });
+                                }
                             }
-                        } else {
-                            drop(term);
+                            _ => {
+                                // Legacy path before any geometry is known:
+                                // local resize applies immediately; on change
+                                // the resize path fires and only ARMS (never
+                                // sends — Pitfall 4: the AppState debounce owns
+                                // sends).
+                                if cols != term.cols() || rows != term.rows() {
+                                    term.resize(cols, rows);
+                                    drop(term);
+                                    if let Some(ref cb) = resize_cb {
+                                        cb(cols, rows);
+                                    } else {
+                                        let pane = pane_id.clone();
+                                        let _ = app_weak.update(cx, |app, cx| {
+                                            if app.arm_viewport_for_pane(&pane, cols, rows).is_some()
+                                            {
+                                                app.schedule_debounced_resize(cx);
+                                            }
+                                            cx.notify();
+                                        });
+                                    }
+                                } else {
+                                    drop(term);
+                                }
+                            }
                         }
 
                         let term = term_arc.lock();

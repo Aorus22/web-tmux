@@ -54,6 +54,35 @@ fn tmux_pane(id: &str, window_id: &str) -> TmuxPane {
     }
 }
 
+/// Same as `tmux_pane` but with the pane's real cell geometry (splits round
+/// per pane; the geometry tests rely on sizes that differ from the fixture
+/// default).
+fn tmux_pane_sized(id: &str, window_id: &str, width: usize, height: usize) -> TmuxPane {
+    TmuxPane {
+        width,
+        height,
+        ..tmux_pane(id, window_id)
+    }
+}
+
+/// `snapshot_with_panes` with the session's active pane set (the active-pane
+/// resize gating depends on it).
+fn snapshot_with_active_pane(
+    name: &str,
+    active_pane: &str,
+    panes: Vec<TmuxPane>,
+) -> SessionSnapshot {
+    SessionSnapshot {
+        session: tmux_session(name),
+        windows: vec![tmux_window("@0")],
+        panes,
+        active_window: "@0".to_string(),
+        active_pane: active_pane.to_string(),
+        replace: false,
+        seq: 0,
+    }
+}
+
 fn snapshot_with_panes(name: &str, panes: Vec<(&str, &str)>) -> SessionSnapshot {
     SessionSnapshot {
         session: tmux_session(name),
@@ -869,4 +898,132 @@ fn test_snapshot_without_cols_keeps_legacy_geometry() {
     assert_eq!(grid.len(), 24);
     assert_eq!(grid[0], "s1");
     assert_eq!(grid[1], "s2");
+}
+
+#[test]
+fn test_state_snapshot_adopts_real_pane_geometry() {
+    // tmux is the source of truth for pane grid sizes: a pixel-even split
+    // measures 60/60 while tmux lays out 60/59, and rendering at the measured
+    // size is a persistent off-by-one that garbles every shell redraw at the
+    // wrap boundary. A state snapshot must resize registered panes to their
+    // real cell geometry and record it for the view's paint loop.
+    let mut app = fresh_app();
+    app.open_session("dev");
+    commit_state(&mut app, "dev", vec![("%0", "@0")]);
+    let gen = app.sessions.get("dev").unwrap().generation;
+
+    // Pane entry exists at the 80x24 default before geometry is known.
+    assert!(app.commit_terminal_snapshot("dev", "%0", "s1\ns2", Some(2), None));
+    assert_eq!(app.pane_real_geometry("%0"), None);
+
+    // A state snapshot carrying the real split geometry (59x20) adopts it.
+    app.apply_event(
+        "dev",
+        gen,
+        &state_msg(
+            "dev",
+            snapshot_with_active_pane(
+                "dev",
+                "%0",
+                vec![tmux_pane_sized("%0", "@0", 59, 20)],
+            ),
+        ),
+    );
+    assert_eq!(app.pane_real_geometry("%0"), Some((59, 20)));
+    let grid = app.pane_grid_text("%0").unwrap();
+    assert_eq!(grid.len(), 20);
+
+    // Identical snapshots are a no-op (no reflow churn); smaller content is
+    // preserved because resize only reflows, it never clears.
+    app.apply_event(
+        "dev",
+        gen,
+        &state_msg(
+            "dev",
+            snapshot_with_active_pane(
+                "dev",
+                "%0",
+                vec![tmux_pane_sized("%0", "@0", 59, 20)],
+            ),
+        ),
+    );
+    assert_eq!(app.pane_real_geometry("%0"), Some((59, 20)));
+
+    // A real re-split (tmux reflowed the pane) re-adopts.
+    app.apply_event(
+        "dev",
+        gen,
+        &state_msg(
+            "dev",
+            snapshot_with_active_pane(
+                "dev",
+                "%0",
+                vec![tmux_pane_sized("%0", "@0", 61, 20)],
+            ),
+        ),
+    );
+    assert_eq!(app.pane_real_geometry("%0"), Some((61, 20)));
+    let grid = app.pane_grid_text("%0").unwrap();
+    assert_eq!(grid.len(), 20);
+
+    // Zero-sized panes (tmux hiccups) never shrink the grid.
+    app.apply_event(
+        "dev",
+        gen,
+        &state_msg(
+            "dev",
+            snapshot_with_active_pane(
+                "dev",
+                "%0",
+                vec![tmux_pane_sized("%0", "@0", 0, 0)],
+            ),
+        ),
+    );
+    assert_eq!(app.pane_real_geometry("%0"), Some((61, 20)));
+}
+
+#[test]
+fn test_active_tmux_pane_gating() {
+    // Window-level resize sends are gated to the session's active pane: every
+    // pane's scaled request differs, and letting all of them arm makes two
+    // panes alternate conflicting resizes forever.
+    let mut app = fresh_app();
+    app.open_session("dev");
+    commit_state(&mut app, "dev", vec![("%0", "@0")]);
+    let gen = app.sessions.get("dev").unwrap().generation;
+
+    // No snapshot yet: nothing is the active pane.
+    assert!(!app.is_active_tmux_pane("%0"));
+
+    app.apply_event(
+        "dev",
+        gen,
+        &state_msg(
+            "dev",
+            snapshot_with_active_pane("dev", "%0", vec![tmux_pane("%0", "@0")]),
+        ),
+    );
+    assert!(app.is_active_tmux_pane("%0"));
+    // Other panes (and unknown panes) never arm the window resize.
+    assert!(!app.is_active_tmux_pane("%1"));
+    assert!(!app.is_active_tmux_pane("%ghost"));
+}
+
+#[test]
+fn test_capture_adoption_records_real_geometry() {
+    // The capture replay path records the pane's real geometry too (frames
+    // can precede the first state snapshot).
+    let mut app = fresh_app();
+    app.open_session("dev");
+    commit_state(&mut app, "dev", vec![("%0", "@0")]);
+    let gen = app.sessions.get("dev").unwrap().generation;
+
+    assert!(app.apply_event(
+        "dev",
+        gen,
+        &terminal_frame_geo(EV_TERMINAL_SNAPSHOT, "dev", "%0", "s1\ns2", true, 20, 59),
+    ));
+    assert_eq!(app.pane_real_geometry("%0"), Some((59, 20)));
+    let grid = app.pane_grid_text("%0").unwrap();
+    assert_eq!(grid.len(), 20);
 }
