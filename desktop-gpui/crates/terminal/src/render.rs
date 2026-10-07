@@ -7,12 +7,13 @@ use crate::colors::ColorPalette;
 use crate::event::GpuiEventProxy;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point as AlacPoint};
+use alacritty_terminal::selection::SelectionRange;
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::CursorShape;
 use gpui::{
-    quad, transparent_black, App, Bounds, Edges, Font, FontFeatures, FontStyle, FontWeight, Hsla,
-    Pixels, Point, SharedString, Size, TextAlign, TextRun, UnderlineStyle, Window, px,
+    px, quad, transparent_black, App, Bounds, Edges, Font, FontFeatures, FontStyle, FontWeight,
+    Hsla, Pixels, Point, SharedString, Size, TextAlign, TextRun, UnderlineStyle, Window,
 };
 
 /// Dimensions of a single character cell in pixels.
@@ -252,6 +253,62 @@ impl TerminalRenderer {
         merged
     }
 
+    /// Whether the cell renders nothing visible: a plain space on the default
+    /// background, with no decoration that would make the blank itself
+    /// visible (inverse block, underline, colored background).
+    pub fn is_blank_cell(&self, cell: &Cell) -> bool {
+        if cell.c != ' ' && cell.c != '\0' {
+            return false;
+        }
+        if cell.flags.intersects(Flags::INVERSE | Flags::UNDERLINE) {
+            return false;
+        }
+        self.palette.resolve(&cell.bg) == self.palette.background
+    }
+
+    /// Exclusive end column of a row's visible content, i.e. one past the last
+    /// non-blank cell (0 for an empty row). Cells past it are empty pane area.
+    pub fn content_end_exclusive(&self, cells: &[(usize, Cell)]) -> usize {
+        cells
+            .iter()
+            .filter(|(_, cell)| !self.is_blank_cell(cell))
+            .map(|(col, _)| col + 1)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Contiguous selected column ranges on one grid line, each clamped to the
+    /// row's `content_end` (exclusive). A text selection highlights only the
+    /// row's content: cells past the last visible glyph are empty pane area,
+    /// `selection_text` never copies them, and a span made entirely of blank
+    /// cells (empty pane area) disappears instead of flooding the row.
+    pub fn selection_row_spans(
+        &self,
+        sel: &SelectionRange,
+        line: Line,
+        num_cols: usize,
+        content_end: usize,
+    ) -> Vec<(usize, usize)> {
+        let mut spans = Vec::new();
+        let mut start_col: Option<usize> = None;
+
+        for col in 0..=num_cols {
+            let contained = col < num_cols && sel.contains(AlacPoint::new(line, Column(col)));
+            if contained {
+                if start_col.is_none() {
+                    start_col = Some(col);
+                }
+            } else if let Some(start) = start_col.take() {
+                let end = col.min(content_end);
+                if end > start {
+                    spans.push((start, end));
+                }
+            }
+        }
+
+        spans
+    }
+
     /// Paint full terminal content onto the GPUI window.
     pub fn paint(
         &self,
@@ -306,6 +363,12 @@ impl TerminalRenderer {
                 })
                 .collect();
 
+            let content_end = match &selection_range {
+                // Block selections keep their rectangle shape; stream and
+                // line selections stop at the row's content end.
+                Some(sel) if !sel.is_block => self.content_end_exclusive(&cells),
+                _ => num_cols,
+            };
             let (backgrounds, text_runs) = self.layout_row(line_idx, cells.into_iter());
 
             // Paint non-default background quads
@@ -336,40 +399,13 @@ impl TerminalRenderer {
                 ));
             }
 
-            // Paint selection highlight quads
+            // Paint selection highlight quads, clamped to the row's content
+            // end so the empty pane area right of the text is never covered.
             if let Some(ref sel) = selection_range {
-                let mut sel_start: Option<usize> = None;
-                for col in 0..num_cols {
-                    let pt = AlacPoint::new(line, Column(col));
-                    if sel.contains(pt) {
-                        if sel_start.is_none() {
-                            sel_start = Some(col);
-                        }
-                    } else if let Some(start) = sel_start.take() {
-                        let x = origin.x + self.cell_width * (start as f32);
-                        let y = origin.y + self.cell_height * (line_idx as f32);
-                        let width = self.cell_width * ((col - start) as f32);
-                        let rect = Bounds {
-                            origin: Point { x, y },
-                            size: Size {
-                                width,
-                                height: self.cell_height,
-                            },
-                        };
-                        window.paint_quad(quad(
-                            rect,
-                            px(0.0),
-                            self.palette.selection,
-                            Edges::default(),
-                            transparent_black(),
-                            Default::default(),
-                        ));
-                    }
-                }
-                if let Some(start) = sel_start {
+                for (start, end) in self.selection_row_spans(sel, line, num_cols, content_end) {
                     let x = origin.x + self.cell_width * (start as f32);
                     let y = origin.y + self.cell_height * (line_idx as f32);
-                    let width = self.cell_width * ((num_cols - start) as f32);
+                    let width = self.cell_width * ((end - start) as f32);
                     let rect = Bounds {
                         origin: Point { x, y },
                         size: Size {
@@ -574,7 +610,121 @@ impl TerminalRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alacritty_terminal::selection::SelectionRange;
     use alacritty_terminal::vte::ansi::Color;
+
+    fn blank_cell() -> Cell {
+        Cell::default() // space on default background
+    }
+
+    #[test]
+    fn test_is_blank_cell() {
+        let renderer = TerminalRenderer::new(
+            "JetBrains Mono".into(),
+            px(14.0),
+            1.2,
+            ColorPalette::dark_default(),
+        );
+
+        // Plain space / empty cell: blank.
+        assert!(renderer.is_blank_cell(&blank_cell()));
+
+        let mut nul = Cell::default();
+        nul.c = '\0';
+        assert!(renderer.is_blank_cell(&nul));
+
+        // Any glyph: content.
+        let mut text = Cell::default();
+        text.c = 'x';
+        assert!(!renderer.is_blank_cell(&text));
+
+        // Space with a colored background: content (e.g. powerline segments).
+        let mut colored = blank_cell();
+        colored.bg = Color::Indexed(1);
+        assert!(!renderer.is_blank_cell(&colored));
+
+        // Inverse or underlined space: the blank itself is visible.
+        let mut inverse = blank_cell();
+        inverse.flags.insert(Flags::INVERSE);
+        assert!(!renderer.is_blank_cell(&inverse));
+
+        let mut underlined = blank_cell();
+        underlined.flags.insert(Flags::UNDERLINE);
+        assert!(!renderer.is_blank_cell(&underlined));
+    }
+
+    #[test]
+    fn test_content_end_exclusive() {
+        let renderer = TerminalRenderer::new(
+            "JetBrains Mono".into(),
+            px(14.0),
+            1.2,
+            ColorPalette::dark_default(),
+        );
+
+        let mut hi = Cell::default();
+        hi.c = 'H';
+        let cells = vec![
+            (0, hi.clone()),
+            (1, blank_cell()),
+            (2, blank_cell()),
+            (3, blank_cell()),
+        ];
+        assert_eq!(renderer.content_end_exclusive(&cells), 1);
+
+        // Trailing colored blanks still count as content.
+        let mut block = blank_cell();
+        block.bg = Color::Indexed(4);
+        let cells = vec![(0, hi.clone()), (1, block), (2, blank_cell())];
+        assert_eq!(renderer.content_end_exclusive(&cells), 2);
+
+        // Empty row: nothing to select.
+        let cells = vec![(0, blank_cell()), (1, blank_cell())];
+        assert_eq!(renderer.content_end_exclusive(&cells), 0);
+    }
+
+    #[test]
+    fn test_selection_row_spans_clamp_to_content_end() {
+        let renderer = TerminalRenderer::new(
+            "JetBrains Mono".into(),
+            px(14.0),
+            1.2,
+            ColorPalette::dark_default(),
+        );
+
+        // Stream selection spanning rows 0..2 across all 80 columns: on a row
+        // whose content ends at column 10, the highlight must stop there.
+        let sel = SelectionRange::new(
+            AlacPoint::new(Line(0), Column(0)),
+            AlacPoint::new(Line(2), Column(79)),
+            false,
+        );
+        let spans = renderer.selection_row_spans(&sel, Line(1), 80, 10);
+        assert_eq!(spans, vec![(0, 10)]);
+
+        // A fully blank row inside the selection: no highlight at all.
+        let spans = renderer.selection_row_spans(&sel, Line(1), 80, 0);
+        assert_eq!(spans, Vec::new());
+
+        // Content end beyond the selection end: the selection end wins.
+        let sel = SelectionRange::new(
+            AlacPoint::new(Line(1), Column(0)),
+            AlacPoint::new(Line(1), Column(5)),
+            false,
+        );
+        let spans = renderer.selection_row_spans(&sel, Line(1), 80, 40);
+        assert_eq!(spans, vec![(0, 6)]);
+
+        // Span starting past the content end (drag began in the empty area):
+        // nothing is highlighted on that row.
+        let sel = SelectionRange::new(
+            AlacPoint::new(Line(1), Column(30)),
+            AlacPoint::new(Line(2), Column(79)),
+            false,
+        );
+        let spans = renderer.selection_row_spans(&sel, Line(1), 80, 10);
+        assert_eq!(spans, Vec::new());
+    }
 
     #[test]
     fn test_renderer_creation() {
