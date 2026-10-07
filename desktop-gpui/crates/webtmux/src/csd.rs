@@ -58,13 +58,15 @@ pub fn shadow_padding() -> Pixels {
 
 /// The frame shadow, painted by GPUI into [`WINDOW_SHADOW_MARGIN`].
 ///
-/// Roughly GTK's `0 4px 12px rgba(0, 0, 0, .45)`: big enough to read as depth,
-/// small enough that the blur stays inside the reserved margin (a clipped shadow
-/// edge is what would give the margin away). GPUI paints box shadows following
-/// the element's corner radius, so the shadow hugs the rounded frame.
+/// GPUI's blur radius is CSS-semantics (visible reach ≈ offset + ~1.5×blur),
+/// so the old `4px + 12px` pair filled the 16px margin edge-to-edge: the blur
+/// tail clipped at the surface boundary and the shadow read as a straight
+/// dark box around the rounded frame instead of a soft glow. `3px + 10px`
+/// keeps the visible falloff inside the margin (reach ≈ 15px) and the lower
+/// alpha keeps the band from reading as a solid border box.
 pub fn frame_shadow() -> Vec<BoxShadow> {
     vec![
-        BoxShadow::new(px(0.), px(4.), gpui::rgba(0x00000073).into()).blur_radius(px(12.)),
+        BoxShadow::new(px(0.), px(3.), gpui::rgba(0x0000004D).into()).blur_radius(px(10.)),
     ]
 }
 

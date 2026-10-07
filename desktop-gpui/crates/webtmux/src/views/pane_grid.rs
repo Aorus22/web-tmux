@@ -232,9 +232,15 @@ fn render_grid_body(app: &mut AppState, cx: &mut Context<AppState>) -> impl Into
 
 /// Divider handle between adjacent panes (D3): `mouse_down` arms the drag
 /// state machine on `AppState`; the grid-level `mouse_move` above streams it.
-/// Stable `pane-divider/{v|h}-a-b` id (no counters — poll-tick stable),
-/// col-resize / row-resize cursor per axis, hover affordance.
+/// Stable `pane-divider/{v|h}-a-b` id (no counters — poll-tick stable).
+///
+/// The layout band is 4px, but the HIT band extends 4px beyond each side
+/// (12px total): a 4px target is nearly impossible to hover precisely, and
+/// the resize cursor IS the affordance that panes are resizable. The painted
+/// line is a 2px centered child that brightens on group hover, so the
+/// boundary reads clearly without a chunky 12px bar.
 fn render_divider(d: &DividerHandle, cx: &mut Context<AppState>) -> impl IntoElement {
+    const HIT_EXTEND: f32 = 4.0;
     let pane_id = d.pane_id.clone();
     let direction = d.direction;
     let cell_px = if d.is_vertical {
@@ -243,17 +249,33 @@ fn render_divider(d: &DividerHandle, cx: &mut Context<AppState>) -> impl IntoEle
         d.cell_h
     };
     let is_vertical = d.is_vertical;
+    let (left, top, w, h) = if is_vertical {
+        (
+            d.rect.left - HIT_EXTEND,
+            d.rect.top,
+            d.rect.w + HIT_EXTEND * 2.0,
+            d.rect.h,
+        )
+    } else {
+        (
+            d.rect.left,
+            d.rect.top - HIT_EXTEND,
+            d.rect.w,
+            d.rect.h + HIT_EXTEND * 2.0,
+        )
+    };
+    let group = format!("pane-divider/{}", d.key);
     div()
         .id(format!("pane-divider/{}", d.key))
+        .group(group.clone())
         .absolute()
-        .left(px(d.rect.left))
-        .top(px(d.rect.top))
-        .w(px(d.rect.w.max(0.0)))
-        .h(px(d.rect.h.max(0.0)))
-        .rounded_full()
-        .bg(crate::theme::border_color())
-        .opacity(0.4)
-        .hover(|s| s.opacity(1.0))
+        .left(px(left))
+        .top(px(top))
+        .w(px(w.max(0.0)))
+        .h(px(h.max(0.0)))
+        .flex()
+        .items_center()
+        .justify_center()
         .when(is_vertical, |s| s.cursor_col_resize())
         .when(!is_vertical, |s| s.cursor_row_resize())
         .on_mouse_down(
@@ -268,6 +290,15 @@ fn render_divider(d: &DividerHandle, cx: &mut Context<AppState>) -> impl IntoEle
                     this.begin_pane_drag(&pane_id, direction, pos, cell_px);
                 },
             ),
+        )
+        .child(
+            div()
+                .rounded_full()
+                .bg(crate::theme::border_color())
+                .opacity(0.35)
+                .group_hover(group, |s| s.opacity(1.0))
+                .when(is_vertical, |s| s.w(px(2.0)).h_full())
+                .when(!is_vertical, |s| s.h(px(2.0)).w_full()),
         )
         .into_any_element()
 }
