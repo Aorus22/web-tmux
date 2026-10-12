@@ -34,7 +34,7 @@ pub fn is_window_maximized(window: &Window) -> bool {
             }
         }
     }
-    window.is_maximized()
+    window.is_maximized() || window.is_fullscreen()
 }
 
 /// Toggle maximize / restore.
@@ -95,7 +95,7 @@ pub fn toggle_maximize(window: &mut Window) -> bool {
             }
         }
     }
-    let was_max = window.is_maximized();
+    let was_max = window.is_maximized() || window.is_fullscreen();
     window.zoom_window();
     window.on_next_frame(|window, _cx| {
         window.refresh();

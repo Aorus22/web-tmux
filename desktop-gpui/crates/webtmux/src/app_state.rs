@@ -666,6 +666,8 @@ pub struct AppState {
     /// Settings placeholder page flag (SHELL-01, Phase-6-owned page): the gear
     /// sets `active_session = None` + this to true; tabs stay open underneath.
     pub showing_settings: bool,
+    /// Edge of the window the pointer is over, so the cursor follows it.
+    pub resize_hover: std::rc::Rc<std::cell::Cell<Option<ResizeEdge>>>,
 
     /// DLG1 Rename Session dialog form entity, held alive while the modal is
     /// open. Reset to `None` on dismiss; replaced on every (re)open.
@@ -816,6 +818,7 @@ impl AppState {
             open_sessions: Vec::new(),
             sessions: HashMap::new(),
             showing_settings: false,
+            resize_hover: std::rc::Rc::new(std::cell::Cell::new(None)),
             rename_session_form: None,
             kill_session_form: None,
             pending_rename: None,
@@ -4226,10 +4229,16 @@ impl Render for AppState {
         if self.showing_settings {
             self.ensure_tmux_binary_input(window, cx);
         }
+        // Tell the compositor where the visible frame is (the margin is only
+        // our shadow). Constant on purpose: the backend drops it by itself on
+        // maximized/fullscreen/tiled edges, and changing it here would lag one
+        // configure behind.
+        window.set_client_inset(csd::shadow_padding());
         // CSD framing (web-term parity): square full-bleed when
         // maximized/tiled, floating rounded frame with resize zones
         // otherwise. Computed up front so leaves can own their corners.
         let framed = !window.is_maximized()
+            && !window.is_fullscreen()
             && !matches!(
                 window.window_decorations(),
                 Decorations::Client { tiling } if tiling.is_tiled()
@@ -4366,23 +4375,6 @@ impl Render for AppState {
                 .relative()
                 .size_full()
                 .p(csd::shadow_padding())
-                .on_mouse_down(MouseButton::Left, move |_, window, _| {
-                    let size = window.window_bounds().get_bounds().size;
-                    let pos = window.mouse_position();
-                    if let Some(edge) = resize_edge_at(pos, size, &tiling) {
-                        // Field diagnostics: log presses that land on an edge
-                        // so a broken resize can be told apart from a missed
-                        // hit band. Visible in the tmux-pane stderr log.
-                        let x: f32 = pos.x.into();
-                        let y: f32 = pos.y.into();
-                        let w: f32 = size.width.into();
-                        let h: f32 = size.height.into();
-                        eprintln!(
-                            "[webtmux] resize press at ({x:.0},{y:.0}) window {w:.0}x{h:.0} edge={edge:?}"
-                        );
-                        window.start_window_resize(edge);
-                    }
-                })
                 .child(
                     // The panel itself: rounded, 1px outline, and our own shadow
                     // painted into the reserved margin (Mutter's square shadow
@@ -4404,36 +4396,54 @@ impl Render for AppState {
         )
         // Resize zones attach to the outer window box (not the padded middle)
         // so the bands sit on the true window edges. Painted last = on top.
-        .child(resize_hit_zones(&tiling))
+        .child(resize_layer(tiling, self.resize_hover.clone()))
     }
 }
 
-/// Width of the resize hit band at window edges: the full shadow padding,
-/// so there is no dead band between the grab zone and the panel.
-const RESIZE_HIT: f32 = csd::RESIZE_HIT;
+/// Width of the grab area along each edge, from the window's outer edge: the
+/// transparent shadow margin plus a sliver of the visible frame.
+const RESIZE_EDGE: f32 = csd::WINDOW_SHADOW_MARGIN + 3.0;
+/// Corners are easier to hit with a larger square.
+const RESIZE_CORNER: f32 = csd::WINDOW_SHADOW_MARGIN + 12.0;
 /// Corner rounding for CSD leaves (mirrors Zed's 10px).
 pub const FRAME_ROUNDING: Pixels = px(10.0);
 
-/// Which window edge/corner the pointer is over, if any.
-fn resize_edge_at(pos: Point<Pixels>, size: Size<Pixels>, tiling: &Tiling) -> Option<ResizeEdge> {
-    let x: f32 = pos.x.into();
-    let y: f32 = pos.y.into();
-    let w: f32 = size.width.into();
-    let h: f32 = size.height.into();
-    let left = x < RESIZE_HIT && !tiling.left;
-    let right = x > w - RESIZE_HIT && !tiling.right;
-    let top = y < RESIZE_HIT && !tiling.top;
-    let bottom = y > h - RESIZE_HIT && !tiling.bottom;
-    match (top, bottom, left, right) {
-        (true, _, true, _) => Some(ResizeEdge::TopLeft),
-        (true, _, _, true) => Some(ResizeEdge::TopRight),
-        (_, true, true, _) => Some(ResizeEdge::BottomLeft),
-        (_, true, _, true) => Some(ResizeEdge::BottomRight),
-        (true, _, _, _) => Some(ResizeEdge::Top),
-        (_, true, _, _) => Some(ResizeEdge::Bottom),
-        (_, _, true, _) => Some(ResizeEdge::Left),
-        (_, _, _, true) => Some(ResizeEdge::Right),
-        _ => None,
+/// Which resize handle (if any) the point `(x, y)` falls on in a window of
+/// `width` x `height`. Edges the compositor reports as tiled cannot be resized.
+fn resize_edge_at(x: f32, y: f32, width: f32, height: f32, tiling: Tiling) -> Option<ResizeEdge> {
+    let near = |distance: f32, limit: f32| distance >= 0.0 && distance < limit;
+    let left = !tiling.left && near(x, RESIZE_EDGE);
+    let right = !tiling.right && near(width - x, RESIZE_EDGE);
+    let top = !tiling.top && near(y, RESIZE_EDGE);
+    let bottom = !tiling.bottom && near(height - y, RESIZE_EDGE);
+    let corner_x = |from_left: bool| {
+        if from_left { near(x, RESIZE_CORNER) } else { near(width - x, RESIZE_CORNER) }
+    };
+    let corner_y = |from_top: bool| {
+        if from_top { near(y, RESIZE_CORNER) } else { near(height - y, RESIZE_CORNER) }
+    };
+    if !tiling.top && !tiling.left && corner_x(true) && corner_y(true) && (left || top) {
+        return Some(ResizeEdge::TopLeft);
+    }
+    if !tiling.top && !tiling.right && corner_x(false) && corner_y(true) && (right || top) {
+        return Some(ResizeEdge::TopRight);
+    }
+    if !tiling.bottom && !tiling.left && corner_x(true) && corner_y(false) && (left || bottom) {
+        return Some(ResizeEdge::BottomLeft);
+    }
+    if !tiling.bottom && !tiling.right && corner_x(false) && corner_y(false) && (right || bottom) {
+        return Some(ResizeEdge::BottomRight);
+    }
+    if top {
+        Some(ResizeEdge::Top)
+    } else if bottom {
+        Some(ResizeEdge::Bottom)
+    } else if left {
+        Some(ResizeEdge::Left)
+    } else if right {
+        Some(ResizeEdge::Right)
+    } else {
+        None
     }
 }
 
@@ -4446,73 +4456,99 @@ fn cursor_for_edge(edge: ResizeEdge) -> CursorStyle {
     }
 }
 
-/// Transparent overlay strips on untiled edges/corners. Each zone owns its
-/// edge: hover shows the resize cursor and press starts the resize. The
-/// mouse handler is what creates the hitbox — cursor style alone does not.
-/// Zones stay inside the shadow padding so content (e.g. the session list
-/// scrollbar) stays clickable.
-fn resize_hit_zones(tiling: &Tiling) -> impl IntoElement {
-    let hit = px(RESIZE_HIT);
-    let mut zones: Vec<AnyElement> = Vec::new();
-    let mut edge_zone = |edge: ResizeEdge, el: Div| {
-        zones.push(
-            el.cursor(cursor_for_edge(edge))
-                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                    eprintln!("[webtmux] resize zone press edge={edge:?}");
-                    window.start_window_resize(edge);
-                    // Zones live in the padding; nothing below needs the press.
-                    cx.stop_propagation();
-                })
-                .into_any_element(),
-        );
-    };
-    if !tiling.top {
-        edge_zone(
-            ResizeEdge::Top,
-            div().absolute().top_0().left_0().right_0().h(hit),
-        );
-        if !tiling.left {
-            edge_zone(
-                ResizeEdge::TopLeft,
-                div().absolute().top_0().left_0().w(hit).h(hit),
-            );
-        }
-        if !tiling.right {
-            edge_zone(
-                ResizeEdge::TopRight,
-                div().absolute().top_0().right_0().w(hit).h(hit),
-            );
-        }
+/// Window resize handles for the client-side frame. They are driven by window
+/// level pointer events instead of per-edge elements, so no widget painted above
+/// the margin can swallow them: the cursor follows the pointer and a press starts
+/// a compositor resize.
+fn resize_layer(
+    tiling: Tiling,
+    hover: std::rc::Rc<std::cell::Cell<Option<ResizeEdge>>>,
+) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let size = bounds.size;
+            let edge_at = move |position: Point<Pixels>| {
+                let local = position - bounds.origin;
+                resize_edge_at(
+                    f32::from(local.x),
+                    f32::from(local.y),
+                    f32::from(size.width),
+                    f32::from(size.height),
+                    tiling,
+                )
+            };
+            if let Some(edge) = edge_at(window.mouse_position()) {
+                window.set_window_cursor_style(cursor_for_edge(edge));
+            }
+            window.on_mouse_event({
+                let hover = hover.clone();
+                move |event: &MouseMoveEvent, _, window, _| {
+                    let edge = edge_at(event.position);
+                    if hover.replace(edge) != edge {
+                        window.refresh();
+                    }
+                }
+            });
+            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
+                    if let Some(edge) = edge_at(event.position) {
+                        window.start_window_resize(edge);
+                        cx.stop_propagation();
+                    }
+                }
+            });
+        },
+    )
+    // Pinned to the top-left: an absolute child without insets would sit at
+    // its static position, i.e. below the window content.
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
+#[cfg(test)]
+mod resize_tests {
+    use super::*;
+    // `use gpui::*` brings gpui's own `test` macro into scope.
+    use core::prelude::v1::test;
+
+    const W: f32 = 1100.0;
+    const H: f32 = 720.0;
+
+    fn edge(x: f32, y: f32) -> Option<ResizeEdge> {
+        resize_edge_at(x, y, W, H, Tiling::default())
     }
-    if !tiling.bottom {
-        edge_zone(
-            ResizeEdge::Bottom,
-            div().absolute().bottom_0().left_0().right_0().h(hit),
-        );
-        if !tiling.left {
-            edge_zone(
-                ResizeEdge::BottomLeft,
-                div().absolute().bottom_0().left_0().w(hit).h(hit),
-            );
-        }
-        if !tiling.right {
-            edge_zone(
-                ResizeEdge::BottomRight,
-                div().absolute().bottom_0().right_0().w(hit).h(hit),
-            );
-        }
+
+    #[test]
+    fn shadow_margin_resizes_from_every_side() {
+        assert_eq!(edge(4.0, H / 2.0), Some(ResizeEdge::Left));
+        assert_eq!(edge(W - 2.0, 300.0), Some(ResizeEdge::Right));
+        assert_eq!(edge(500.0, 5.0), Some(ResizeEdge::Top));
+        assert_eq!(edge(500.0, H - 3.0), Some(ResizeEdge::Bottom));
     }
-    if !tiling.left {
-        edge_zone(
-            ResizeEdge::Left,
-            div().absolute().left_0().top_0().bottom_0().w(hit),
-        );
+
+    #[test]
+    fn corners_win_over_edges() {
+        assert_eq!(edge(3.0, 3.0), Some(ResizeEdge::TopLeft));
+        assert_eq!(edge(W - 3.0, 20.0), Some(ResizeEdge::TopRight));
+        assert_eq!(edge(10.0, H - 3.0), Some(ResizeEdge::BottomLeft));
+        assert_eq!(edge(W - 25.0, H - 4.0), Some(ResizeEdge::BottomRight));
     }
-    if !tiling.right {
-        edge_zone(
-            ResizeEdge::Right,
-            div().absolute().right_0().top_0().bottom_0().w(hit),
-        );
+
+    #[test]
+    fn the_window_body_is_not_a_handle() {
+        assert_eq!(edge(W / 2.0, H / 2.0), None);
+        assert_eq!(edge(60.0, 400.0), None);
+        assert_eq!(edge(500.0, 50.0), None);
     }
-    div().absolute().size_full().children(zones)
+
+    #[test]
+    fn tiled_edges_cannot_be_resized() {
+        let mut tiled = Tiling::default();
+        tiled.left = true;
+        assert_eq!(resize_edge_at(4.0, 300.0, W, H, tiled), None);
+        assert_eq!(resize_edge_at(W - 4.0, 300.0, W, H, tiled), Some(ResizeEdge::Right));
+    }
 }
